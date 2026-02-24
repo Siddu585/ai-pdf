@@ -1,0 +1,15 @@
+fastapi
+uvicorn
+python-multipart
+crewai
+langchain-openai
+pillow
+opencv-python-headless
+pymupdf
+pydantic
+python-dotenv
+pdf2docx
+docx2pdf
+groq
+tiktoken
+langchain-groq
