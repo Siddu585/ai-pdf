@@ -1,0 +1,82 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  :root {
+    --background: 220 60% 98%; /* light gray-blue background for light mode */
+    --foreground: 220 60% 10%; /* deep navy text */
+
+    --card: 0 0% 100%;
+    --card-foreground: 220 60% 10%;
+
+    --popover: 0 0% 100%;
+    --popover-foreground: 220 60% 10%;
+
+    /* Deep Navy */
+    --primary: 220 60% 10%; /* #0A1428 approx */
+    --primary-foreground: 0 0% 98%;
+
+    /* Vibrant Teal */
+    --secondary: 170 100% 45%; /* #00E5C0 approx */
+    --secondary-foreground: 220 60% 10%;
+
+    --muted: 220 20% 90%;
+    --muted-foreground: 220 20% 40%;
+
+    --accent: 170 100% 45%;
+    --accent-foreground: 220 60% 10%;
+
+    --destructive: 0 84.2% 60.2%;
+    --destructive-foreground: 0 0% 98%;
+
+    --border: 220 20% 85%;
+    --input: 220 20% 85%;
+    --ring: 220 60% 10%;
+
+    --radius: 0.75rem; /* slightly rounder for modern look */
+  }
+
+  /* Force dark mode to be the default deep navy for now, or just support it cleanly */
+  .dark {
+    /* Deep Navy Background */
+    --background: 220 60% 10%; /* #0A1428 */
+    --foreground: 0 0% 98%;
+
+    /* Slightly lighter navy for cards */
+    --card: 220 50% 14%;
+    --card-foreground: 0 0% 98%;
+
+    --popover: 220 50% 14%;
+    --popover-foreground: 0 0% 98%;
+
+    /* Vibrant Teal */
+    --primary: 170 100% 45%; /* #00E5C0 */
+    --primary-foreground: 220 60% 10%;
+
+    --secondary: 220 40% 20%;
+    --secondary-foreground: 0 0% 98%;
+
+    --muted: 220 40% 20%;
+    --muted-foreground: 220 20% 65%;
+
+    --accent: 170 100% 45%;
+    --accent-foreground: 220 60% 10%;
+
+    --destructive: 0 62.8% 30.6%;
+    --destructive-foreground: 0 0% 98%;
+
+    --border: 220 40% 20%;
+    --input: 220 40% 20%;
+    --ring: 170 100% 45%;
+  }
+}
+
+@layer base {
+  * {
+    @apply border-border;
+  }
+  body {
+    @apply bg-background text-foreground tracking-tight selection:bg-secondary selection:text-secondary-foreground;
+  }
+}
