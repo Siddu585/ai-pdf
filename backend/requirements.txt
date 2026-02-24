@@ -2,7 +2,6 @@ fastapi
 uvicorn
 python-multipart
 crewai
-langchain-openai
 pillow
 opencv-python-headless
 pymupdf
@@ -11,5 +10,4 @@ python-dotenv
 pdf2docx
 docx2pdf
 groq
-tiktoken
 langchain-groq
