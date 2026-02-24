@@ -41,7 +41,7 @@ export default function AIChatPage() {
             formData.append("file", file);
             formData.append("query", userMsg);
 
-            const response = await fetch("http://localhost:8000/api/chat-pdf", {
+            const response = await fetch((process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000") + "/api/chat-pdf", {
                 method: "POST",
                 body: formData,
             });

@@ -35,7 +35,7 @@ export default function SplitPDF() {
             formData.append("file", file);
             formData.append("ranges", ranges);
 
-            const response = await fetch("http://localhost:8000/api/split-pdf", {
+            const response = await fetch((process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000") + "/api/split-pdf", {
                 method: "POST",
                 body: formData,
             });

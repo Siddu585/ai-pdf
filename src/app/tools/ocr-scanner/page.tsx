@@ -36,7 +36,7 @@ export default function OCRScannerPage() {
             const formData = new FormData();
             formData.append("file", file);
 
-            const response = await fetch("http://localhost:8000/api/ocr", {
+            const response = await fetch((process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000") + "/api/ocr", {
                 method: "POST",
                 body: formData,
             });

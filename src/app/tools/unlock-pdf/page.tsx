@@ -35,7 +35,7 @@ export default function UnlockPDF() {
             formData.append("file", file);
             formData.append("password", password);
 
-            const response = await fetch("http://localhost:8000/api/unlock-pdf", {
+            const response = await fetch((process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000") + "/api/unlock-pdf", {
                 method: "POST",
                 body: formData,
             });

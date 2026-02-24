@@ -33,7 +33,7 @@ export default function RepairPDF() {
             const formData = new FormData();
             formData.append("file", file);
 
-            const response = await fetch("http://localhost:8000/api/repair-pdf", {
+            const response = await fetch((process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000") + "/api/repair-pdf", {
                 method: "POST",
                 body: formData,
             });

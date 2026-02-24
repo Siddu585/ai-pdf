@@ -68,7 +68,7 @@ export default function ImageToPDF() {
                 formData.append("files", img.file);
             });
 
-            const response = await fetch("http://localhost:8000/api/image-to-pdf", {
+            const response = await fetch((process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000") + "/api/image-to-pdf", {
                 method: "POST",
                 body: formData,
             });

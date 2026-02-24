@@ -58,7 +58,7 @@ export function ImageCompressor() {
             formData.append("file", file);
             formData.append("target_kb", targetSizeKB.toString());
 
-            const response = await fetch("http://localhost:8000/api/compress-image", {
+            const response = await fetch((process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000") + "/api/compress-image", {
                 method: "POST",
                 body: formData,
             });
