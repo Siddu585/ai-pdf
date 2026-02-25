@@ -12,14 +12,13 @@ from app.chat_agent import chat_with_pdf
 
 app = FastAPI(title="PDF Ninja Intelligent Backend")
 
-# Allow Next.js frontend to communicate securely via environment variable
-frontend_url = os.getenv("FRONTEND_URL", "http://localhost:3000")
-allow_origins = [frontend_url, "http://localhost:3001"]
+# Allow Next.js frontend to communicate securely
+frontend_url = os.getenv("FRONTEND_URL", "https://ai-pdf-frontend.vercel.app")
+allow_origins = [frontend_url, "http://localhost:3000", "http://localhost:3001"]
 
 app.add_middleware(
     CORSMiddleware,
     allow_origins=allow_origins,
-    allow_origin_regex="https://.*\.vercel\.app",
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
