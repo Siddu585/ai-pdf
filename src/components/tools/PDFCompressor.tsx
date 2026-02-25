@@ -68,9 +68,10 @@ export function PDFCompressor() {
             recordUsage();
             setCompressedPdfBytes(pdfBytes);
 
-        } catch (error) {
+        } catch (error: any) {
+            const targetUrl = (process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000") + "/api/compress-pdf";
             console.error("Compression error:", error);
-            alert("Failed to compress PDF. Is the Python backend running on port 8000?");
+            alert(`Failed to compress PDF!\nTried connecting to: ${targetUrl}\nExact Error: ${error.message}`);
         } finally {
             setIsCompressing(false);
         }
