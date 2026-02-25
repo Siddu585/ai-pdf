@@ -33,9 +33,17 @@ def run_iterative_pdf_compression(input_path: str, quality_slider: int) -> str:
                 # Generate an optimized, low-DPI pixmap
                 pix = page.get_pixmap(dpi=target_dpi, colorspace=colorspace)
                 
+                # Convert immediately to compressed JPEG bytes to save RAM!
+                # Raw pixmaps in RAM take 10MB+ per page, jumping past Render's 512MB limit.
+                img_bytes = pix.tobytes("jpeg", jpg_quality=max(10, quality_slider))
+                
                 # Reconstruct the page in the new document
                 new_page = new_doc.new_page(width=page.rect.width, height=page.rect.height)
-                new_page.insert_image(page.rect, pixmap=pix)
+                new_page.insert_image(page.rect, stream=img_bytes)
+                
+                # Force explicit garbage collection
+                pix = None
+                img_bytes = None
                 
             new_doc.save(out_path, garbage=4, deflate=True)
             new_doc.close()
