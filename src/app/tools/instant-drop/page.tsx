@@ -11,7 +11,7 @@ import { Footer } from "@/components/layout/Footer";
 // Chunk size for WebRTC DataChannel (16KB)
 const CHUNK_SIZE = 16 * 1024;
 const BACKEND_WS_URL = process.env.NEXT_PUBLIC_API_URL
-    ? process.env.NEXT_PUBLIC_API_URL.replace("http", "ws")
+    ? process.env.NEXT_PUBLIC_API_URL.trim().replace(/\/$/, "").replace(/^https:\/\//i, "wss://").replace(/^http:\/\//i, "ws://")
     : typeof window !== "undefined"
         ? `ws://${window.location.hostname}:8000`
         : "ws://localhost:8000";

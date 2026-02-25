@@ -119,9 +119,11 @@ export default function OrganizePages() {
                 const formData = new FormData();
                 formData.append("file", selected);
 
-                const response = await fetch((process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000") + "/api/extract-thumbnails", {
+                const baseUrl = (process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000").trim().replace(/\/$/, "");
+                const response = await fetch(baseUrl + "/api/extract-thumbnails", {
                     method: "POST",
                     body: formData,
+                    mode: "cors",
                 });
 
                 if (!response.ok) {
@@ -192,9 +194,11 @@ export default function OrganizePages() {
             const orderIndexString = pages.map(p => p.originalIndex).join(",");
             formData.append("order", orderIndexString);
 
-            const response = await fetch((process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000") + "/api/organize-pdf", {
+            const baseUrl = (process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000").trim().replace(/\/$/, "");
+            const response = await fetch(baseUrl + "/api/organize-pdf", {
                 method: "POST",
                 body: formData,
+                mode: "cors",
             });
 
             if (!response.ok) {

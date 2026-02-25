@@ -33,9 +33,13 @@ export default function PDFToWord() {
             const formData = new FormData();
             formData.append("file", file);
 
-            const response = await fetch((process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000") + "/api/pdf-to-word", {
+            const baseUrl = (process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000").trim().replace(/\/$/, "");
+            const targetUrl = baseUrl + "/api/pdf-to-word";
+
+            const response = await fetch(targetUrl, {
                 method: "POST",
                 body: formData,
+                mode: "cors",
             });
 
             if (!response.ok) {
