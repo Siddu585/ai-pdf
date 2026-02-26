@@ -50,11 +50,10 @@ def run_iterative_pdf_compression(input_path: str, quality_slider: int) -> str:
                 except Exception as e:
                     print(f"Skipping image {xref} due to error: {e}")
                     
-        # Run structural stripping using safe arguments (avoid `clean=True` which deadlocks on Ubuntu C++)
+        # Run structural stripping using safe arguments
         save_options = {
-            "garbage": 4,          # maximum garbage collection
+            "garbage": 3,          # maximum garbage collection (downgraded to 3 to prevent stream expansion)
             "deflate": True,       # compress streams
-            "deflate_images": True,# compress images
         }
         doc.save(out_path, **save_options)
             

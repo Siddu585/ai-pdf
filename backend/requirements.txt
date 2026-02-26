@@ -10,3 +10,4 @@ pdf2docx
 docx2pdf
 groq
 langchain-groq
+websockets

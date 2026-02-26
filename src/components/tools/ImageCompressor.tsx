@@ -58,10 +58,19 @@ export function ImageCompressor() {
             formData.append("file", file);
             formData.append("target_kb", targetSizeKB.toString());
 
-            const response = await fetch((process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000") + "/api/compress-image", {
+            const baseUrl = (process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000").trim().replace(/\/$/, "");
+            const targetUrl = baseUrl + "/api/compress-image";
+
+            const controller = new AbortController();
+            const timeoutId = setTimeout(() => controller.abort(), 90000); // 90 seconds timeout
+
+            const response = await fetch(targetUrl, {
                 method: "POST",
                 body: formData,
+                mode: "cors",
+                signal: controller.signal,
             });
+            clearTimeout(timeoutId);
 
             if (!response.ok) {
                 throw new Error("Local backend compression failed.");
@@ -75,11 +84,16 @@ export function ImageCompressor() {
             setCompressedFile(newFile);
             setCompressedUrl(URL.createObjectURL(newFile));
 
-        } catch (error) {
+        } catch (error: any) {
             console.error("Compression error:", error);
-            alert("Failed to compress image. Is the Python backend running on port 8000?");
-        } finally {
             setIsCompressing(false);
+
+            setTimeout(() => {
+                const msg = error.name === "AbortError"
+                    ? "The image compression took too long (90s limit). Please try a smaller image."
+                    : "Failed to compress image. Ensure the backend is online and accessible.";
+                alert(msg);
+            }, 50);
         }
     };
 
