@@ -35,8 +35,8 @@ export function useUsage() {
             localStorage.setItem(USAGE_KEY, JSON.stringify({ date: today, count: 0 }));
         }
     }, []);
-
-    const canUse = usageCount < DAILY_LIMIT;
+    // Temporarily disable the paywall limit for testing
+    const canUse = true;
 
     const recordUsage = () => {
         const today = new Date().toISOString().split('T')[0];
