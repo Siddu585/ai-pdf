@@ -215,19 +215,13 @@ def pdf_to_word(input_path: str) -> str:
 
         cv = Converter(input_path)
         
-        # Force single processing to prevent OOM/CPU thrashing on Render free tier
+        # Render Standard Tier (1 CPU / 2GB RAM) Config
         kwargs = {
-            "multi_processing": False,
-            "cpu_count": 1
+            "multi_processing": True,
+            "cpu_count": 2  # Utilize multi-threading to speed up heavy conversions
         }
         
-        # Protect Render 100-second network timeout limit by capping free processing at 15 pages
-        if total_pages > 15:
-            print(f"Limiting {total_pages} page PDF to first 15 pages to prevent Gateway Timeout.")
-            cv.convert(out_path, start=0, end=15, **kwargs)
-        else:
-            cv.convert(out_path, **kwargs)
-            
+        cv.convert(out_path, **kwargs)
         cv.close()
     except Exception as e:
         print(f"Error converting PDF to Word: {e}")
