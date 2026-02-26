@@ -22,9 +22,9 @@ export function Hero() {
                 </div>
 
                 <h1 className="text-4xl md:text-6xl lg:text-7xl font-extrabold tracking-tight text-foreground max-w-4xl mb-6">
-                    Free PDF & Photo Tools <br />
+                    Free Online PDF Tools & <br />
                     <span className="text-transparent bg-clip-text bg-gradient-to-r from-secondary to-blue-500">
-                        Fast, Private, No Signup.
+                        Photo Resizer — No Signup.
                     </span>
                 </h1>
 

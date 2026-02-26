@@ -217,9 +217,9 @@ function InstantDropContent() {
                     <div className="bg-indigo-500/10 p-4 rounded-full inline-block mb-4">
                         <Smartphone className="w-12 h-12 text-indigo-500" />
                     </div>
-                    <h1 className="text-4xl md:text-5xl font-bold text-foreground mb-4">Instant Drop</h1>
+                    <h1 className="text-4xl md:text-5xl font-bold text-foreground mb-4">Cross Device File Transfer</h1>
                     <p className="text-lg text-muted-foreground max-w-2xl mx-auto">
-                        Peer-to-peer file transfer. Secure, instant, and encrypted. Scan the code to download from another device.
+                        Transfer files securely and instantly between your desktop and mobile device. Scan the QR code to connect.
                     </p>
                 </div>
 

@@ -73,9 +73,9 @@ export default function OCRScannerPage() {
                     <div className="bg-pink-500/10 p-4 rounded-full inline-block mb-4">
                         <ScanText className="w-12 h-12 text-pink-500" />
                     </div>
-                    <h1 className="text-4xl md:text-5xl font-bold text-foreground mb-4">AI OCR Scanner</h1>
+                    <h1 className="text-4xl md:text-5xl font-bold text-foreground mb-4">Extract Text from Image (OCR)</h1>
                     <p className="text-lg text-muted-foreground max-w-2xl mx-auto">
-                        Extract text from images (JPG, PNG) instantly using our machine-learning OCR engine.
+                        Quickly extract readable text from any image (JPG, PNG) or scanned receipt instantly using our machine-learning OCR engine.
                     </p>
                 </div>
 

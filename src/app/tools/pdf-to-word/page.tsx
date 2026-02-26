@@ -79,9 +79,9 @@ export default function PDFToWord() {
                     <div className="bg-blue-500/10 p-4 rounded-full inline-block mb-4">
                         <FileText className="w-12 h-12 text-blue-500" />
                     </div>
-                    <h1 className="text-4xl md:text-5xl font-bold text-foreground mb-4">PDF to Word (Beta)</h1>
+                    <h1 className="text-4xl md:text-5xl font-bold text-foreground mb-4">Convert PDF to Word Online Free</h1>
                     <p className="text-lg text-muted-foreground max-w-2xl mx-auto">
-                        Convert your PDF documents into an editable Microsoft Word format instantly.
+                        Instantly transform your PDF documents into an editable Microsoft Word format without losing layouts or formatting.
                     </p>
                 </div>
 
