@@ -36,11 +36,16 @@ export default function PDFToWord() {
             const baseUrl = (process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000").trim().replace(/\/$/, "");
             const targetUrl = baseUrl + "/api/pdf-to-word";
 
+            const controller = new AbortController();
+            const timeoutId = setTimeout(() => controller.abort(), 90000); // 90 seconds timeout
+
             const response = await fetch(targetUrl, {
                 method: "POST",
                 body: formData,
                 mode: "cors",
+                signal: controller.signal,
             });
+            clearTimeout(timeoutId);
 
             if (!response.ok) {
                 throw new Error("Conversion failed on backend.");
@@ -53,11 +58,15 @@ export default function PDFToWord() {
             setDownloadName(outName);
             setDownloadUrl(URL.createObjectURL(new File([blob], outName, { type: "application/vnd.openxmlformats-officedocument.wordprocessingml.document" })));
 
-        } catch (error) {
+        } catch (error: any) {
             console.error("Conversion Error:", error);
-            alert("Failed to convert PDF to Word. Make sure the python backend is running.");
-        } finally {
-            setIsProcessing(false);
+            setIsProcessing(false); // Stop spinner before alert blocks thread
+            setTimeout(() => {
+                const msg = error.name === "AbortError"
+                    ? "The conversion took too long (90s limit). Please upload a smaller or non-scanned PDF."
+                    : "Failed to convert PDF to Word. The backend might be busy.";
+                alert(msg);
+            }, 50);
         }
     };
 

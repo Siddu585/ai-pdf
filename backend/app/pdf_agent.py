@@ -210,7 +210,13 @@ def pdf_to_word(input_path: str) -> str:
     
     try:
         cv = Converter(input_path)
-        cv.convert(out_path)      # all pages by default
+        
+        # Force single processing to prevent OOM/CPU thrashing on Render free tier
+        kwargs = {
+            "multi_processing": False,
+            "cpu_count": 1
+        }
+        cv.convert(out_path, **kwargs)
         cv.close()
     except Exception as e:
         print(f"Error converting PDF to Word: {e}")

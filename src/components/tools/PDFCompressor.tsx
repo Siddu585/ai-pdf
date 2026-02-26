@@ -51,10 +51,15 @@ export function PDFCompressor() {
             formData.append("file", file);
             formData.append("quality", quality.toString());
 
+            const controller = new AbortController();
+            const timeoutId = setTimeout(() => controller.abort(), 90000); // 90 seconds timeout
+
             const response = await fetch((process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000") + "/api/compress-pdf", {
                 method: "POST",
                 body: formData,
+                signal: controller.signal,
             });
+            clearTimeout(timeoutId);
 
             if (!response.ok) {
                 const errText = await response.text();
@@ -71,9 +76,14 @@ export function PDFCompressor() {
         } catch (error: any) {
             const targetUrl = (process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000") + "/api/compress-pdf";
             console.error("Compression error:", error);
-            alert(`Failed to compress PDF!\nTried connecting to: ${targetUrl}\nExact Error: ${error.message}`);
-        } finally {
             setIsCompressing(false);
+
+            setTimeout(() => {
+                const msg = error.name === "AbortError"
+                    ? "The compression took too long (90s limit). Please upload a smaller PDF."
+                    : `Failed to compress PDF!\nTried connecting to: ${targetUrl}\nExact Error: ${error.message}`;
+                alert(msg);
+            }, 50);
         }
     };
 
