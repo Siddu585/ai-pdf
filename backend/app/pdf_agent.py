@@ -8,59 +8,60 @@ from pdf2docx import Converter
 def run_iterative_pdf_compression(input_path: str, quality_slider: int) -> str:
     """
     Quality Agent: Determines how much to compress based on the quality slider (1-100).
-    Compress Agent: Executes PyMuPDF garbage collection, metadata stripping, and image downsampling.
+    Compress Agent: Targets embedded XREF images, converting them to compressed JPEGs, 
+    perfectly preserving vector text to prevent file size bloat.
     """
     out_path = input_path + "_compressed.pdf"
-    
-    # 1. Open the document
     doc = fitz.open(input_path)
     
-    # Set PyMuPDF deflation & compression options
-    # The lower the quality slider, the more we compress images
-    
-    # dpi for the output images. 100 quality = 300 DPI, 1 quality = 72 DPI
-    target_dpi = 72 + int((quality_slider / 100.0) * (300 - 72))
-    
-    # If the user slides to low quality, we can also convert to grayscale
-    colorspace = fitz.csGRAY if quality_slider < 30 else fitz.csRGB
-    
     try:
+        # If quality is <= 50, we actively target and downsample embedded images
         if quality_slider <= 50:
-            # EXTREME RASTERIZATION MODE (For 1/6th compression targets)
-            # This completely rewrites the PDF into highly compressed image plates
-            new_doc = fitz.open()
-            for page in doc:
-                # Generate an optimized, low-DPI pixmap
-                pix = page.get_pixmap(dpi=target_dpi, colorspace=colorspace)
-                
-                # Convert immediately to compressed JPEG bytes to save RAM!
-                # Raw pixmaps in RAM take 10MB+ per page, jumping past Render's 512MB limit.
-                img_bytes = pix.tobytes("jpeg", jpg_quality=max(10, quality_slider))
-                
-                # Reconstruct the page in the new document
-                new_page = new_doc.new_page(width=page.rect.width, height=page.rect.height)
-                new_page.insert_image(page.rect, stream=img_bytes)
-                
-                # Force explicit garbage collection
-                pix = None
-                img_bytes = None
-                
-            new_doc.save(out_path, garbage=4, deflate=True)
-            new_doc.close()
-        else:
-            # Standard structural stripping mode
-            save_options = {
-                "garbage": 4,          # maximum garbage collection
-                "clean": True,         # clean and combine content streams
-                "deflate": True,       # compress streams
-                "deflate_images": True,# compress images
-                "deflate_fonts": True, # compress fonts
-            }
-            doc.save(out_path, **save_options)
+            # For quality slider 1-50, we map visual quality to 10-60 JPEG quality
+            jpeg_quality = max(10, int(quality_slider * 1.2))
+            
+            for xref in range(1, doc.xref_length()):
+                if not doc.xref_is_image(xref):
+                    continue
+                    
+                try:
+                    pix = fitz.Pixmap(doc, xref)
+                    # Convert to RGB (JPEG doesn't support transparency/alpha)
+                    if pix.n >= 4 or pix.alpha:
+                        pix = fitz.Pixmap(fitz.csRGB, pix)
+                        
+                    # Compress the image
+                    img_bytes = pix.tobytes("jpeg", jpg_quality=jpeg_quality)
+                    old_stream = doc.xref_stream(xref)
+                    old_len = len(old_stream) if old_stream else 0
+                    
+                    # Only replace if the compressed version is actually smaller
+                    if len(img_bytes) < old_len or old_len == 0:
+                        doc.update_stream(xref, img_bytes)
+                        doc.xref_set_key(xref, "Filter", "/DCTDecode")
+                        
+                        # Strip potentially conflicting decode parameters
+                        try: doc.xref_set_key(xref, "DecodeParms", "null")
+                        except: pass
+                        
+                    # Explicit forced garbage collection per image to prevent OOM
+                    pix = None
+                    img_bytes = None
+                except Exception as e:
+                    print(f"Skipping image {xref} due to error: {e}")
+                    
+        # Always run the standard structural stripping for maximum structural space savings
+        save_options = {
+            "garbage": 4,          # maximum garbage collection
+            "clean": True,         # clean and combine content streams
+            "deflate": True,       # compress streams
+            "deflate_images": True,# compress images
+            "deflate_fonts": True, # compress fonts
+        }
+        doc.save(out_path, **save_options)
             
     except Exception as e:
-        print(f"Error compressing via structure: {e}")
-        # If it fails, fallback to standard save
+        print(f"Error during aggressive compression: {e}")
         doc.save(out_path)
     finally:
         doc.close()
