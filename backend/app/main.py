@@ -59,9 +59,16 @@ async def drop_websocket(websocket: WebSocket, room_id: str, client_type: str):
     
     try:
         while True:
-            data = await websocket.receive_json()
-            # Relay messages to the other client
-            await manager.send_message(data, room_id, other)
+            # Native receive to handle both JSON text signaling and raw binary fallback chunks
+            message = await websocket.receive()
+            
+            # Relay messages to the other client verbatim
+            if room_id in manager.rooms and other in manager.rooms[room_id]:
+                other_ws = manager.rooms[room_id][other]
+                if "text" in message and message["text"]:
+                    await other_ws.send_text(message["text"])
+                elif "bytes" in message and message["bytes"]:
+                    await other_ws.send_bytes(message["bytes"])
     except WebSocketDisconnect:
         manager.disconnect(websocket, room_id, client_type)
         await manager.send_message({"type": "peer-disconnected", "client_type": client_type}, room_id, other)

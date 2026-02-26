@@ -39,31 +39,9 @@ function InstantDropContent() {
 
     const fileInputRef = useRef<HTMLInputElement>(null);
 
-    // Common WebRTC Setup
-    const setupPeerConnection = (role: 'sender' | 'receiver') => {
-        console.log(`Setting up peer connection as ${role}`);
-        const pc = new RTCPeerConnection({
-            iceServers: [{ urls: "stun:stun.l.google.com:19302" }]
-        });
-
-        pc.onicecandidate = (event) => {
-            if (event.candidate && wsRef.current?.readyState === WebSocket.OPEN) {
-                wsRef.current.send(JSON.stringify({ type: 'candidate', candidate: event.candidate }));
-            }
-        };
-
-        pc.onconnectionstatechange = () => {
-            console.log("Connection State:", pc.connectionState);
-            if (pc.connectionState === 'connected') {
-                setStatus("transferring");
-            } else if (pc.connectionState === 'disconnected' || pc.connectionState === 'failed') {
-                if (status !== 'done') setStatus("error");
-            }
-        };
-
-        peerRef.current = pc;
-        return pc;
-    };
+    // Refined WebSocket Logic - Bypassing WebRTC for Guaranteed 100% NAT Traversal
+    // Without costly TURN servers, mobile carrier firewalls block P2P WebRTC.
+    // Relaying the file binary directly over our own WebSocket guarantees connection.
 
     // --- SENDER LOGIC ---
     const startSending = (selectedFile: File) => {
@@ -81,38 +59,22 @@ function InstantDropContent() {
         ws.onopen = () => console.log("WS Connected (Sender)");
 
         ws.onmessage = async (event) => {
-            const data = JSON.parse(event.data);
+            let data;
+            try { data = JSON.parse(event.data); } catch { return; }
 
             if (data.type === 'peer-connected') {
-                setStatus('connecting');
-                // The receiver connected, initialize P2P connection
-                const pc = setupPeerConnection('sender');
-
-                // Set up Data Channel
-                const dc = pc.createDataChannel('fileTransfer');
-                dataChannelRef.current = dc;
-
-                dc.onopen = () => sendFileData(selectedFile, dc);
-                dc.onclose = () => console.log("DataChannel Closed");
-
-                const offer = await pc.createOffer();
-                await pc.setLocalDescription(offer);
-                ws.send(JSON.stringify({ type: 'offer', sdp: offer }));
-            }
-            else if (data.type === 'answer' && peerRef.current) {
-                await peerRef.current.setRemoteDescription(new RTCSessionDescription(data.sdp));
-            }
-            else if (data.type === 'candidate' && peerRef.current) {
-                await peerRef.current.addIceCandidate(new RTCIceCandidate(data.candidate));
+                setStatus('transferring');
+                // The receiver connected, immediately stream data over the secure WebSocket
+                sendFileData(selectedFile, ws);
             }
         };
 
         ws.onclose = () => console.log("WS Closed");
     };
 
-    const sendFileData = (fileToSend: File, dc: RTCDataChannel) => {
-        // Send Metadata first
-        dc.send(JSON.stringify({
+    const sendFileData = (fileToSend: File, ws: WebSocket) => {
+        // Send Metadata first as JSON
+        ws.send(JSON.stringify({
             type: 'metadata',
             name: fileToSend.name,
             size: fileToSend.size,
@@ -129,17 +91,21 @@ function InstantDropContent() {
         reader.onload = e => {
             if (!e.target?.result) return;
             const buffer = e.target.result as ArrayBuffer;
-            dc.send(buffer);
+            ws.send(buffer);
             offset += buffer.byteLength;
 
             setProgress(Math.round((offset / fileToSend.size) * 100));
 
             if (offset < fileToSend.size) {
-                // Read next chunk
-                readSlice(offset);
+                // Read next chunk. Throttle to prevent overwhelming the Render WebSocket proxy
+                if (ws.bufferedAmount > 1024 * 1024 * 2) {
+                    setTimeout(() => readSlice(offset), 50);
+                } else {
+                    readSlice(offset);
+                }
             } else {
                 // Done sending
-                dc.send(JSON.stringify({ type: 'eof' }));
+                ws.send(JSON.stringify({ type: 'eof' }));
                 setStatus('done');
                 setTimeout(() => disconnectEverything(), 1000);
             }
@@ -163,54 +129,39 @@ function InstantDropContent() {
         const ws = new WebSocket(`${BACKEND_WS_URL}/ws/drop/${code}/receiver`);
         wsRef.current = ws;
 
+        ws.binaryType = 'arraybuffer';
         ws.onopen = () => console.log("WS Connected (Receiver)");
 
         ws.onmessage = async (event) => {
-            const data = JSON.parse(event.data);
+            if (typeof event.data === 'string') {
+                let msg;
+                try { msg = JSON.parse(event.data); } catch { return; }
 
-            if (data.type === 'offer') {
-                const pc = setupPeerConnection('receiver');
+                if (msg.type === 'peer-connected') {
+                    // Start rendering transfer UI
+                    setStatus('connecting');
+                } else if (msg.type === 'metadata') {
+                    setStatus('transferring');
+                    receiveMeta.current = msg;
+                    receiveBuffer.current = [];
+                    receivedBytes.current = 0;
+                } else if (msg.type === 'eof') {
+                    // Finalize file
+                    if (receiveMeta.current) {
+                        const blob = new Blob(receiveBuffer.current, { type: receiveMeta.current.type });
+                        setReceivedFile({ blob, name: receiveMeta.current.name });
+                        setStatus('done');
+                        disconnectEverything();
+                    }
+                }
+            } else {
+                // Raw ArrayBuffer binary chunk from WebSocket
+                receiveBuffer.current.push(event.data);
+                receivedBytes.current += event.data.byteLength;
 
-                pc.ondatachannel = (e) => {
-                    const dc = e.channel;
-                    dataChannelRef.current = dc;
-                    dc.binaryType = 'arraybuffer';
-
-                    dc.onmessage = (msgEvent) => {
-                        if (typeof msgEvent.data === 'string') {
-                            const msg = JSON.parse(msgEvent.data);
-                            if (msg.type === 'metadata') {
-                                receiveMeta.current = msg;
-                                receiveBuffer.current = [];
-                                receivedBytes.current = 0;
-                            } else if (msg.type === 'eof') {
-                                // Finalize file
-                                if (receiveMeta.current) {
-                                    const blob = new Blob(receiveBuffer.current, { type: receiveMeta.current.type });
-                                    setReceivedFile({ blob, name: receiveMeta.current.name });
-                                    setStatus('done');
-                                    disconnectEverything();
-                                }
-                            }
-                        } else {
-                            // Raw array buffer chunk
-                            receiveBuffer.current.push(msgEvent.data);
-                            receivedBytes.current += msgEvent.data.byteLength;
-
-                            if (receiveMeta.current?.size) {
-                                setProgress(Math.round((receivedBytes.current / receiveMeta.current.size) * 100));
-                            }
-                        }
-                    };
-                };
-
-                await pc.setRemoteDescription(new RTCSessionDescription(data.sdp));
-                const answer = await pc.createAnswer();
-                await pc.setLocalDescription(answer);
-                ws.send(JSON.stringify({ type: 'answer', sdp: answer }));
-            }
-            else if (data.type === 'candidate' && peerRef.current) {
-                await peerRef.current.addIceCandidate(new RTCIceCandidate(data.candidate));
+                if (receiveMeta.current?.size) {
+                    setProgress(Math.round((receivedBytes.current / receiveMeta.current.size) * 100));
+                }
             }
         };
 
