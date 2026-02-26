@@ -183,8 +183,12 @@ function InstantDropContent() {
     };
 
     useEffect(() => {
-        return () => disconnectEverything();
-    }, []);
+        if (initialRoom && status === 'disconnected') {
+            // Slight delay to ensure UI has mounted before firing WebSocket
+            const timer = setTimeout(() => joinRoom(initialRoom), 500);
+            return () => clearTimeout(timer);
+        }
+    }, [initialRoom]);
 
     const downloadFile = () => {
         if (!receivedFile) return;
@@ -270,9 +274,9 @@ function InstantDropContent() {
                         </div>
                     )}
 
-                    {mode === 'send' && (
+                    {mode !== 'select' && (
                         <div className="space-y-8 animate-in fade-in zoom-in-95 duration-300 w-full">
-                            {status === 'waiting' && (
+                            {mode === 'send' && status === 'waiting' && (
                                 <>
                                     <h2 className="text-2xl font-bold">Ready to Send</h2>
                                     <p className="text-muted-foreground">Scan the QR code with another device to download.</p>
@@ -294,26 +298,37 @@ function InstantDropContent() {
                                 </>
                             )}
 
-                            {(status === 'connecting' || status === 'transferring' || status === 'done') && (
+                            {(status === 'connecting' || status === 'transferring' || (status === 'done' && mode === 'send')) && (
                                 <div className="space-y-6 w-full max-w-md mx-auto">
                                     <div className="flex items-center justify-between p-4 bg-muted rounded-xl border mb-4">
                                         <div className="text-left">
-                                            <p className="font-semibold text-foreground truncate max-w-[200px]">{file?.name}</p>
-                                            <p className="text-xs text-muted-foreground">{file ? (file.size / 1024 / 1024).toFixed(2) : 0} MB</p>
+                                            <p className="font-semibold text-foreground truncate max-w-[200px]">
+                                                {file?.name || receiveMeta.current?.name || "Incoming File"}
+                                            </p>
+                                            <p className="text-xs text-muted-foreground">
+                                                {file ? (file.size / 1024 / 1024).toFixed(2) : (receiveMeta.current ? (receiveMeta.current.size / 1024 / 1024).toFixed(2) : 0)} MB
+                                            </p>
                                         </div>
                                     </div>
 
-                                    {status === 'connecting' && (
+                                    {status === 'connecting' && mode === 'send' && (
                                         <div className="flex items-center justify-center text-muted-foreground bg-secondary/10 p-4 rounded-xl">
                                             <Loader2 className="w-5 h-5 animate-spin mr-2" />
                                             Establishing P2P Connection...
                                         </div>
                                     )}
 
+                                    {status === 'connecting' && mode === 'receive' && (
+                                        <div className="flex items-center justify-center text-muted-foreground bg-secondary/10 p-4 rounded-xl">
+                                            <Loader2 className="w-5 h-5 animate-spin mr-2" />
+                                            Joining Room... Waiting for sender to begin transfer.
+                                        </div>
+                                    )}
+
                                     {status === 'transferring' && (
                                         <div className="space-y-2">
                                             <div className="flex justify-between text-sm font-medium">
-                                                <span>Transferring...</span>
+                                                <span>{mode === 'send' ? 'Sending...' : 'Receiving...'}</span>
                                                 <span>{progress}%</span>
                                             </div>
                                             <div className="w-full bg-muted rounded-full h-3">
@@ -325,7 +340,7 @@ function InstantDropContent() {
                                         </div>
                                     )}
 
-                                    {status === 'done' && (
+                                    {status === 'done' && mode === 'send' && (
                                         <div className="flex flex-col items-center justify-center p-6 bg-green-50 dark:bg-green-900/10 border border-green-200 dark:border-green-800 rounded-xl space-y-4">
                                             <CheckCircle className="w-12 h-12 text-green-500" />
                                             <p className="text-lg font-bold text-green-700 dark:text-green-400">Transfer Complete!</p>
