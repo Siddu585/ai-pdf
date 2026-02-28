@@ -15,7 +15,7 @@ export default function OCRScannerPage() {
     const [extractedText, setExtractedText] = useState<string | null>(null);
     const [copied, setCopied] = useState(false);
 
-    const { recordUsage, isPaywallOpen, setIsPaywallOpen, handleAction } = useUsage();
+    const { recordUsage, isPaywallOpen, setIsPaywallOpen, handleAction, deviceId } = useUsage();
 
     const fileInputRef = useRef<HTMLInputElement>(null);
 
@@ -35,6 +35,7 @@ export default function OCRScannerPage() {
         try {
             const formData = new FormData();
             formData.append("file", file);
+            formData.append("deviceId", deviceId);
 
             const response = await fetch((process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000") + "/api/ocr", {
                 method: "POST",

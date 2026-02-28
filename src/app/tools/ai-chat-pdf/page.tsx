@@ -14,7 +14,7 @@ export default function AIChatPage() {
     const [query, setQuery] = useState("");
     const [chatHistory, setChatHistory] = useState<{ role: 'user' | 'ai', content: string }[]>([]);
 
-    const { recordUsage, isPaywallOpen, setIsPaywallOpen, handleAction } = useUsage();
+    const { recordUsage, isPaywallOpen, setIsPaywallOpen, handleAction, deviceId } = useUsage();
 
     const fileInputRef = useRef<HTMLInputElement>(null);
 
@@ -40,6 +40,7 @@ export default function AIChatPage() {
             const formData = new FormData();
             formData.append("file", file);
             formData.append("query", userMsg);
+            formData.append("deviceId", deviceId);
 
             const response = await fetch((process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000") + "/api/chat-pdf", {
                 method: "POST",

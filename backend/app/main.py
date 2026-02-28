@@ -82,7 +82,64 @@ async def paddle_webhook(request: Request):
 
 # ----------------------------------------
 
-# ----------------------------------------
+# --- USAGE TRACKING (Hardened) ---
+import hashlib
+from datetime import datetime
+
+class UsageTracker:
+    def __init__(self):
+        self.usage_file = "usage_log.json"
+        self.data = self._load()
+
+    def _load(self):
+        if os.path.exists(self.usage_file):
+            try:
+                with open(self.usage_file, "r") as f:
+                    return json.load(f)
+            except: return {}
+        return {}
+
+    def _save(self):
+        try:
+            with open(self.usage_file, "w") as f:
+                json.dump(self.data, f)
+        except: pass
+
+    def get_key(self, request: Request, device_id: str = ""):
+        ip = request.client.host
+        # Hash IP + Device ID to create a unique tracker
+        return hashlib.sha256(f"{ip}:{device_id}".encode()).hexdigest()
+
+    def check_and_record(self, key: str):
+        today = datetime.now().strftime("%Y-%m-%d")
+        if today not in self.data:
+            self.data[today] = {}
+        
+        count = self.data[today].get(key, 0)
+        if count >= 5:
+            return False, count
+        
+        self.data[today][key] = count + 1
+        self._save()
+        return True, count + 1
+
+tracker = UsageTracker()
+
+@app.get("/api/usage/status")
+async def get_usage_status(request: Request, deviceId: str = ""):
+    key = tracker.get_key(request, deviceId)
+    today = datetime.now().strftime("%Y-%m-%d")
+    count = tracker.data.get(today, {}).get(key, 0)
+    return {"count": count, "limit": 5, "remaining": max(0, 5 - count)}
+
+@app.post("/api/usage/record")
+async def record_usage_endpoint(request: Request, data: dict):
+    deviceId = data.get("deviceId", "")
+    key = tracker.get_key(request, deviceId)
+    allowed, count = tracker.check_and_record(key)
+    return {"allowed": allowed, "count": count, "remaining": max(0, 5 - count)}
+
+# -------------------------------
 
 @app.websocket("/ws/drop/{room_id}/{client_type}")
 async def drop_websocket(websocket: WebSocket, room_id: str, client_type: str):
@@ -110,12 +167,15 @@ async def drop_websocket(websocket: WebSocket, room_id: str, client_type: str):
 
 @app.post("/api/compress-image")
 async def compress_image(
+    request: Request,
     file: UploadFile = File(...), 
     target_kb: int = Form(50),
-    x_pro_access: str = Form(None) # Optional Pro key from client
+    deviceId: str = Form("")
 ):
-    # Pro Status Detection
-    is_pro = (x_pro_access == "PRO_USER_ACTIVE") # Mock logic for now
+    key = tracker.get_key(request, deviceId)
+    allowed, count = tracker.check_and_record(key)
+    if not allowed:
+        raise HTTPException(status_code=402, detail="Daily limit reached. Upgrade to Pro for unlimited use!")
     
     try:
         # Save uploaded file to a temporary location with the CORRECT extension
@@ -144,9 +204,15 @@ async def compress_image(
 
 @app.post("/api/compress-pdf")
 async def compress_pdf(
+    request: Request,
     file: UploadFile = File(...), 
-    quality: int = Form(50)
+    quality: int = Form(50),
+    deviceId: str = Form("")
 ):
+    key = tracker.get_key(request, deviceId)
+    allowed, count = tracker.check_and_record(key)
+    if not allowed:
+        raise HTTPException(status_code=402, detail="Daily limit reached. Upgrade to Pro for unlimited use!")
     try:
         await file.seek(0)
         content = await file.read()
@@ -166,7 +232,15 @@ async def compress_pdf(
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.post("/api/ocr")
-async def ocr_scan(file: UploadFile = File(...)):
+async def ocr_scan(
+    request: Request,
+    file: UploadFile = File(...),
+    deviceId: str = Form("")
+):
+    key = tracker.get_key(request, deviceId)
+    allowed, count = tracker.check_and_record(key)
+    if not allowed:
+        raise HTTPException(status_code=402, detail="Daily limit reached. Upgrade to Pro for unlimited use!")
     try:
         await file.seek(0)
         content = await file.read()
@@ -181,7 +255,16 @@ async def ocr_scan(file: UploadFile = File(...)):
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.post("/api/chat-pdf")
-async def chat_pdf(file: UploadFile = File(...), query: str = Form(...)):
+async def chat_pdf(
+    request: Request,
+    file: UploadFile = File(...), 
+    query: str = Form(...),
+    deviceId: str = Form("")
+):
+    key = tracker.get_key(request, deviceId)
+    allowed, count = tracker.check_and_record(key)
+    if not allowed:
+        raise HTTPException(status_code=402, detail="Daily limit reached. Upgrade to Pro for unlimited use!")
     try:
         await file.seek(0)
         content = await file.read()
@@ -197,7 +280,16 @@ async def chat_pdf(file: UploadFile = File(...), query: str = Form(...)):
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.post("/api/organize-pdf")
-async def organize_pdf_endpoint(file: UploadFile = File(...), order: str = Form(...)):
+async def organize_pdf_endpoint(
+    request: Request,
+    file: UploadFile = File(...), 
+    order: str = Form(...),
+    deviceId: str = Form("")
+):
+    key = tracker.get_key(request, deviceId)
+    allowed, count = tracker.check_and_record(key)
+    if not allowed:
+        raise HTTPException(status_code=402, detail="Daily limit reached. Upgrade to Pro for unlimited use!")
     try:
         await file.seek(0)
         content = await file.read()
@@ -217,7 +309,15 @@ async def organize_pdf_endpoint(file: UploadFile = File(...), order: str = Form(
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.post("/api/extract-thumbnails")
-async def extract_thumbnails_endpoint(file: UploadFile = File(...)):
+async def extract_thumbnails_endpoint(
+    request: Request,
+    file: UploadFile = File(...),
+    deviceId: str = Form("")
+):
+    key = tracker.get_key(request, deviceId)
+    allowed, count = tracker.check_and_record(key)
+    if not allowed:
+        raise HTTPException(status_code=402, detail="Daily limit reached. Upgrade to Pro for unlimited use!")
     try:
         await file.seek(0)
         content = await file.read()
@@ -232,7 +332,15 @@ async def extract_thumbnails_endpoint(file: UploadFile = File(...)):
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.post("/api/image-to-pdf")
-async def image_to_pdf_endpoint(files: list[UploadFile] = File(...)):
+async def image_to_pdf_endpoint(
+    request: Request,
+    files: list[UploadFile] = File(...),
+    deviceId: str = Form("")
+):
+    key = tracker.get_key(request, deviceId)
+    allowed, count = tracker.check_and_record(key)
+    if not allowed:
+        raise HTTPException(status_code=402, detail="Daily limit reached. Upgrade to Pro for unlimited use!")
     try:
         temp_paths = []
         for file in files:
@@ -254,7 +362,16 @@ async def image_to_pdf_endpoint(files: list[UploadFile] = File(...)):
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.post("/api/split-pdf")
-async def split_pdf_endpoint(file: UploadFile = File(...), ranges: str = Form(...)):
+async def split_pdf_endpoint(
+    request: Request,
+    file: UploadFile = File(...), 
+    ranges: str = Form(...),
+    deviceId: str = Form("")
+):
+    key = tracker.get_key(request, deviceId)
+    allowed, count = tracker.check_and_record(key)
+    if not allowed:
+        raise HTTPException(status_code=402, detail="Daily limit reached. Upgrade to Pro for unlimited use!")
     try:
         await file.seek(0)
         content = await file.read()
@@ -280,7 +397,15 @@ async def split_pdf_endpoint(file: UploadFile = File(...), ranges: str = Form(..
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.post("/api/pdf-to-word")
-async def pdf_to_word_endpoint(file: UploadFile = File(...)):
+async def pdf_to_word_endpoint(
+    request: Request,
+    file: UploadFile = File(...),
+    deviceId: str = Form("")
+):
+    key = tracker.get_key(request, deviceId)
+    allowed, count = tracker.check_and_record(key)
+    if not allowed:
+        raise HTTPException(status_code=402, detail="Daily limit reached. Upgrade to Pro for unlimited use!")
     try:
         await file.seek(0)
         content = await file.read()
@@ -300,7 +425,15 @@ async def pdf_to_word_endpoint(file: UploadFile = File(...)):
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.post("/api/office-to-pdf")
-async def office_to_pdf_endpoint(file: UploadFile = File(...)):
+async def office_to_pdf_endpoint(
+    request: Request,
+    file: UploadFile = File(...),
+    deviceId: str = Form("")
+):
+    key = tracker.get_key(request, deviceId)
+    allowed, count = tracker.check_and_record(key)
+    if not allowed:
+        raise HTTPException(status_code=402, detail="Daily limit reached. Upgrade to Pro for unlimited use!")
     try:
         await file.seek(0)
         content = await file.read()
@@ -320,7 +453,16 @@ async def office_to_pdf_endpoint(file: UploadFile = File(...)):
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.post("/api/unlock-pdf")
-async def unlock_pdf_endpoint(file: UploadFile = File(...), password: str = Form("")):
+async def unlock_pdf_endpoint(
+    request: Request,
+    file: UploadFile = File(...), 
+    password: str = Form(""),
+    deviceId: str = Form("")
+):
+    key = tracker.get_key(request, deviceId)
+    allowed, count = tracker.check_and_record(key)
+    if not allowed:
+        raise HTTPException(status_code=402, detail="Daily limit reached. Upgrade to Pro for unlimited use!")
     try:
         await file.seek(0)
         content = await file.read()
@@ -340,7 +482,15 @@ async def unlock_pdf_endpoint(file: UploadFile = File(...), password: str = Form
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.post("/api/repair-pdf")
-async def repair_pdf_endpoint(file: UploadFile = File(...)):
+async def repair_pdf_endpoint(
+    request: Request,
+    file: UploadFile = File(...),
+    deviceId: str = Form("")
+):
+    key = tracker.get_key(request, deviceId)
+    allowed, count = tracker.check_and_record(key)
+    if not allowed:
+        raise HTTPException(status_code=402, detail="Daily limit reached. Upgrade to Pro for unlimited use!")
     try:
         await file.seek(0)
         content = await file.read()

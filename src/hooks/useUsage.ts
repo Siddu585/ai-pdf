@@ -1,65 +1,92 @@
 import { useState, useEffect } from "react";
 
-const USAGE_KEY = "pdf_ninja_daily_usage";
-const DAILY_LIMIT = 3;
-
-interface UsageData {
-    date: string;
-    count: number;
-}
+const API_BASE = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
 
 export function useUsage() {
     const [usageCount, setUsageCount] = useState(0);
+    const [deviceId, setDeviceId] = useState("");
     const [isPaywallOpen, setIsPaywallOpen] = useState(false);
+    const [loading, setLoading] = useState(true);
 
-    // Initialize from local storage on mount
+    // Generate a simple Hardware ID
     useEffect(() => {
-        const today = new Date().toISOString().split('T')[0]; // YYYY-MM-DD
-        const stored = localStorage.getItem(USAGE_KEY);
+        const generateDeviceId = () => {
+            const canvas = document.createElement('canvas');
+            const gl = canvas.getContext('webgl');
+            const debugInfo = gl?.getExtension('WEBGL_debug_renderer_info');
+            const renderer = debugInfo ? gl?.getParameter(debugInfo.UNMASKED_RENDERER_WEBGL) : "";
+            const components = [
+                navigator.userAgent,
+                screen.width,
+                screen.height,
+                new Date().getTimezoneOffset(),
+                renderer
+            ];
+            return btoa(components.join('|')).substring(0, 32);
+        };
 
-        if (stored) {
-            try {
-                const data: UsageData = JSON.parse(stored);
-                if (data.date === today) {
-                    setUsageCount(data.count);
-                } else {
-                    // It's a new day! Reset usage.
-                    localStorage.setItem(USAGE_KEY, JSON.stringify({ date: today, count: 0 }));
-                    setUsageCount(0);
-                }
-            } catch (e) {
-                // corrupted data, reset
-                localStorage.setItem(USAGE_KEY, JSON.stringify({ date: today, count: 0 }));
-            }
-        } else {
-            localStorage.setItem(USAGE_KEY, JSON.stringify({ date: today, count: 0 }));
-        }
+        const id = generateDeviceId();
+        setDeviceId(id);
+        fetchStatus(id);
     }, []);
-    // Temporarily disable the paywall limit for testing
-    const canUse = true;
 
-    const recordUsage = () => {
-        const today = new Date().toISOString().split('T')[0];
-        const newCount = usageCount + 1;
-        setUsageCount(newCount);
-        localStorage.setItem(USAGE_KEY, JSON.stringify({ date: today, count: newCount }));
+    const fetchStatus = async (id: string) => {
+        try {
+            const res = await fetch(`${API_BASE}/api/usage/status?deviceId=${id}`);
+            const data = await res.json();
+            setUsageCount(data.count || 0);
+        } catch (e) {
+            console.error("Failed to fetch usage status", e);
+        } finally {
+            setLoading(false);
+        }
     };
 
-    const handleAction = (actionCallback: () => void) => {
-        if (!canUse) {
-            setIsPaywallOpen(true);
-            return;
+    const canUse = usageCount < 5;
+
+    const recordUsage = async () => {
+        try {
+            const res = await fetch(`${API_BASE}/api/usage/record`, {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ deviceId })
+            });
+            const data = await res.json();
+            setUsageCount(data.count || usageCount + 1);
+        } catch (e) {
+            setUsageCount(prev => prev + 1);
         }
-        actionCallback();
+    };
+
+    const handleAction = async (actionCallback: () => void) => {
+        // Double check with backend before proceeding
+        try {
+            const res = await fetch(`${API_BASE}/api/usage/status?deviceId=${deviceId}`);
+            const data = await res.json();
+            if (data.remaining <= 0) {
+                setIsPaywallOpen(true);
+                return;
+            }
+            actionCallback();
+        } catch (e) {
+            // Fallback to local check if backend is unreachable
+            if (!canUse) {
+                setIsPaywallOpen(true);
+                return;
+            }
+            actionCallback();
+        }
     };
 
     return {
         usageCount,
+        deviceId,
         canUse,
-        remainingUses: Math.max(0, DAILY_LIMIT - usageCount),
+        remainingUses: Math.max(0, 5 - usageCount),
         recordUsage,
         isPaywallOpen,
         setIsPaywallOpen,
-        handleAction // Wrapper to check limit before executing logic
+        handleAction,
+        loading
     };
 }

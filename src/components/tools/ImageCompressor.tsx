@@ -16,7 +16,7 @@ export function ImageCompressor() {
     const [isCompressing, setIsCompressing] = useState(false);
     const [targetSizeKB, setTargetSizeKB] = useState<number>(50); // Default 50KB for exams
 
-    const { recordUsage, isPaywallOpen, setIsPaywallOpen, handleAction } = useUsage();
+    const { recordUsage, isPaywallOpen, setIsPaywallOpen, handleAction, deviceId } = useUsage();
 
     const fileInputRef = useRef<HTMLInputElement>(null);
 
@@ -57,6 +57,7 @@ export function ImageCompressor() {
             const formData = new FormData();
             formData.append("file", file);
             formData.append("target_kb", targetSizeKB.toString());
+            formData.append("deviceId", deviceId);
 
             const baseUrl = (process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000").trim().replace(/\/$/, "");
             const targetUrl = baseUrl + "/api/compress-image";

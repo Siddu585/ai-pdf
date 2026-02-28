@@ -12,8 +12,9 @@ export function PDFCompressor() {
     const [isCompressing, setIsCompressing] = useState(false);
     const [compressedPdfBytes, setCompressedPdfBytes] = useState<Uint8Array | null>(null);
     const [quality, setQuality] = useState(50); // General quality slider 0-100
+    const [progress, setProgress] = useState(0);
 
-    const { recordUsage, isPaywallOpen, setIsPaywallOpen, handleAction } = useUsage();
+    const { recordUsage, isPaywallOpen, setIsPaywallOpen, handleAction, deviceId } = useUsage();
 
     const fileInputRef = useRef<HTMLInputElement>(null);
 
@@ -45,27 +46,36 @@ export function PDFCompressor() {
     const compressPdf = async () => {
         if (!file) return;
         setIsCompressing(true);
+        setProgress(0);
+
+        // Realistic progress simulation
+        const progressInterval = setInterval(() => {
+            setProgress(prev => {
+                if (prev >= 90) return 90;
+                const increment = prev < 50 ? 5 : 2;
+                return prev + increment;
+            });
+        }, 800);
 
         try {
             const formData = new FormData();
             formData.append("file", file);
             formData.append("quality", quality.toString());
-
-            const controller = new AbortController();
-            const timeoutId = setTimeout(() => controller.abort(), 90000); // 90 seconds timeout
+            formData.append("deviceId", deviceId);
 
             const response = await fetch((process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000") + "/api/compress-pdf", {
                 method: "POST",
                 body: formData,
-                signal: controller.signal,
             });
-            clearTimeout(timeoutId);
+
+            clearInterval(progressInterval);
 
             if (!response.ok) {
                 const errText = await response.text();
                 throw new Error(errText || "Backend compression failed.");
             }
 
+            setProgress(100);
             const blob = await response.blob();
             const pdfArrayBuffer = await blob.arrayBuffer();
             const pdfBytes = new Uint8Array(pdfArrayBuffer);
@@ -74,16 +84,11 @@ export function PDFCompressor() {
             setCompressedPdfBytes(pdfBytes);
 
         } catch (error: any) {
-            const targetUrl = (process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000") + "/api/compress-pdf";
+            clearInterval(progressInterval);
             console.error("Compression error:", error);
             setIsCompressing(false);
-
-            setTimeout(() => {
-                const msg = error.name === "AbortError"
-                    ? "The compression took too long (90s limit). Please upload a smaller PDF."
-                    : `Failed to compress PDF!\nTried connecting to: ${targetUrl}\nExact Error: ${error.message}`;
-                alert(msg);
-            }, 50);
+            setProgress(0);
+            alert(`Failed to compress PDF: ${error.message}`);
         }
     };
 
@@ -162,8 +167,23 @@ export function PDFCompressor() {
                                 setQuality(val[0]);
                                 setCompressedPdfBytes(null);
                             }}
-                            className="mb-6"
+                            className="mb-8"
                         />
+
+                        {isCompressing && (
+                            <div className="space-y-2 mb-6 animate-in fade-in slide-in-from-bottom-2 duration-300">
+                                <div className="flex justify-between text-xs font-medium text-muted-foreground">
+                                    <span>Deep compressing...</span>
+                                    <span>{progress}%</span>
+                                </div>
+                                <div className="w-full h-2 bg-muted rounded-full overflow-hidden">
+                                    <div
+                                        className="h-full bg-secondary transition-all duration-500 ease-out"
+                                        style={{ width: `${progress}%` }}
+                                    />
+                                </div>
+                            </div>
+                        )}
 
                         {!compressedPdfBytes ? (
                             <Button

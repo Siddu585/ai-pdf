@@ -22,10 +22,11 @@ function InstantDropContent() {
 
     const [mode, setMode] = useState<'select' | 'send' | 'receive'>(initialRoom ? 'receive' : 'select');
     const [roomId, setRoomId] = useState<string>(initialRoom || "");
-    const [file, setFile] = useState<File | null>(null);
+    const [files, setFiles] = useState<File[]>([]);
+    const [currentFileIndex, setCurrentFileIndex] = useState(0);
     const [progress, setProgress] = useState(0);
     const [status, setStatus] = useState<"disconnected" | "waiting" | "connecting" | "transferring" | "done" | "error">("disconnected");
-    const [receivedFile, setReceivedFile] = useState<{ blob: Blob, name: string } | null>(null);
+    const [receivedFiles, setReceivedFiles] = useState<{ blob: Blob, name: string }[]>([]);
 
     const wsRef = useRef<WebSocket | null>(null);
     const peerRef = useRef<RTCPeerConnection | null>(null);
@@ -34,18 +35,15 @@ function InstantDropContent() {
 
     // For receiving
     const receiveBuffer = useRef<ArrayBuffer[]>([]);
-    const receiveMeta = useRef<{ name: string, size: number, type: string } | null>(null);
+    const receiveMeta = useRef<{ name: string, size: number, type: string, totalFiles?: number, currentIdx?: number } | null>(null);
     const receivedBytes = useRef(0);
 
     const fileInputRef = useRef<HTMLInputElement>(null);
 
-    // Refined WebSocket Logic - Bypassing WebRTC for Guaranteed 100% NAT Traversal
-    // Without costly TURN servers, mobile carrier firewalls block P2P WebRTC.
-    // Relaying the file binary directly over our own WebSocket guarantees connection.
-
     // --- SENDER LOGIC ---
-    const startSending = (selectedFile: File) => {
-        setFile(selectedFile);
+    const startSending = (selectedFiles: FileList) => {
+        const fileList = Array.from(selectedFiles);
+        setFiles(fileList);
         setMode('send');
         setStatus('waiting');
 
@@ -64,60 +62,69 @@ function InstantDropContent() {
 
             if (data.type === 'peer-connected') {
                 setStatus('transferring');
-                // The receiver connected, immediately stream data over the secure WebSocket
-                sendFileData(selectedFile, ws);
+                // Start sending the batch of files
+                sendBatch(fileList, ws);
             }
         };
 
         ws.onclose = () => console.log("WS Closed");
     };
 
-    const sendFileData = (fileToSend: File, ws: WebSocket) => {
-        // Send Metadata first as JSON
-        ws.send(JSON.stringify({
-            type: 'metadata',
-            name: fileToSend.name,
-            size: fileToSend.size,
-            fileType: fileToSend.type
-        }));
+    const sendBatch = async (fileList: File[], ws: WebSocket) => {
+        for (let i = 0; i < fileList.length; i++) {
+            setCurrentFileIndex(i);
+            await sendSingleFile(fileList[i], ws, i, fileList.length);
+        }
+        // All files sent
+        ws.send(JSON.stringify({ type: 'batch-eof' }));
+        setStatus('done');
+        setTimeout(() => disconnectEverything(), 1000);
+    };
 
-        let offset = 0;
-        const reader = new FileReader();
-        fileReaderRef.current = reader;
+    const sendSingleFile = (fileToSend: File, ws: WebSocket, index: number, total: number) => {
+        return new Promise<void>((resolve) => {
+            // Send Metadata first
+            ws.send(JSON.stringify({
+                type: 'metadata',
+                name: fileToSend.name,
+                size: fileToSend.size,
+                fileType: fileToSend.type,
+                currentIdx: index,
+                totalFiles: total
+            }));
 
-        reader.onerror = error => console.error("Error reading file:", error);
-        reader.onabort = () => console.log("File read aborted");
+            let offset = 0;
+            const reader = new FileReader();
+            fileReaderRef.current = reader;
 
-        reader.onload = e => {
-            if (!e.target?.result) return;
-            const buffer = e.target.result as ArrayBuffer;
-            ws.send(buffer);
-            offset += buffer.byteLength;
+            reader.onload = e => {
+                if (!e.target?.result) return;
+                const buffer = e.target.result as ArrayBuffer;
+                ws.send(buffer);
+                offset += buffer.byteLength;
 
-            setProgress(Math.round((offset / fileToSend.size) * 100));
+                setProgress(Math.round((offset / fileToSend.size) * 100));
 
-            if (offset < fileToSend.size) {
-                // Read next chunk. Throttle to prevent overwhelming the Render WebSocket proxy
-                if (ws.bufferedAmount > 1024 * 1024 * 2) {
-                    setTimeout(() => readSlice(offset), 50);
+                if (offset < fileToSend.size) {
+                    if (ws.bufferedAmount > 1024 * 1024 * 2) {
+                        setTimeout(() => readSlice(offset), 50);
+                    } else {
+                        readSlice(offset);
+                    }
                 } else {
-                    readSlice(offset);
+                    // Current file done
+                    ws.send(JSON.stringify({ type: 'file-eof' }));
+                    resolve();
                 }
-            } else {
-                // Done sending
-                ws.send(JSON.stringify({ type: 'eof' }));
-                setStatus('done');
-                setTimeout(() => disconnectEverything(), 1000);
-            }
-        };
+            };
 
-        const readSlice = (o: number) => {
-            const slice = fileToSend.slice(offset, o + CHUNK_SIZE);
-            reader.readAsArrayBuffer(slice);
-        };
+            const readSlice = (o: number) => {
+                const slice = fileToSend.slice(o, o + CHUNK_SIZE);
+                reader.readAsArrayBuffer(slice);
+            };
 
-        // Start reading
-        readSlice(0);
+            readSlice(0);
+        });
     };
 
     // --- RECEIVER LOGIC ---
@@ -130,81 +137,65 @@ function InstantDropContent() {
         wsRef.current = ws;
 
         ws.binaryType = 'arraybuffer';
-        ws.onopen = () => console.log("WS Connected (Receiver)");
 
         ws.onmessage = async (event) => {
             if (typeof event.data === 'string') {
                 let msg;
                 try { msg = JSON.parse(event.data); } catch { return; }
 
-                if (msg.type === 'peer-connected') {
-                    // Start rendering transfer UI
-                    setStatus('connecting');
-                } else if (msg.type === 'metadata') {
+                if (msg.type === 'metadata') {
                     setStatus('transferring');
                     receiveMeta.current = msg;
                     receiveBuffer.current = [];
                     receivedBytes.current = 0;
-                } else if (msg.type === 'eof') {
-                    // Finalize file
+                    setCurrentFileIndex(msg.currentIdx || 0);
+                } else if (msg.type === 'file-eof') {
                     if (receiveMeta.current) {
                         const blob = new Blob(receiveBuffer.current, { type: receiveMeta.current.type });
-                        setReceivedFile({ blob, name: receiveMeta.current.name });
-                        setStatus('done');
-                        disconnectEverything();
+                        setReceivedFiles(prev => [...prev, { blob, name: receiveMeta.current!.name }]);
                     }
+                } else if (msg.type === 'batch-eof') {
+                    setStatus('done');
+                    disconnectEverything();
                 }
             } else {
-                // Raw ArrayBuffer binary chunk from WebSocket
                 receiveBuffer.current.push(event.data);
                 receivedBytes.current += event.data.byteLength;
-
                 if (receiveMeta.current?.size) {
                     setProgress(Math.round((receivedBytes.current / receiveMeta.current.size) * 100));
                 }
             }
         };
-
-        ws.onclose = () => console.log("WS Closed");
     };
 
     const disconnectEverything = () => {
-        if (wsRef.current) {
-            wsRef.current.close();
-            wsRef.current = null;
-        }
-        if (dataChannelRef.current) {
-            dataChannelRef.current.close();
-        }
-        if (peerRef.current) {
-            peerRef.current.close();
-            peerRef.current = null;
-        }
+        if (wsRef.current) wsRef.current.close();
+        if (peerRef.current) peerRef.current.close();
     };
 
     useEffect(() => {
         if (initialRoom && status === 'disconnected') {
-            // Slight delay to ensure UI has mounted before firing WebSocket
             const timer = setTimeout(() => joinRoom(initialRoom), 500);
             return () => clearTimeout(timer);
         }
     }, [initialRoom]);
 
-    const downloadFile = () => {
-        if (!receivedFile) return;
-        const url = URL.createObjectURL(receivedFile.blob);
-        const a = document.createElement("a");
-        a.href = url;
-        a.download = receivedFile.name;
-        document.body.appendChild(a);
-        a.click();
-        document.body.removeChild(a);
-        URL.revokeObjectURL(url);
+    const downloadAll = () => {
+        receivedFiles.forEach(rf => {
+            const url = URL.createObjectURL(rf.blob);
+            const a = document.createElement("a");
+            a.href = url;
+            a.download = rf.name;
+            document.body.appendChild(a);
+            a.click();
+            document.body.removeChild(a);
+            URL.revokeObjectURL(url);
+        });
     };
 
     const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
         if (e.target.files && e.target.files.length > 0) {
-            startSending(e.target.files[0]);
+            startSending(e.target.files);
         }
     };
 
@@ -238,6 +229,8 @@ function InstantDropContent() {
                                     type="file"
                                     ref={fileInputRef}
                                     onChange={handleFileChange}
+                                    multiple
+                                    accept=".pdf,.doc,.docx,.xls,.xlsx,.txt,image/*"
                                     className="hidden"
                                 />
                             </div>
@@ -301,12 +294,18 @@ function InstantDropContent() {
                             {(status === 'connecting' || status === 'transferring' || (status === 'done' && mode === 'send')) && (
                                 <div className="space-y-6 w-full max-w-md mx-auto">
                                     <div className="flex items-center justify-between p-4 bg-muted rounded-xl border mb-4">
-                                        <div className="text-left">
-                                            <p className="font-semibold text-foreground truncate max-w-[200px]">
-                                                {file?.name || receiveMeta.current?.name || "Incoming File"}
+                                        <div className="text-left w-full">
+                                            <p className="font-semibold text-foreground truncate max-w-[300px]">
+                                                {mode === 'send'
+                                                    ? `Sending ${currentFileIndex + 1} of ${files.length}: ${files[currentFileIndex]?.name}`
+                                                    : `Receiving ${currentFileIndex + 1} of ${receiveMeta.current?.totalFiles || '?'}: ${receiveMeta.current?.name}`
+                                                }
                                             </p>
                                             <p className="text-xs text-muted-foreground">
-                                                {file ? (file.size / 1024 / 1024).toFixed(2) : (receiveMeta.current ? (receiveMeta.current.size / 1024 / 1024).toFixed(2) : 0)} MB
+                                                Batch size: {mode === 'send'
+                                                    ? (files.reduce((acc, f) => acc + f.size, 0) / 1024 / 1024).toFixed(2)
+                                                    : 'Calculating...'
+                                                } MB
                                             </p>
                                         </div>
                                     </div>
@@ -343,9 +342,9 @@ function InstantDropContent() {
                                     {status === 'done' && mode === 'send' && (
                                         <div className="flex flex-col items-center justify-center p-6 bg-green-50 dark:bg-green-900/10 border border-green-200 dark:border-green-800 rounded-xl space-y-4">
                                             <CheckCircle className="w-12 h-12 text-green-500" />
-                                            <p className="text-lg font-bold text-green-700 dark:text-green-400">Transfer Complete!</p>
-                                            <Button variant="outline" onClick={() => { setMode('select'); setStatus('disconnected'); setFile(null); }}>
-                                                Send Another
+                                            <p className="text-lg font-bold text-green-700 dark:text-green-400">All Files Transferred!</p>
+                                            <Button variant="outline" onClick={() => { setMode('select'); setStatus('disconnected'); setFiles([]); }}>
+                                                Send More
                                             </Button>
                                         </div>
                                     )}
@@ -398,19 +397,19 @@ function InstantDropContent() {
                                 </>
                             )}
 
-                            {status === 'done' && receivedFile && (
+                            {status === 'done' && receivedFiles.length > 0 && (
                                 <div className="flex flex-col items-center justify-center p-6 bg-green-50 dark:bg-green-900/10 border border-green-200 dark:border-green-800 rounded-xl space-y-4">
                                     <CheckCircle className="w-12 h-12 text-green-500" />
-                                    <h2 className="text-xl font-bold text-green-700 dark:text-green-400">File Received</h2>
-                                    <p className="text-sm text-muted-foreground truncate max-w-[250px]">{receivedFile.name}</p>
+                                    <h2 className="text-xl font-bold text-green-700 dark:text-green-400">{receivedFiles.length} Files Received</h2>
+                                    <p className="text-sm text-muted-foreground">The whole batch is ready for you!</p>
 
-                                    <Button className="w-full bg-green-600 hover:bg-green-700 text-white font-bold h-12" onClick={downloadFile}>
+                                    <Button className="w-full bg-green-600 hover:bg-green-700 text-white font-bold h-12" onClick={downloadAll}>
                                         <Download className="w-5 h-5 mr-2" />
-                                        Save to Device
+                                        Save All to Device
                                     </Button>
 
-                                    <Button variant="ghost" onClick={() => { setMode('select'); setStatus('disconnected'); setReceivedFile(null); }}>
-                                        Receive Another
+                                    <Button variant="ghost" onClick={() => { setMode('select'); setStatus('disconnected'); setReceivedFiles([]); }}>
+                                        Receive More
                                     </Button>
                                 </div>
                             )}

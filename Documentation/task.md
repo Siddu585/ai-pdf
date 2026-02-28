@@ -19,6 +19,9 @@
 ## Phase 4: Frontend Deployment (Vercel)
 - [x] Import the new GitHub repository into Vercel.
 - [x] Set the `NEXT_PUBLIC_API_URL` environment variable to the new Render backend URL.
+- [x] Verify Checkout flow on live domain.
+- [x] Centralize all project credentials in `CREDENTIAL_REGISTRY.md`.
+- [x] Google AdSense Site Verification & Review Requested (Live).
 - [x] Deploy the frontend.
 - [x] Verify the tools (Compress PDF, etc.) work correctly on the new live URL.
 

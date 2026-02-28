@@ -15,50 +15,77 @@ def run_iterative_pdf_compression(input_path: str, quality_slider: int) -> str:
     doc = fitz.open(input_path)
     
     try:
-        # If quality is <= 50, we actively target and downsample embedded images
-        if quality_slider <= 50:
-            # For quality slider 1-50, we map visual quality to 10-60 JPEG quality
-            jpeg_quality = max(10, int(quality_slider * 1.2))
+        # Determine target DPI and JPEG quality based on slider (1-100)
+        # 1-20: Ultra (72 DPI, 10-30 Quality)
+        # 21-50: Balanced (120 DPI, 40-60 Quality)
+        # 51-100: Quality (150-300 DPI, 70-90 Quality)
+        
+        target_dpi = 150
+        jpeg_quality = 60
+        
+        if quality_slider <= 20:
+            target_dpi = 72
+            jpeg_quality = 25
+        elif quality_slider <= 50:
+            target_dpi = 120
+            jpeg_quality = 50
+        elif quality_slider <= 80:
+            target_dpi = 150
+            jpeg_quality = 70
+        else:
+            target_dpi = 200
+            jpeg_quality = 85
+
+        # --- STEP 1: Image Downsampling ---
+        for page_num in range(len(doc)):
+            page = doc[page_num]
+            image_list = page.get_images()
             
-            for xref in range(1, doc.xref_length()):
-                if not doc.xref_is_image(xref):
-                    continue
-                    
+            for img_info in image_list:
+                xref = img_info[0]
                 try:
+                    # Extract the image from XREF
                     pix = fitz.Pixmap(doc, xref)
-                    # Convert to RGB (JPEG doesn't support transparency/alpha)
-                    if pix.n >= 4 or pix.alpha:
-                        pix = fitz.Pixmap(fitz.csRGB, pix)
-                        
-                    # Compress the image
-                    img_bytes = pix.tobytes("jpeg", jpg_quality=jpeg_quality)
-                    old_stream = doc.xref_stream(xref)
-                    old_len = len(old_stream) if old_stream else 0
                     
-                    # Only replace if the compressed version is actually smaller
-                    if len(img_bytes) < old_len or old_len == 0:
+                    # Target resolution for downsampling
+                    target_width = int(page.rect.width * target_dpi / 72)
+                    
+                    # Only downsample if the image is significantly larger than needed
+                    if pix.width > target_width * 1.5:
+                        # Resize based on scale factor
+                        scale = target_width / pix.width
+                        new_pix = fitz.Pixmap(pix, int(pix.width * scale), int(pix.height * scale))
+                        
+                        # Convert to RGB if needed
+                        if new_pix.n >= 4 or new_pix.alpha:
+                            new_pix = fitz.Pixmap(fitz.csRGB, new_pix)
+                        
+                        img_bytes = new_pix.tobytes("jpeg", jpg_quality=jpeg_quality)
                         doc.update_stream(xref, img_bytes)
                         doc.xref_set_key(xref, "Filter", "/DCTDecode")
-                        
-                        # Strip potentially conflicting decode parameters
                         try: doc.xref_set_key(xref, "DecodeParms", "null")
                         except: pass
-                        
-                    # Explicit forced garbage collection per image to prevent OOM
-                    pix = None
-                    img_bytes = None
-                except Exception as e:
-                    print(f"Skipping image {xref} due to error: {e}")
+                        new_pix = None
                     
-        # Run structural stripping using safe arguments
+                    pix = None
+                except Exception as e:
+                    print(f"Skipping scaling for image {xref}: {e}")
+
+        # --- STEP 2: Structural Optimization ---
+        # garbage=4: Remove duplicate streams, objects, and rebuild XREF table
+        # deflate=True: Force stream compression
+        # clean=True: Rebuild content streams for maximum space saving
+        # linear=True: Optimizes for web viewing
         save_options = {
-            "garbage": 3,          # maximum garbage collection (downgraded to 3 to prevent stream expansion)
-            "deflate": True,       # compress streams
+            "garbage": 4,          
+            "deflate": True,       
+            "clean": True,
+            "linear": True,
         }
         doc.save(out_path, **save_options)
             
     except Exception as e:
-        print(f"Error during aggressive compression: {e}")
+        print(f"Error during deep compression: {e}")
         doc.save(out_path)
     finally:
         doc.close()
