@@ -60,7 +60,7 @@ def run_iterative_pdf_compression(input_path: str, quality_slider: int) -> str:
                         if new_pix.n >= 4 or new_pix.alpha:
                             new_pix = fitz.Pixmap(fitz.csRGB, new_pix)
                         
-                        img_bytes = new_pix.tobytes("jpeg", jpg_quality=jpeg_quality)
+                        img_bytes = new_pix.tobytes("jpeg", jpeg_quality=jpeg_quality)
                         doc.update_stream(xref, img_bytes)
                         doc.xref_set_key(xref, "Filter", "/DCTDecode")
                         try: doc.xref_set_key(xref, "DecodeParms", "null")
