@@ -25,7 +25,7 @@ export function InstantDrop() {
                         </h2>
 
                         <p className="text-lg text-muted-foreground leading-relaxed">
-                            Drop a file on your laptop, scan the QR code with your phone, and download it instantly.
+                            Drop multiple files on your laptop, scan the QR code with your phone, and download it instantly on your phone instantly.
                             No USB cables, no email attachments, no cloud storage needed.
                             Everything streams securely over your local network.
                         </p>

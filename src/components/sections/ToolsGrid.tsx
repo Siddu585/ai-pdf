@@ -19,7 +19,7 @@ import { useRouter } from "next/navigation";
 const toolsList = [
     {
         id: "photo-resizer",
-        isLive: true,
+        isLive: false,
         title: "Exam Photo & Sig Resizer",
         description: "Compress photos to exactly 20KB, 50KB, or 100KB for exam forms.",
         icon: <FileImage className="w-8 h-8 text-blue-500" />,
@@ -28,7 +28,7 @@ const toolsList = [
     },
     {
         id: "pdf-compressor",
-        isLive: true,
+        isLive: false,
         title: "Compress PDF",
         description: "Reduce PDF size for email & uploads without losing quality.",
         icon: <FileText className="w-8 h-8 text-green-500" />,
@@ -36,7 +36,7 @@ const toolsList = [
     },
     {
         id: "merge-pdf",
-        isLive: true,
+        isLive: false,
         title: "Merge PDF",
         description: "Combine multiple PDFs into one document easily.",
         icon: <Layers className="w-8 h-8 text-purple-500" />,

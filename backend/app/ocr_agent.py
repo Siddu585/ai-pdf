@@ -35,11 +35,11 @@ def extract_text_from_image(image_path: str) -> str:
             messages=[{
                 "role": "user",
                 "content": [
-                    {"type": "text", "text": "Extract all text from this image exactly as written. Output exclusively the transcribed text and absolutely no conversational filler or intro."},
+                    {"type": "text", "text": "Extract all text from this image exactly as written. Provide only the transcribed text."},
                     {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{encoded_string}"}}
                 ]
             }],
-            model="meta-llama/llama-4-scout-17b-16e-instruct",
+            model="llama-3.2-11b-vision-preview",
             temperature=0.1
         )
         return chat_completion.choices[0].message.content

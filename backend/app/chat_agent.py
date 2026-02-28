@@ -36,14 +36,14 @@ def chat_with_pdf(pdf_path: str, user_query: str) -> str:
         chat = ChatGroq(
             temperature=0.1, 
             groq_api_key=api_key, 
-            model_name="llama-3.3-70b-versatile"
+            model_name="llama3-8b-8192"
         )
         
         messages = [
             SystemMessage(content=(
-                "You are an intelligent PDF assistant. Use the provided EXCERPT from the PDF "
-                "to answer the user's question directly and concisely.\n\n"
-                f"--- PDF EXCERPT ---\n{pdf_text[:15000]}\n--- END EXCERPT ---"
+                "You are a helpful assistant that answers questions based on the provided PDF text. "
+                "Keep your answers accurate and based ONLY on the document content."
+                f"\n\n--- DOCUMENT CONTENT ---\n{pdf_text[:12000]}\n--- END ---"
             )),
             HumanMessage(content=user_query),
         ]
