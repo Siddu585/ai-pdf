@@ -45,7 +45,7 @@ export default function ToolPage({ params }: { params: Promise<{ toolId: string 
 
                     <h1 className="text-4xl font-bold mb-4">{formatTitle(toolId)}</h1>
                     <p className="text-xl text-muted-foreground mb-12 max-w-2xl mx-auto">
-                        This tool utilizes advanced client-side processing algorithms that are currently being vetted for the AI Pdf production release. It guarantees 100% offline privacy without utilizing any servers.
+                        This tool utilizes advanced client-side processing algorithms that are currently being vetted for the Swap PDF production release. It guarantees 100% offline privacy without utilizing any servers.
                     </p>
 
                     <Button size="lg" onClick={handleFakeAction} disabled={isLoading} className="bg-secondary text-secondary-foreground text-lg px-8 py-6 h-auto">

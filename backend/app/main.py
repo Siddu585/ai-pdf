@@ -1,9 +1,11 @@
-from fastapi import FastAPI, UploadFile, File, Form, HTTPException, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, UploadFile, File, Form, HTTPException, WebSocket, WebSocketDisconnect, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, JSONResponse
+import stripe
 import tempfile
 import os
 import shutil
+import json
 
 from app.image_agent import run_iterative_image_compression
 from app.pdf_agent import run_iterative_pdf_compression, organize_pdf, extract_pdf_thumbnails, images_to_pdf, split_pdf, pdf_to_word, office_to_pdf, unlock_pdf, repair_pdf
@@ -20,6 +22,11 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+# Paddle Configuration
+PADDLE_API_KEY = os.getenv("PADDLE_API_KEY", "test_key")
+PADDLE_WEBHOOK_SECRET = os.getenv("PADDLE_WEBHOOK_SECRET", "whsec_placeholder")
+FRONTEND_URL = os.getenv("FRONTEND_URL", "https://www.swap-pdf.com")
 
 class ConnectionManager:
     def __init__(self):
@@ -49,6 +56,34 @@ class ConnectionManager:
 
 manager = ConnectionManager()
 
+# --- MONETIZATION ENDPOINTS (Phase 8) ---
+
+# --- MONETIZATION ENDPOINTS (Phase 8 - PADDLE) ---
+
+@app.post("/api/paddle/webhook")
+async def paddle_webhook(request: Request):
+    # Paddle sends webhooks as JSON
+    payload = await request.body()
+    # TODO: Use paddle-payment-python-sdk to verify signature
+    # Since the SDK installation is pending CI/CD, we'll implement a verified-ready listener
+    
+    try:
+        data = json.loads(payload)
+        event_type = data.get("event_type")
+        
+        if event_type == "transaction.completed":
+            print(f"Paddle Payment Successful: {data.get('data', {}).get('id')}")
+            # TODO: Add logic to mark the specific user (from custom_data) as PRO
+            
+        return {"status": "success"}
+    except Exception as e:
+        print(f"Webhook error: {str(e)}")
+        return JSONResponse(content={"error": str(e)}, status_code=400)
+
+# ----------------------------------------
+
+# ----------------------------------------
+
 @app.websocket("/ws/drop/{room_id}/{client_type}")
 async def drop_websocket(websocket: WebSocket, room_id: str, client_type: str):
     await manager.connect(websocket, room_id, client_type)
@@ -76,13 +111,22 @@ async def drop_websocket(websocket: WebSocket, room_id: str, client_type: str):
 @app.post("/api/compress-image")
 async def compress_image(
     file: UploadFile = File(...), 
-    target_kb: int = Form(50)
+    target_kb: int = Form(50),
+    x_pro_access: str = Form(None) # Optional Pro key from client
 ):
+    # Pro Status Detection
+    is_pro = (x_pro_access == "PRO_USER_ACTIVE") # Mock logic for now
+    
     try:
         # Save uploaded file to a temporary location with the CORRECT extension
         await file.seek(0)
         content = await file.read()
         ext = os.path.splitext(file.filename)[1] or ".png"
+        
+        # If not Pro, we could enforce a 5MB limit here
+        if not is_pro and len(content) > 5 * 1024 * 1024:
+             raise HTTPException(status_code=402, detail="File too large for free tier. Upgrade to Pro!")
+
         with tempfile.NamedTemporaryFile(delete=False, suffix=ext) as tmp:
             tmp.write(content)
             tmp_path = tmp.name

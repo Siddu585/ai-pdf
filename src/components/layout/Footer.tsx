@@ -13,7 +13,7 @@ export function Footer() {
                                 <FileDown className="h-5 w-5" />
                             </div>
                             <span className="font-bold text-xl tracking-tight text-foreground">
-                                AI Pdf
+                                Swap PDF
                             </span>
                         </Link>
                         <p className="text-sm text-muted-foreground mb-4">
@@ -53,7 +53,7 @@ export function Footer() {
                 </div>
 
                 <div className="mt-12 pt-8 border-t border-border flex flex-col md:flex-row items-center justify-between text-xs text-muted-foreground">
-                    <p>© {new Date().getFullYear()} AI Pdf. All rights reserved.</p>
+                    <p>© {new Date().getFullYear()} Swap PDF. All rights reserved.</p>
                     <p className="mt-2 md:mt-0">100% Client-Side Processing. We value your privacy.</p>
                 </div>
             </div>

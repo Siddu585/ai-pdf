@@ -1,8 +1,9 @@
 "use client";
 
-import { X, Lock, FileCheck, Zap, Download } from "lucide-react";
+import { X, Lock, FileCheck, Zap, Download, Loader2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
-import Link from "next/link";
+import { useState, useEffect } from "react";
+import { initializePaddle, Paddle } from "@paddle/paddle-js";
 
 interface PaywallModalProps {
     isOpen: boolean;
@@ -10,10 +11,55 @@ interface PaywallModalProps {
 }
 
 export function PaywallModal({ isOpen, onClose }: PaywallModalProps) {
+    const [isLoading, setIsLoading] = useState(false);
+    const [paddle, setPaddle] = useState<Paddle | null>(null);
+
+    // Initialize Paddle on mount
+    useEffect(() => {
+        initializePaddle({
+            environment: "production", // Live mode
+            token: process.env.NEXT_PUBLIC_PADDLE_CLIENT_TOKEN || "test_token",
+        }).then((paddleInstance: Paddle | undefined) => {
+            if (paddleInstance) setPaddle(paddleInstance);
+        });
+    }, []);
+
     if (!isOpen) return null;
 
-    // Use Stripe sandbox testing endpoint
-    const stripeCheckoutUrl = "https://billing.stripe.com/p/login/test_123";
+    const handleUpgrade = async () => {
+        if (!paddle) {
+            console.error("Paddle not initialized");
+            return;
+        }
+
+        setIsLoading(true);
+        try {
+            // Open Paddle Checkout Overlay
+            paddle.Checkout.open({
+                items: [
+                    {
+                        // Note: Paddle Billing v2 prefers priceId (pri_...)
+                        // If user provided a pro_ id, we map it here
+                        priceId: process.env.NEXT_PUBLIC_PADDLE_PRICE_ID || "pri_01jm123456789",
+                        quantity: 1,
+                    },
+                ],
+                customData: {
+                    userId: "anonymous_user",
+                },
+                settings: {
+                    displayMode: "overlay",
+                    theme: "light",
+                    locale: "en",
+                    successUrl: `${window.location.origin}/checkout/success`,
+                }
+            });
+        } catch (error) {
+            console.error("Paddle checkout error:", error);
+        } finally {
+            setIsLoading(false);
+        }
+    };
 
     return (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm p-4 animate-in fade-in duration-200">
@@ -39,7 +85,7 @@ export function PaywallModal({ isOpen, onClose }: PaywallModalProps) {
 
                 {/* Feature List */}
                 <div className="p-8 pb-6 bg-background">
-                    <h3 className="font-semibold text-lg mb-4">Upgrade to AI Pdf Pro</h3>
+                    <h3 className="font-semibold text-lg mb-4">Upgrade to Swap PDF Pro</h3>
                     <ul className="space-y-4 mb-8">
                         <li className="flex items-start gap-3">
                             <div className="bg-green-100 dark:bg-green-900/30 p-1 rounded-full shrink-0">
@@ -72,12 +118,21 @@ export function PaywallModal({ isOpen, onClose }: PaywallModalProps) {
 
                     {/* Action Buttons */}
                     <div className="space-y-3">
-                        <a href={stripeCheckoutUrl} target="_blank" rel="noreferrer" className="block w-full">
-                            <Button className="w-full h-12 text-base font-bold bg-indigo-600 hover:bg-indigo-700 text-white shadow-md shadow-indigo-500/20">
-                                Upgrade Now - $9/month
-                            </Button>
-                        </a>
-                        <Button variant="ghost" className="w-full h-12 text-muted-foreground" onClick={onClose}>
+                        <Button
+                            className="w-full h-12 text-base font-bold bg-indigo-600 hover:bg-indigo-700 text-white shadow-md shadow-indigo-500/20"
+                            onClick={handleUpgrade}
+                            disabled={isLoading}
+                        >
+                            {isLoading ? (
+                                <>
+                                    <Loader2 className="mr-2 h-5 w-5 animate-spin" />
+                                    Opening Checkout...
+                                </>
+                            ) : (
+                                "Upgrade Now - $5 Lifetime"
+                            )}
+                        </Button>
+                        <Button variant="ghost" className="w-full h-12 text-muted-foreground" onClick={onClose} disabled={isLoading}>
                             Maybe Later
                         </Button>
                     </div>

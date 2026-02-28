@@ -11,3 +11,4 @@ docx2pdf
 groq
 langchain-groq
 websockets
+paddle-payment-python-sdk

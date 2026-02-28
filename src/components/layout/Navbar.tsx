@@ -1,8 +1,12 @@
 import Link from "next/link";
 import { Button } from "@/components/ui/button";
 import { FileDown, Menu, ShieldCheck } from "lucide-react";
+import { useState } from "react";
+import { PaywallModal } from "./PaywallModal";
 
 export function Navbar() {
+  const [isPaywallOpen, setIsPaywallOpen] = useState(false);
+
   return (
     <nav className="sticky top-0 z-50 w-full border-b border-border/40 bg-background/95 backdrop-blur supports-[backdrop-filter]:bg-background/60">
       <div className="container mx-auto max-w-7xl flex h-16 items-center justify-between px-4 sm:px-8">
@@ -12,7 +16,7 @@ export function Navbar() {
               <FileDown className="h-5 w-5" />
             </div>
             <span className="font-bold text-xl tracking-tight text-foreground">
-              AI Pdf
+              Swap PDF
             </span>
           </Link>
           <div className="hidden md:flex items-center gap-6 ml-10 text-sm font-medium text-muted-foreground">
@@ -28,11 +32,12 @@ export function Navbar() {
         <div className="flex items-center gap-4">
           <div className="hidden sm:flex items-center gap-4">
             <Button variant="ghost" className="text-sm">Log in</Button>
-            <a href="https://billing.stripe.com/p/login/test_123" target="_blank" rel="noreferrer">
-              <Button className="bg-secondary text-secondary-foreground hover:bg-secondary/90 font-semibold shadow-sm transition-all">
-                Go Pro
-              </Button>
-            </a>
+            <Button
+              className="bg-secondary text-secondary-foreground hover:bg-secondary/90 font-semibold shadow-sm transition-all"
+              onClick={() => setIsPaywallOpen(true)}
+            >
+              Go Pro
+            </Button>
           </div>
           <Button variant="ghost" size="icon" className="md:hidden">
             <Menu className="h-5 w-5" />
@@ -40,6 +45,11 @@ export function Navbar() {
           </Button>
         </div>
       </div>
+
+      <PaywallModal
+        isOpen={isPaywallOpen}
+        onClose={() => setIsPaywallOpen(false)}
+      />
     </nav>
   );
 }

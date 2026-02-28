@@ -40,3 +40,19 @@
 - [x] Investigate GROQ_API_KEY error and determine it is a valid backend exception successfully being presented to the frontend.
 - [x] Autonomously inject the recovered `GROQ_API_KEY` into the live Render dashboard via a headless browser subagent session.
 - [x] Fix InstantDrop Receiver UI bug where scanning the QR code resulted in an endless spin due to hidden conditional wrapper components and missing auto-join logic.
+
+## Phase 7: Scaling & SEO (COMPLETED)
+- [x] Upgrade Render to the "Starter" tier ($19/mo) with 1GB RAM and 1 CPU.
+- [x] Remove hardcoded 15-page limit and re-enable Python multiprocessing in `pdf_agent.py`.
+- [x] Purchase a custom domain name (`swap-pdf.com`).
+- [x] Bind the custom domain to the Vercel frontend and configure DNS settings.
+- [x] Register the custom domain with Google Search Console and deploy a `sitemap.xml`.
+- [x] Inject dynamic SEO Metadata (Title Tags, Meta Descriptions) into Next.js pages.
+- [x] Perform global rebranding to "**Swap PDF**" across all UI components.
+- [x] Final production deployment verified on `https://www.swap-pdf.com`.
+
+## Phase 8: Monetization (V003 - NEXT)
+- [ ] Create a Google AdSense account and link it to the new custom domain.
+- [ ] Create a Stripe account for recurring subscriptions.
+- [ ] Implement Pro vs Free tier logic (e.g. higher file limits for Pro).
+- [ ] Integrate AdSense banner components into the tool UI.
