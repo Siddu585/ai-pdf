@@ -41,7 +41,9 @@ def chat_with_pdf(pdf_path: str, user_query: str) -> str:
         
         messages = [
             SystemMessage(content=(
-                "You are a helpful assistant that answers questions based on the provided PDF text. "
+                "You are a helpful PDF assistant. Format your response exactly like this example:\n"
+                "* **Topic Name**: Detailed explanation based on the PDF.\n\n"
+                "Use asterisks (*) for bullet points and bold headers. Do NOT use justified text formatting; keep items distinct. "
                 "Keep your answers accurate and based ONLY on the document content."
                 f"\n\n--- DOCUMENT CONTENT ---\n{pdf_text[:12000]}\n--- END ---"
             )),

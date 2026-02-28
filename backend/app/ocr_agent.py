@@ -35,7 +35,7 @@ def extract_text_from_image(image_path: str) -> str:
             messages=[{
                 "role": "user",
                 "content": [
-                    {"type": "text", "text": "Extract all text from this image exactly as written. Provide only the transcribed text."},
+                    {"type": "text", "text": "Extract all text from this image exactly as written. Maintain original line breaks and layout. Provide only the extracted text with no commentary."},
                     {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{encoded_string}"}}
                 ]
             }],
