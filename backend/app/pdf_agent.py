@@ -36,7 +36,7 @@ def run_iterative_pdf_compression(input_path: str, quality_slider: int) -> str:
             target_dpi = 200
             jpeg_quality = 85
 
-        # --- STEP 1: Aggressive Image Re-encoding & Downsampling ---
+        # --- STEP 1: Radical Image Re-encoding & Downsampling ---
         for page_num in range(len(doc)):
             page = doc[page_num]
             image_list = page.get_images()
@@ -49,40 +49,46 @@ def run_iterative_pdf_compression(input_path: str, quality_slider: int) -> str:
                     # Target pixel width based on page dimensions and target DPI
                     target_width = int(page.rect.width * target_dpi / 72)
                     
-                    # BRUTE FORCE: Always scale down if wider than target, 
-                    # OR if quality is low, re-encode anyway to JPEG to save space.
+                    # RADICAL: Scaling down if wider than target
                     if pix.width > target_width:
                         scale = target_width / pix.width
                         new_pix = fitz.Pixmap(pix, int(pix.width * scale), int(pix.height * scale))
                     else:
                         new_pix = pix
 
-                    # Convert to RGB (JPEG requirement)
+                    # Mandatory RGB conversion for JPEG encoding
                     if new_pix.n >= 4 or new_pix.alpha:
                         new_pix = fitz.Pixmap(fitz.csRGB, new_pix)
                     
-                    # Re-encode as JPEG with target quality level
+                    # Re-encode as highly compressed JPEG
                     img_bytes = new_pix.tobytes("jpeg", jpeg_quality=jpeg_quality)
                     
-                    # Only update if the new version is actually smaller than the original stream
-                    old_stream_len = len(doc.xref_stream(xref))
-                    if len(img_bytes) < old_stream_len:
-                        doc.update_stream(xref, img_bytes)
-                        doc.xref_set_key(xref, "Filter", "/DCTDecode")
-                        try: doc.xref_set_key(xref, "DecodeParms", "null")
-                        except: pass
+                    # UPDATE MANDATORY: For Ultra/Balanced, we skip the size comparison check 
+                    # because even if small, re-encoding can clean up internal PDF waste/bloat 
+                    # and merge duplicate image streams.
+                    doc.update_stream(xref, img_bytes)
+                    doc.xref_set_key(xref, "Filter", "/DCTDecode")
+                    try: doc.xref_set_key(xref, "DecodeParms", "null")
+                    except: pass
                     
                     new_pix = None
                     pix = None
                 except Exception as e:
-                    print(f"Skipping aggressive image {xref}: {e}")
+                    print(f"Skipping radical image {xref}: {e}")
 
         # --- STEP 2: Maximum Structural Stripping ---
+        # We manually subset fonts to save massive space in text-heavy docs
+        try:
+            doc.subset_fonts()
+        except:
+            pass
+
         save_options = {
             "garbage": 4,          
             "deflate": True,       
             "clean": True,
-            "pretty": False,       # Minimizes whitespace in PDF structure
+            "deflate_fonts": True, # Re-enabled now that OOM issues are mitigated
+            "pretty": False,       
         }
         doc.save(out_path, **save_options)
             
