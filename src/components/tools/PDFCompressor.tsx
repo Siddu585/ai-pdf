@@ -154,9 +154,14 @@ export function PDFCompressor() {
                     <div className="bg-background p-6 border border-border rounded-xl">
                         <div className="flex items-center justify-between mb-4">
                             <h4 className="font-medium">Compression Level</h4>
-                            <span className="text-sm text-muted-foreground">
-                                {quality < 33 ? "High Comp / Low Qual" : quality > 66 ? "Low Comp / High Qual" : "Balanced"}
-                            </span>
+                            <div className="flex flex-col items-end">
+                                <span className="text-sm font-bold text-secondary">
+                                    {quality}%
+                                </span>
+                                <span className="text-[10px] text-muted-foreground uppercase tracking-wider">
+                                    {quality <= 30 ? "Nuclear Mode" : quality < 50 ? "High Comp" : quality < 75 ? "Balanced" : "Low Comp"}
+                                </span>
+                            </div>
                         </div>
                         <Slider
                             defaultValue={[50]}
