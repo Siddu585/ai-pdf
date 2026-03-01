@@ -1,8 +1,8 @@
 import type { Metadata } from "next";
 
 export const metadata: Metadata = {
-    title: "Instant Drop | Free Cross Device File Transfer",
-    description: "Transfer files instantly from your PC to your mobile phone via secure WebSocket relay without USB cables.",
+    title: "Turbo Drop | Ultra Fast Cross-Device File Transfer",
+    description: "The market's fastest cross-device transfer. Move photos, videos, and large documents up to 200MB between Desktop to Mobile and Mobile to Mobile instantly.",
 };
 
 export default function Layout({ children }: { children: React.ReactNode }) {
