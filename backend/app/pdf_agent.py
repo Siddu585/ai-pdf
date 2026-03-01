@@ -16,34 +16,38 @@ def run_iterative_pdf_compression(input_path: str, quality_slider: int) -> str:
     
     try:
         # Determine target DPI and JPEG quality based on slider (1-100)
-        target_dpi = 150
-        jpeg_quality = 60
+        # 1-30: High Comp (72 DPI, 10-25 Quality, Greyscale)
+        # 31-60: Balanced (120 DPI, 40-50 Quality)
+        # 61-100: Quality (150-200 DPI, 70-85 Quality)
         
-        if quality_slider <= 20:
+        target_dpi = 150
+        jpg_quality = 60
+        force_grey = False
+        
+        if quality_slider <= 30:
             target_dpi = 72
-            jpeg_quality = 30 # v001 benchmark uses 10-60, but let's stay slightly higher to prevent blur
-        elif quality_slider <= 50:
+            jpg_quality = 15 # Ultra-low for 1/3 reduction
+            force_grey = True # Massive savings for textbooks
+        elif quality_slider <= 60:
             target_dpi = 120
-            jpeg_quality = 50
-        elif quality_slider <= 80:
+            jpg_quality = 40
+        elif quality_slider <= 85:
             target_dpi = 150
-            jpeg_quality = 70
+            jpg_quality = 70
         else:
             target_dpi = 200
-            jpeg_quality = 85
+            jpg_quality = 85
 
         # --- STEP 1: Exhaustive XREF Image Re-encoding ---
-        # Instead of iterating pages (which misses images in XObjects/Forms),
-        # we iterate every object in the PDF to find images.
         for xref in range(1, doc.xref_length()):
             if not doc.xref_is_image(xref):
                 continue
                 
             try:
                 pix = fitz.Pixmap(doc, xref)
-                # target width (assume ~8.5 inch width standard if page context unknown)
-                # most textbooks are ~600-800 pixels across at 72dpi
-                target_width = 1200 if quality_slider > 50 else 800
+                
+                # target width (standard 8.5" page at target DPI)
+                target_width = int(8.5 * target_dpi)
                 
                 # Downsample large images
                 if pix.width > target_width:
@@ -52,18 +56,24 @@ def run_iterative_pdf_compression(input_path: str, quality_slider: int) -> str:
                 else:
                     new_pix = pix
 
-                # Mandatory RGB for JPEG
-                if new_pix.n >= 4 or new_pix.alpha:
+                # Colorspace conversion
+                if force_grey:
+                    if new_pix.colorspace.n != 1: # If not already grey
+                        new_pix = fitz.Pixmap(fitz.csGRAY, new_pix)
+                elif new_pix.n >= 4 or new_pix.alpha:
+                    # JPEG mandatory RGB
                     new_pix = fitz.Pixmap(fitz.csRGB, new_pix)
                 
-                # Re-encode
-                img_bytes = new_pix.tobytes("jpeg", jpeg_quality=jpeg_quality)
+                # Re-encode using THE CORRECT KEYWORD: jpg_quality
+                img_bytes = new_pix.tobytes("jpeg", jpg_quality=jpg_quality)
                 
-                # Update stream
-                doc.update_stream(xref, img_bytes)
-                doc.xref_set_key(xref, "Filter", "/DCTDecode")
-                try: doc.xref_set_key(xref, "DecodeParms", "null")
-                except: pass
+                # Only replace if actually smaller
+                old_stream = doc.xref_stream(xref)
+                if old_stream and len(img_bytes) < len(old_stream):
+                    doc.update_stream(xref, img_bytes)
+                    doc.xref_set_key(xref, "Filter", "/DCTDecode")
+                    try: doc.xref_set_key(xref, "DecodeParms", "null")
+                    except: pass
                 
                 new_pix = None
                 pix = None
@@ -71,23 +81,18 @@ def run_iterative_pdf_compression(input_path: str, quality_slider: int) -> str:
                 print(f"Skipping internal image {xref}: {e}")
 
         # --- STEP 2: Structural Optimization (Standard Tier Safe) ---
-        # Clear metadata to remove hidden internal bloat
         doc.set_metadata({})
-        
-        # Subset fonts (replaces full fonts with just used characters)
-        try:
-            doc.subset_fonts()
-        except:
-            pass
+        try: doc.subset_fonts()
+        except: pass
 
         save_options = {
-            "garbage": 4,          # Maximum duplicate stream removal
-            "deflate": True,       # Compress all streams
-            "clean": True,         # Re-structure the PDF syntax (Standard Tier only)
-            "deflate_fonts": True, # Aggressive font compression
-            "deflate_images": True,# Ensure all images are deflated
-            "pretty": False,       # No spaces in structure
-            "incremental": False   # Force full rewrite for size reduction
+            "garbage": 4,          
+            "deflate": True,       
+            "clean": True,         
+            "deflate_fonts": True, 
+            "deflate_images": True,
+            "pretty": False,       
+            "incremental": False   
         }
         doc.save(out_path, **save_options)
             
