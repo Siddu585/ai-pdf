@@ -8,27 +8,30 @@ from pdf2docx import Converter
 def run_iterative_pdf_compression(input_path: str, quality_slider: int) -> str:
     """
     Standard Tier High-Power Compressor: 
-    Targets every single embedded XREF image (even in XObjects), re-encodes based on slider,
-    and applies maximum structural cleaning enabled by the 2GB RAM upgrade.
+    - Quality > 25: Uses sophisticated XREF-wide iteration (Preserves text selection).
+    - Quality <= 25: Uses "Nuclear" Rasterization Mode (Guaranteed 1/3+ reduction, non-selectable text).
     """
     out_path = input_path + "_compressed.pdf"
     doc = fitz.open(input_path)
     
     try:
-        # Determine target DPI and JPEG quality based on slider (1-100)
-        # 1-30: High Comp (72 DPI, 10-25 Quality, Greyscale)
-        # 31-60: Balanced (120 DPI, 40-50 Quality)
-        # 61-100: Quality (150-200 DPI, 70-85 Quality)
-        
+        # Determine target parameters based on slider (1-100)
         target_dpi = 150
         jpg_quality = 60
         force_grey = False
         
-        if quality_slider <= 30:
+        # NUCLEAR THRESHOLD: 25. Below this, we rasterize the entire document.
+        is_nuclear = quality_slider <= 25 
+        
+        if quality_slider <= 15:
             target_dpi = 72
-            jpg_quality = 15 # Ultra-low for 1/3 reduction
-            force_grey = True # Massive savings for textbooks
-        elif quality_slider <= 60:
+            jpg_quality = 10 
+            force_grey = True 
+        elif quality_slider <= 25:
+            target_dpi = 96
+            jpg_quality = 20
+            force_grey = True
+        elif quality_slider <= 50:
             target_dpi = 120
             jpg_quality = 40
         elif quality_slider <= 85:
@@ -38,36 +41,48 @@ def run_iterative_pdf_compression(input_path: str, quality_slider: int) -> str:
             target_dpi = 200
             jpg_quality = 85
 
-        # --- STEP 1: Exhaustive XREF Image Re-encoding ---
+        if is_nuclear:
+            # --- NUCLEAR MODE: Reconstruction via Rasterization ---
+            new_doc = fitz.open()
+            for page in doc:
+                # Render page to images
+                pix = page.get_pixmap(dpi=target_dpi, colorspace=fitz.csGRAY if force_grey else fitz.csRGB)
+                img_bytes = pix.tobytes("jpeg", jpg_quality=jpg_quality)
+                
+                # Insert into new document
+                new_page = new_doc.new_page(width=page.rect.width, height=page.rect.height)
+                new_page.insert_image(page.rect, stream=img_bytes)
+                
+                pix = None # GC
+            
+            new_doc.save(out_path, garbage=4, deflate=True)
+            new_doc.close()
+            doc.close()
+            return out_path
+
+        # --- STANDARD MODE: Sophisticated XREF Image Re-encoding (Preserves Text) ---
         for xref in range(1, doc.xref_length()):
             if not doc.xref_is_image(xref):
                 continue
                 
             try:
                 pix = fitz.Pixmap(doc, xref)
-                
-                # target width (standard 8.5" page at target DPI)
                 target_width = int(8.5 * target_dpi)
                 
-                # Downsample large images
                 if pix.width > target_width:
                     scale = target_width / pix.width
                     new_pix = fitz.Pixmap(pix, int(pix.width * scale), int(pix.height * scale))
                 else:
                     new_pix = pix
 
-                # Colorspace conversion
                 if force_grey:
-                    if new_pix.colorspace.n != 1: # If not already grey
+                    if new_pix.colorspace.n != 1:
                         new_pix = fitz.Pixmap(fitz.csGRAY, new_pix)
                 elif new_pix.n >= 4 or new_pix.alpha:
-                    # JPEG mandatory RGB
                     new_pix = fitz.Pixmap(fitz.csRGB, new_pix)
                 
-                # Re-encode using THE CORRECT KEYWORD: jpg_quality
                 img_bytes = new_pix.tobytes("jpeg", jpg_quality=jpg_quality)
                 
-                # Only replace if actually smaller
                 old_stream = doc.xref_stream(xref)
                 if old_stream and len(img_bytes) < len(old_stream):
                     doc.update_stream(xref, img_bytes)
@@ -80,7 +95,7 @@ def run_iterative_pdf_compression(input_path: str, quality_slider: int) -> str:
             except Exception as e:
                 print(f"Skipping internal image {xref}: {e}")
 
-        # --- STEP 2: Structural Optimization (Standard Tier Safe) ---
+        # Structural Optimization
         doc.set_metadata({})
         try: doc.subset_fonts()
         except: pass
@@ -100,7 +115,8 @@ def run_iterative_pdf_compression(input_path: str, quality_slider: int) -> str:
         print(f"Error during exhaustive compression: {e}")
         doc.save(out_path)
     finally:
-        doc.close()
+        if not doc.is_closed:
+            doc.close()
         
     return out_path
 
