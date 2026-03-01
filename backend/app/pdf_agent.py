@@ -15,24 +15,13 @@ def run_iterative_pdf_compression(input_path: str, quality_slider: int) -> str:
     doc = fitz.open(input_path)
     
     try:
-        if quality_slider <= 20:
-            target_dpi = 48
-            jpg_quality = 15
-            new_doc = fitz.open()
-            for page in doc:
-                pix = page.get_pixmap(dpi=target_dpi, colorspace=fitz.csGRAY)
-                img_bytes = pix.tobytes("jpeg", jpg_quality=jpg_quality)
-                new_page = new_doc.new_page(width=page.rect.width, height=page.rect.height)
-                new_page.insert_image(page.rect, stream=img_bytes)
-                pix = None
-            new_doc.save(out_path, garbage=4, deflate=True, clean=True)
-            new_doc.close()
-            doc.close()
-            return out_path
-
-        # --- PHASE 2: PERFECT STRUCTURAL v0 (FOR MAX CLARITY / 40% REDUCTION) ---
-        # This is the 'Perfect' method the user liked for quality.
-        if quality_slider <= 40: target_dpi, jpg_quality = 72, 20
+        # --- PHASE 1: PERFECT STRUCTURAL v0 (USER PREFERRED QUALITY) ---
+        # This method performs a reiterative loop over all XREFs, re-encoding them 
+        # at calibrated DPIs while preserving the sharpness of vector text.
+        
+        # Determine target DPI and JPEG quality based on slider (1-100)
+        if quality_slider <= 25: target_dpi, jpg_quality = 60, 15
+        elif quality_slider <= 40: target_dpi, jpg_quality = 72, 20
         elif quality_slider <= 60: target_dpi, jpg_quality = 120, 50
         elif quality_slider <= 85: target_dpi, jpg_quality = 150, 75
         else: target_dpi, jpg_quality = 300, 90
