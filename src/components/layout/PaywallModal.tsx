@@ -79,7 +79,7 @@ export function PaywallModal({ isOpen, onClose }: PaywallModalProps) {
                     </div>
                     <h2 className="text-2xl font-bold mb-2">Daily Limit Reached!</h2>
                     <p className="text-muted-foreground text-sm max-w-[280px] mx-auto">
-                        You have used your 3 free document conversions for today.
+                        You have used your free document conversions for today.
                     </p>
                 </div>
 

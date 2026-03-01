@@ -42,7 +42,7 @@ export function useUsage() {
         }
     };
 
-    const canUse = usageCount < 5;
+    const canUse = true; // usageCount < 5; (TEMPORARY BYPASS)
 
     const recordUsage = async () => {
         try {
@@ -82,7 +82,7 @@ export function useUsage() {
         usageCount,
         deviceId,
         canUse,
-        remainingUses: Math.max(0, 5 - usageCount),
+        remainingUses: 999, // Math.max(0, 5 - usageCount),
         recordUsage,
         isPaywallOpen,
         setIsPaywallOpen,

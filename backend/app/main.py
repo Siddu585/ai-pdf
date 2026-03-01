@@ -116,8 +116,9 @@ class UsageTracker:
             self.data[today] = {}
         
         count = self.data[today].get(key, 0)
-        if count >= 5:
-            return False, count
+        # TEMPORARY BYPASS FOR TESTING
+        # if count >= 5:
+        #     return False, count
         
         self.data[today][key] = count + 1
         self._save()
@@ -130,14 +131,15 @@ async def get_usage_status(request: Request, deviceId: str = ""):
     key = tracker.get_key(request, deviceId)
     today = datetime.now().strftime("%Y-%m-%d")
     count = tracker.data.get(today, {}).get(key, 0)
-    return {"count": count, "limit": 5, "remaining": max(0, 5 - count)}
+    # Always return high remaining for testing
+    return {"count": count, "limit": 999, "remaining": 999}
 
 @app.post("/api/usage/record")
 async def record_usage_endpoint(request: Request, data: dict):
     deviceId = data.get("deviceId", "")
     key = tracker.get_key(request, deviceId)
     allowed, count = tracker.check_and_record(key)
-    return {"allowed": allowed, "count": count, "remaining": max(0, 5 - count)}
+    return {"allowed": True, "count": count, "remaining": 999}
 
 # -------------------------------
 
