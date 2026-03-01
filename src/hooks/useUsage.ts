@@ -42,7 +42,7 @@ export function useUsage() {
         }
     };
 
-    const canUse = usageCount < 5;
+    const canUse = true; // usageCount < 5; (TEMPORARY FOR TESTING)
 
     const recordUsage = async () => {
         try {
@@ -63,10 +63,10 @@ export function useUsage() {
         try {
             const res = await fetch(`${API_BASE}/api/usage/status?deviceId=${deviceId}`);
             const data = await res.json();
-            if (data.remaining <= 0) {
-                setIsPaywallOpen(true);
-                return;
-            }
+            // if (data.remaining <= 0) {
+            //     setIsPaywallOpen(true);
+            //     return;
+            // }
             actionCallback();
         } catch (e) {
             // Fallback to local check if backend is unreachable
@@ -82,7 +82,7 @@ export function useUsage() {
         usageCount,
         deviceId,
         canUse,
-        remainingUses: Math.max(0, 5 - usageCount),
+        remainingUses: 999, // Math.max(0, 5 - usageCount),
         recordUsage,
         isPaywallOpen,
         setIsPaywallOpen,
