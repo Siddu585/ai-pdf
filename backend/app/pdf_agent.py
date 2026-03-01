@@ -15,47 +15,48 @@ def run_iterative_pdf_compression(input_path: str, quality_slider: int) -> str:
     doc = fitz.open(input_path)
     
     try:
-        # --- CALIBRATED v0 'PERFECT' REITERATIVE LOGIC ---
-        # User explicitly requested the quality and reduction of the v0 reiterative process.
-        
-        # Determine target DPI and JPEG quality based on slider (1-100)
-        # 1-20: Ultra (72 DPI, 15-25 Quality)
-        # 21-50: Balanced (120 DPI, 40-60 Quality)
-        # 51-100: Quality (150-300 DPI, 70-90 Quality)
-        target_dpi = 150
-        jpg_quality = 60
-        
-        if quality_slider <= 20: target_dpi, jpg_quality = 72, 20
-        elif quality_slider <= 40: target_dpi, jpg_quality = 96, 35
-        elif quality_slider <= 60: target_dpi, jpg_quality = 120, 55
+        if quality_slider <= 20:
+            target_dpi = 48
+            jpg_quality = 15
+            new_doc = fitz.open()
+            for page in doc:
+                pix = page.get_pixmap(dpi=target_dpi, colorspace=fitz.csGRAY)
+                img_bytes = pix.tobytes("jpeg", jpg_quality=jpg_quality)
+                new_page = new_doc.new_page(width=page.rect.width, height=page.rect.height)
+                new_page.insert_image(page.rect, stream=img_bytes)
+                pix = None
+            new_doc.save(out_path, garbage=4, deflate=True, clean=True)
+            new_doc.close()
+            doc.close()
+            return out_path
+
+        # --- PHASE 2: PERFECT STRUCTURAL v0 (FOR MAX CLARITY / 40% REDUCTION) ---
+        # This is the 'Perfect' method the user liked for quality.
+        if quality_slider <= 40: target_dpi, jpg_quality = 72, 20
+        elif quality_slider <= 60: target_dpi, jpg_quality = 120, 50
         elif quality_slider <= 85: target_dpi, jpg_quality = 150, 75
         else: target_dpi, jpg_quality = 300, 90
 
-        # --- REITERATIVE XREF LOOP (SAVES TEXT QUALITY) ---
+        # Reiterative XREF loop to shrink images while preserving text
         for xref in range(1, doc.xref_length()):
             if not doc.xref_is_image(xref):
                 continue
             try:
                 pix = fitz.Pixmap(doc, xref)
-                
-                # Normalize colorspace
                 if pix.colorspace.n > 3 or pix.colorspace.name in ("DeviceCMYK", "Indexed"):
                     pix = fitz.Pixmap(fitz.csRGB, pix)
 
-                # Calibrated scaling
                 target_width = int(8.5 * target_dpi)
                 if pix.width > target_width:
                     scale = target_width / pix.width
                     pix = fitz.Pixmap(pix, int(pix.width * scale), int(pix.height * scale))
 
-                # Grayscale for ultra compression targets
-                if quality_slider <= 30 and pix.colorspace.n != 1:
+                # Grayscale for ultra-balance
+                if quality_slider <= 50 and pix.colorspace.n != 1:
                     pix = fitz.Pixmap(fitz.csGRAY, pix)
                 
                 img_bytes = pix.tobytes("jpeg", jpg_quality=jpg_quality)
                 old_stream = doc.xref_stream(xref)
-                
-                # Reiterative update: only if it's a win
                 if old_stream and len(img_bytes) < len(old_stream):
                     doc.update_stream(xref, img_bytes)
                     doc.xref_set_key(xref, "Filter", "/DCTDecode")
@@ -64,20 +65,29 @@ def run_iterative_pdf_compression(input_path: str, quality_slider: int) -> str:
             except: pass
 
         doc.set_metadata({})
-        # Maximum structural stripping to hit 1/3rd target
+        # Prune redundant structural data (bookmarks, XMPs, etc)
+        if quality_slider <= 50:
+            try: doc.set_outline([])
+            except: pass
+
         doc.save(out_path, garbage=4, deflate=True, clean=True, deflate_fonts=True, deflate_images=True)
         doc.close()
         return out_path
-
-        doc.set_metadata({})
-        doc.save(out_path, garbage=4, deflate=True, clean=True, deflate_fonts=True, deflate_images=True)
             
     except Exception as e:
-        print(f"Error during exhaustive compression: {e}")
-        doc.save(out_path)
+        print(f"Error during compression: {e}")
+        try: 
+            if doc and not doc.is_closed:
+                doc.save(out_path)
+        except: pass
+        return out_path
     finally:
-        if not doc.is_closed:
-            doc.close()
+        try:
+            if doc is not None:
+                # Direct C-binding check to avoid ValueError
+                if hasattr(doc, "is_closed") and not doc.is_closed:
+                    doc.close()
+        except: pass
         
     return out_path
 
