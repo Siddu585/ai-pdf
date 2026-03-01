@@ -36,7 +36,7 @@ def run_iterative_pdf_compression(input_path: str, quality_slider: int) -> str:
             target_dpi = 200
             jpeg_quality = 85
 
-        # --- STEP 1: Image Downsampling ---
+        # --- STEP 1: Aggressive Image Re-encoding & Downsampling ---
         for page_num in range(len(doc)):
             page = doc[page_num]
             image_list = page.get_images()
@@ -44,43 +44,45 @@ def run_iterative_pdf_compression(input_path: str, quality_slider: int) -> str:
             for img_info in image_list:
                 xref = img_info[0]
                 try:
-                    # Extract the image from XREF
                     pix = fitz.Pixmap(doc, xref)
                     
-                    # Target resolution for downsampling
+                    # Target pixel width based on page dimensions and target DPI
                     target_width = int(page.rect.width * target_dpi / 72)
                     
-                    # Only downsample if the image is significantly larger than needed
-                    if pix.width > target_width * 1.5:
-                        # Resize based on scale factor
+                    # BRUTE FORCE: Always scale down if wider than target, 
+                    # OR if quality is low, re-encode anyway to JPEG to save space.
+                    if pix.width > target_width:
                         scale = target_width / pix.width
                         new_pix = fitz.Pixmap(pix, int(pix.width * scale), int(pix.height * scale))
-                        
-                        # Convert to RGB if needed
-                        if new_pix.n >= 4 or new_pix.alpha:
-                            new_pix = fitz.Pixmap(fitz.csRGB, new_pix)
-                        
-                        img_bytes = new_pix.tobytes("jpeg", jpeg_quality=jpeg_quality)
+                    else:
+                        new_pix = pix
+
+                    # Convert to RGB (JPEG requirement)
+                    if new_pix.n >= 4 or new_pix.alpha:
+                        new_pix = fitz.Pixmap(fitz.csRGB, new_pix)
+                    
+                    # Re-encode as JPEG with target quality level
+                    img_bytes = new_pix.tobytes("jpeg", jpeg_quality=jpeg_quality)
+                    
+                    # Only update if the new version is actually smaller than the original stream
+                    old_stream_len = len(doc.xref_stream(xref))
+                    if len(img_bytes) < old_stream_len:
                         doc.update_stream(xref, img_bytes)
                         doc.xref_set_key(xref, "Filter", "/DCTDecode")
                         try: doc.xref_set_key(xref, "DecodeParms", "null")
                         except: pass
-                        new_pix = None
                     
+                    new_pix = None
                     pix = None
                 except Exception as e:
-                    print(f"Skipping scaling for image {xref}: {e}")
+                    print(f"Skipping aggressive image {xref}: {e}")
 
-        # --- STEP 2: Structural Optimization ---
-        # garbage=4: Remove duplicate streams, objects, and rebuild XREF table
-        # deflate=True: Force stream compression
-        # clean=True: Rebuild content streams for maximum space saving
-        # linear=True: Optimizes for web viewing
+        # --- STEP 2: Maximum Structural Stripping ---
         save_options = {
             "garbage": 4,          
             "deflate": True,       
             "clean": True,
-            "linear": True,
+            "pretty": False,       # Minimizes whitespace in PDF structure
         }
         doc.save(out_path, **save_options)
             
