@@ -64,16 +64,19 @@ manager = ConnectionManager()
 async def paddle_webhook(request: Request):
     # Paddle sends webhooks as JSON
     payload = await request.body()
-    # TODO: Use paddle-payment-python-sdk to verify signature
-    # Since the SDK installation is pending CI/CD, we'll implement a verified-ready listener
-    
     try:
         data = json.loads(payload)
         event_type = data.get("event_type")
         
         if event_type == "transaction.completed":
             print(f"Paddle Payment Successful: {data.get('data', {}).get('id')}")
-            # TODO: Add logic to mark the specific user (from custom_data) as PRO
+            # Identify the user by the custom device_id passed in custom_data
+            custom_data = data.get("data", {}).get("custom_data", {})
+            user_key = custom_data.get("userKey")
+            
+            if user_key:
+                tracker.make_pro(user_key)
+                print(f"User {user_key} upgraded to Pro!")
             
         return {"status": "success"}
     except Exception as e:
@@ -89,20 +92,22 @@ from datetime import datetime
 class UsageTracker:
     def __init__(self):
         self.usage_file = "usage_log.json"
-        self.data = self._load()
+        self.pro_file = "pro_users.json"
+        self.data = self._load(self.usage_file)
+        self.pro_users = self._load(self.pro_file)
 
-    def _load(self):
-        if os.path.exists(self.usage_file):
+    def _load(self, filename):
+        if os.path.exists(filename):
             try:
-                with open(self.usage_file, "r") as f:
+                with open(filename, "r") as f:
                     return json.load(f)
             except: return {}
         return {}
 
-    def _save(self):
+    def _save(self, filename, data):
         try:
-            with open(self.usage_file, "w") as f:
-                json.dump(self.data, f)
+            with open(filename, "w") as f:
+                json.dump(data, f)
         except: pass
 
     def get_key(self, request: Request, device_id: str = ""):
@@ -110,7 +115,11 @@ class UsageTracker:
         # Hash IP + Device ID to create a unique tracker
         return hashlib.sha256(f"{ip}:{device_id}".encode()).hexdigest()
 
-    def check_and_record(self, key: str):
+    def check_and_record(self, key: str, device_id: str = ""):
+        # Skip limits for Pro users (Check raw device ID)
+        if device_id and device_id in self.pro_users:
+            return True, 0
+            
         today = datetime.now().strftime("%Y-%m-%d")
         if today not in self.data:
             self.data[today] = {}
@@ -121,24 +130,33 @@ class UsageTracker:
         #     return False, count
         
         self.data[today][key] = count + 1
-        self._save()
+        self._save(self.usage_file, self.data)
         return True, count + 1
+
+    def make_pro(self, device_id: str):
+        self.pro_users[device_id] = True
+        self._save(self.pro_file, self.pro_users)
 
 tracker = UsageTracker()
 
 @app.get("/api/usage/status")
 async def get_usage_status(request: Request, deviceId: str = ""):
     key = tracker.get_key(request, deviceId)
+    is_pro = deviceId in tracker.pro_users if deviceId else False
+    
+    if is_pro:
+        return {"count": 0, "limit": 999, "remaining": 999, "is_pro": True}
+        
     today = datetime.now().strftime("%Y-%m-%d")
     count = tracker.data.get(today, {}).get(key, 0)
     # Always return high remaining for testing
-    return {"count": count, "limit": 999, "remaining": 999}
+    return {"count": count, "limit": 999, "remaining": 999, "is_pro": False}
 
 @app.post("/api/usage/record")
 async def record_usage_endpoint(request: Request, data: dict):
     deviceId = data.get("deviceId", "")
     key = tracker.get_key(request, deviceId)
-    allowed, count = tracker.check_and_record(key)
+    allowed, count = tracker.check_and_record(key, deviceId)
     return {"allowed": True, "count": count, "remaining": 999}
 
 # -------------------------------

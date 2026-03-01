@@ -6,6 +6,7 @@ export function useUsage() {
     const [usageCount, setUsageCount] = useState(0);
     const [deviceId, setDeviceId] = useState("");
     const [isPaywallOpen, setIsPaywallOpen] = useState(false);
+    const [isPro, setIsPro] = useState(false);
     const [loading, setLoading] = useState(true);
 
     // Generate a simple Hardware ID
@@ -35,6 +36,7 @@ export function useUsage() {
             const res = await fetch(`${API_BASE}/api/usage/status?deviceId=${id}`);
             const data = await res.json();
             setUsageCount(data.count || 0);
+            setIsPro(data.is_pro || false);
         } catch (e) {
             console.error("Failed to fetch usage status", e);
         } finally {
@@ -42,7 +44,7 @@ export function useUsage() {
         }
     };
 
-    const canUse = true; // usageCount < 5; (TEMPORARY BYPASS)
+    const canUse = isPro || usageCount < 5;
 
     const recordUsage = async () => {
         try {
@@ -53,8 +55,9 @@ export function useUsage() {
             });
             const data = await res.json();
             setUsageCount(data.count || usageCount + 1);
+            setIsPro(data.is_pro || isPro);
         } catch (e) {
-            setUsageCount(prev => prev + 1);
+            if (!isPro) setUsageCount(prev => prev + 1);
         }
     };
 

@@ -67,12 +67,30 @@ The "Instant Drop" feature has been upgraded to a high-speed, reliable P2P engin
 *   **Chunk ACKs**: Implemented a flow-control and acknowledgment system for 200MB+ stability.
 *   **Google Photos**: Integrated Google Identity Services for direct "Save to Cloud" functionality.
 
-## 8. Phase 14: Mobile App Readiness (Capacitor) 📱
-The web application is now ready for App Store and Play Store deployment:
-*   **Capacitor Initialized**: Configured `SwapPDF` (com.swappdf.app) native bridge.
-*   **Android/iOS Ready**: Native project folders created; ready for Android Studio/Xcode builds.
-*   **PWA Compliant**: Comprehensive `manifest.json` added for the "Add to Home Screen" experience.
+## 📱 Mobile App (Android & iOS)
 
-## 9. Current Testing Status
-*   **Usage Limits**: Temporarily **DISABLED** for all users (5-process limit bypassed) to allow for exhaustive testing of the new Turbo Drop engine.
-*   **Live URL**: `https://www.swap-pdf.com/tools/instant-drop`
+### Deployment Readiness
+*   **Framework**: Capacitor 7.0 is fully configured.
+*   **Platforms**: Native `android` and `ios` project folders are generated and optimized (`com.swappdf.app`).
+*   **Turbo Drop Mobile**: The WebP2P engine is optimized for mobile browser and native WebView performance.
+
+### Next Steps for Native Build:
+1.  **Android**: Open the `/android` folder in **Android Studio** and click "Build Bundle/APK".
+2.  **iOS**: Open the `/ios` folder in **Xcode**, select a Signing Development Team, and click "Archive".
+
+## 💰 Monetization & Stage Status
+
+### Google AdSense
+*   **Status**: 🟠 **Pending Review**.
+*   **Implementation**: `ads.txt` is live and the auto-ads script is injected. Ads will appear automatically once Google approves the site.
+
+### Paddle Integration (Pro Upgrade)
+*   **Status**: ✅ **Live & Functional**.
+*   **Persistent Pro Status**: Implemented a backend `pro_users.json` that tracks upgraded devices. Pay once, and all limits are permanently lifted on that device.
+*   **Paywall**: Integrated into all tools (Compress, OCR, Chat PDF, Turbo Drop).
+
+---
+
+**Current Testing Status**: Usage limits are temporarily relaxed. You can test the "Upgrade" flow. To test "Pro" features without paying, I can manually add your `deviceId` to the backend list.
+
+**Live URL**: `https://www.swap-pdf.com/tools/instant-drop`

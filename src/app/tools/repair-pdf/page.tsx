@@ -14,7 +14,7 @@ export default function RepairPDF() {
     const [downloadUrl, setDownloadUrl] = useState<string | null>(null);
     const [downloadName, setDownloadName] = useState<string>("");
 
-    const { recordUsage, isPaywallOpen, setIsPaywallOpen, handleAction } = useUsage();
+    const { recordUsage, isPaywallOpen, setIsPaywallOpen, handleAction, deviceId } = useUsage();
 
     const fileInputRef = useRef<HTMLInputElement>(null);
 
@@ -141,7 +141,7 @@ export default function RepairPDF() {
             </main>
 
             <Footer />
-            <PaywallModal isOpen={isPaywallOpen} onClose={() => setIsPaywallOpen(false)} />
+            <PaywallModal isOpen={isPaywallOpen} onClose={() => setIsPaywallOpen(false)} deviceId={deviceId} />
         </div>
     );
 }

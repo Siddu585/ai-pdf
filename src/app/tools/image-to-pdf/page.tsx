@@ -19,7 +19,7 @@ export default function ImageToPDF() {
     const [isConverting, setIsConverting] = useState(false);
     const [pdfUrl, setPdfUrl] = useState<string | null>(null);
 
-    const { recordUsage, isPaywallOpen, setIsPaywallOpen, handleAction } = useUsage();
+    const { recordUsage, isPaywallOpen, setIsPaywallOpen, handleAction, deviceId } = useUsage();
 
     const fileInputRef = useRef<HTMLInputElement>(null);
 
@@ -205,7 +205,7 @@ export default function ImageToPDF() {
             </main>
 
             <Footer />
-            <PaywallModal isOpen={isPaywallOpen} onClose={() => setIsPaywallOpen(false)} />
+            <PaywallModal isOpen={isPaywallOpen} onClose={() => setIsPaywallOpen(false)} deviceId={deviceId} />
         </div>
     );
 }

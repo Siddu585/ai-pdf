@@ -147,7 +147,7 @@ export default function OCRScannerPage() {
             </main>
 
             <Footer />
-            <PaywallModal isOpen={isPaywallOpen} onClose={() => setIsPaywallOpen(false)} />
+            <PaywallModal isOpen={isPaywallOpen} onClose={() => setIsPaywallOpen(false)} deviceId={deviceId} />
         </div>
     );
 }

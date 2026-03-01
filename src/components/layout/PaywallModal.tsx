@@ -8,9 +8,10 @@ import { initializePaddle, Paddle } from "@paddle/paddle-js";
 interface PaywallModalProps {
     isOpen: boolean;
     onClose: () => void;
+    deviceId: string;
 }
 
-export function PaywallModal({ isOpen, onClose }: PaywallModalProps) {
+export function PaywallModal({ isOpen, onClose, deviceId }: PaywallModalProps) {
     const [isLoading, setIsLoading] = useState(false);
     const [paddle, setPaddle] = useState<Paddle | null>(null);
 
@@ -38,14 +39,12 @@ export function PaywallModal({ isOpen, onClose }: PaywallModalProps) {
             paddle.Checkout.open({
                 items: [
                     {
-                        // Note: Paddle Billing v2 prefers priceId (pri_...)
-                        // If user provided a pro_ id, we map it here
                         priceId: process.env.NEXT_PUBLIC_PADDLE_PRICE_ID || "pri_01jm123456789",
                         quantity: 1,
                     },
                 ],
                 customData: {
-                    userId: "anonymous_user",
+                    userKey: deviceId,
                 },
                 settings: {
                     displayMode: "overlay",

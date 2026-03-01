@@ -7,6 +7,8 @@ import { UploadCloud, Download, CheckCircle, Smartphone, Loader2 } from "lucide-
 import { Button } from "@/components/ui/button";
 import { Navbar } from "@/components/layout/Navbar";
 import { Footer } from "@/components/layout/Footer";
+import { useUsage } from "@/hooks/useUsage";
+import { PaywallModal } from "@/components/layout/PaywallModal";
 
 // Optimized Chunk size for DataChannel (64KB)
 const CHUNK_SIZE = 64 * 1024;
@@ -30,6 +32,7 @@ function InstantDropContent() {
 
     const [mode, setMode] = useState<'select' | 'send' | 'receive'>(initialRoom ? 'receive' : 'select');
     const [roomId, setRoomId] = useState<string>(initialRoom || "");
+    const { recordUsage, isPaywallOpen, setIsPaywallOpen, handleAction, deviceId } = useUsage();
     const [files, setFiles] = useState<File[]>([]);
     const [currentFileIndex, setCurrentFileIndex] = useState(0);
     const [progress, setProgress] = useState(0);
@@ -327,7 +330,7 @@ function InstantDropContent() {
                         <div className="space-y-8 w-full">
                             <div
                                 className="border-2 border-dashed border-border rounded-xl p-12 text-center hover:bg-muted/50 transition-colors cursor-pointer"
-                                onClick={() => fileInputRef.current?.click()}
+                                onClick={() => handleAction(() => fileInputRef.current?.click())}
                             >
                                 <UploadCloud className="w-16 h-16 text-muted-foreground mx-auto mb-4" />
                                 <h3 className="text-xl font-bold text-foreground mb-2">Send a File</h3>
@@ -364,7 +367,7 @@ function InstantDropContent() {
                                     />
                                     <Button
                                         className="bg-indigo-600 hover:bg-indigo-700 text-white font-bold"
-                                        onClick={() => joinRoom(roomId)}
+                                        onClick={() => handleAction(() => joinRoom(roomId))}
                                         disabled={roomId.length !== 6}
                                     >
                                         Join
@@ -546,6 +549,7 @@ function InstantDropContent() {
             </main>
 
             <Footer />
+            <PaywallModal isOpen={isPaywallOpen} onClose={() => setIsPaywallOpen(false)} deviceId={deviceId} />
         </div>
     );
 }

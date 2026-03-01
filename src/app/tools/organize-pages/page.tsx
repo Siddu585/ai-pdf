@@ -99,7 +99,7 @@ export default function OrganizePages() {
     const [isThinking, setIsThinking] = useState(false);
     const [organizedUrl, setOrganizedUrl] = useState<string | null>(null);
 
-    const { recordUsage, isPaywallOpen, setIsPaywallOpen, handleAction } = useUsage();
+    const { recordUsage, isPaywallOpen, setIsPaywallOpen, handleAction, deviceId } = useUsage();
 
     const fileInputRef = useRef<HTMLInputElement>(null);
 
@@ -314,7 +314,7 @@ export default function OrganizePages() {
             </main>
 
             <Footer />
-            <PaywallModal isOpen={isPaywallOpen} onClose={() => setIsPaywallOpen(false)} />
+            <PaywallModal isOpen={isPaywallOpen} onClose={() => setIsPaywallOpen(false)} deviceId={deviceId} />
         </div>
     );
 }
