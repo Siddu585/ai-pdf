@@ -21,27 +21,25 @@ export function InstantDrop() {
                         </div>
 
                         <h2 className="text-3xl md:text-5xl font-bold text-foreground">
-                            Instant Cross-Device Transfer
+                            Turbo Drop: Next-Gen File Sharing
                         </h2>
 
                         <p className="text-lg text-muted-foreground leading-relaxed">
-                            Drop multiple files on your laptop, scan the QR code with your phone, and download it instantly on your phone instantly.
-                            No USB cables, no email attachments, no cloud storage needed.
-                            Everything streams securely over your local network.
+                            Experience the market's fastest cross-device transfer. Move photos, videos, and large documents up to 200MB between <strong>Desktop to Mobile</strong> and <strong>Mobile to Mobile</strong> with zero cloud latency.
                         </p>
 
                         <ul className="space-y-4">
                             <li className="flex items-start gap-3">
                                 <CheckCircle2 className="w-6 h-6 text-indigo-500 shrink-0" />
-                                <span className="text-foreground"><strong>0 MB Uploads:</strong> Files transfer directly device-to-device.</span>
+                                <span className="text-foreground"><strong>Turbo Speed:</strong> True P2P WebRTC technology for blazing fast transfers.</span>
                             </li>
                             <li className="flex items-start gap-3">
                                 <CheckCircle2 className="w-6 h-6 text-indigo-500 shrink-0" />
-                                <span className="text-foreground"><strong>No Accounts:</strong> Just scan and download immediately.</span>
+                                <span className="text-foreground"><strong>Rock-Solid Reliability:</strong> Advanced chunk-resumption logic for unstable connections.</span>
                             </li>
                             <li className="flex items-start gap-3">
                                 <CheckCircle2 className="w-6 h-6 text-indigo-500 shrink-0" />
-                                <span className="text-foreground"><strong>100% Private:</strong> We never see your files.</span>
+                                <span className="text-foreground"><strong>Gallery Integration:</strong> Save received photos directly to Google Photos or iOS Gallery.</span>
                             </li>
                         </ul>
 

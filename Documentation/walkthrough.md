@@ -51,3 +51,28 @@ To bring your AI Chat and OCR Scanner tools online, you must inject your AI key 
    * Key: `GROQ_API_KEY`
    * Value: *(Paste your Groq API string here)*
 5. Save the changes. Render will automatically reboot the server, and the AI tools will instantly come online!
+
+## 6. Phase 11: Reversion to Perfect Quality (Structural v0)
+Following the "Nuclear 10.0" test, it was determined that achieving a 75% reduction on 1000-page textbooks required a level of rasterization (48 DPI) that caused unacceptable text blurriness. 
+
+As per user feedback, the engine has been **reverted** to the high-clarity Structural path:
+*   **Result**: ~40% reduction (19.8MB output for the 32MB textbook).
+*   **Quality**: **100% Original Vector Sharpness** preserved for all text and math symbols.
+*   **Method**: Reiterative XREF image re-encoding (no full-page rasterization).
+
+## 7. Phase 13: Turbo Drop (Instant Drop 2.0) 🚀
+The "Instant Drop" feature has been upgraded to a high-speed, reliable P2P engine:
+*   **WebRTC P2P**: Direct device-to-device transfer bypassing the server for maximum speed.
+*   **Parallel Channels**: Uses up to 8 parallel DataChannels to saturate available bandwidth.
+*   **Chunk ACKs**: Implemented a flow-control and acknowledgment system for 200MB+ stability.
+*   **Google Photos**: Integrated Google Identity Services for direct "Save to Cloud" functionality.
+
+## 8. Phase 14: Mobile App Readiness (Capacitor) 📱
+The web application is now ready for App Store and Play Store deployment:
+*   **Capacitor Initialized**: Configured `SwapPDF` (com.swappdf.app) native bridge.
+*   **Android/iOS Ready**: Native project folders created; ready for Android Studio/Xcode builds.
+*   **PWA Compliant**: Comprehensive `manifest.json` added for the "Add to Home Screen" experience.
+
+## 9. Current Testing Status
+*   **Usage Limits**: Temporarily **DISABLED** for all users (5-process limit bypassed) to allow for exhaustive testing of the new Turbo Drop engine.
+*   **Live URL**: `https://www.swap-pdf.com/tools/instant-drop`
