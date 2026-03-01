@@ -116,11 +116,7 @@ class UsageTracker:
             self.data[today] = {}
         
         count = self.data[today].get(key, 0)
-        # if count >= 5:
-        #     return False, count
-        
-        # TEMPORARY: Always allow for testing
-        if False: # count >= 5:
+        if count >= 5:
             return False, count
         
         self.data[today][key] = count + 1
