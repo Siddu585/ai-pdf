@@ -8,27 +8,29 @@ from pdf2docx import Converter
 def run_iterative_pdf_compression(input_path: str, quality_slider: int) -> str:
     """
     Standard Tier High-Power Compressor: 
-    - Quality > 25: Uses sophisticated XREF-wide iteration (Preserves text selection).
-    - Quality <= 25: Uses "Nuclear" Rasterization Mode (Guaranteed 1/3+ reduction, non-selectable text).
+    - Quality > 30: Uses sophisticated XREF-wide iteration (Preserves text).
+    - Quality <= 30: Uses "Nuclear 2.0" Rasterization (Guaranteed 1/3+ reduction).
     """
     out_path = input_path + "_compressed.pdf"
     doc = fitz.open(input_path)
     
     try:
-        # Determine target parameters based on slider (1-100)
+        # Calibrated Lattice from Intelligence Agent Testing
         target_dpi = 150
         jpg_quality = 60
         force_grey = False
+        is_nuclear = quality_slider <= 30
         
-        # NUCLEAR THRESHOLD: 25. Below this, we rasterize the entire document.
-        is_nuclear = quality_slider <= 25 
-        
-        if quality_slider <= 15:
-            target_dpi = 72
-            jpg_quality = 10 
-            force_grey = True 
-        elif quality_slider <= 25:
-            target_dpi = 96
+        if quality_slider <= 10:
+            target_dpi = 55  # Calibrated for ~7MB on 32MB file
+            jpg_quality = 10
+            force_grey = True
+        elif quality_slider <= 20:
+            target_dpi = 65  # Calibrated for ~11MB on 32MB file
+            jpg_quality = 15
+            force_grey = True
+        elif quality_slider <= 30:
+            target_dpi = 80
             jpg_quality = 20
             force_grey = True
         elif quality_slider <= 50:
@@ -42,33 +44,28 @@ def run_iterative_pdf_compression(input_path: str, quality_slider: int) -> str:
             jpg_quality = 85
 
         if is_nuclear:
-            # --- NUCLEAR MODE: Reconstruction via Rasterization ---
+            # --- NUCLEAR 2.0: Deep Structural Strip + Rasterization ---
             new_doc = fitz.open()
             for page in doc:
-                # Render page to images
                 pix = page.get_pixmap(dpi=target_dpi, colorspace=fitz.csGRAY if force_grey else fitz.csRGB)
                 img_bytes = pix.tobytes("jpeg", jpg_quality=jpg_quality)
-                
-                # Insert into new document
                 new_page = new_doc.new_page(width=page.rect.width, height=page.rect.height)
                 new_page.insert_image(page.rect, stream=img_bytes)
-                
-                pix = None # GC
+                pix = None
             
-            new_doc.save(out_path, garbage=4, deflate=True)
+            # Maximum structural cleaning while saving
+            new_doc.save(out_path, garbage=4, deflate=True, clean=True)
             new_doc.close()
             doc.close()
             return out_path
 
-        # --- STANDARD MODE: Sophisticated XREF Image Re-encoding (Preserves Text) ---
+        # --- STANDARD MODE: XREF Re-encoding ---
         for xref in range(1, doc.xref_length()):
             if not doc.xref_is_image(xref):
                 continue
-                
             try:
                 pix = fitz.Pixmap(doc, xref)
                 target_width = int(8.5 * target_dpi)
-                
                 if pix.width > target_width:
                     scale = target_width / pix.width
                     new_pix = fitz.Pixmap(pix, int(pix.width * scale), int(pix.height * scale))
@@ -82,34 +79,16 @@ def run_iterative_pdf_compression(input_path: str, quality_slider: int) -> str:
                     new_pix = fitz.Pixmap(fitz.csRGB, new_pix)
                 
                 img_bytes = new_pix.tobytes("jpeg", jpg_quality=jpg_quality)
-                
                 old_stream = doc.xref_stream(xref)
                 if old_stream and len(img_bytes) < len(old_stream):
                     doc.update_stream(xref, img_bytes)
                     doc.xref_set_key(xref, "Filter", "/DCTDecode")
-                    try: doc.xref_set_key(xref, "DecodeParms", "null")
-                    except: pass
-                
                 new_pix = None
                 pix = None
-            except Exception as e:
-                print(f"Skipping internal image {xref}: {e}")
+            except: pass
 
-        # Structural Optimization
         doc.set_metadata({})
-        try: doc.subset_fonts()
-        except: pass
-
-        save_options = {
-            "garbage": 4,          
-            "deflate": True,       
-            "clean": True,         
-            "deflate_fonts": True, 
-            "deflate_images": True,
-            "pretty": False,       
-            "incremental": False   
-        }
-        doc.save(out_path, **save_options)
+        doc.save(out_path, garbage=4, deflate=True, clean=True, deflate_fonts=True, deflate_images=True)
             
     except Exception as e:
         print(f"Error during exhaustive compression: {e}")
