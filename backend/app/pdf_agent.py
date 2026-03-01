@@ -7,25 +7,21 @@ from pdf2docx import Converter
 
 def run_iterative_pdf_compression(input_path: str, quality_slider: int) -> str:
     """
-    Quality Agent: Determines how much to compress based on the quality slider (1-100).
-    Compress Agent: Targets embedded XREF images, converting them to compressed JPEGs, 
-    perfectly preserving vector text to prevent file size bloat.
+    Standard Tier High-Power Compressor: 
+    Targets every single embedded XREF image (even in XObjects), re-encodes based on slider,
+    and applies maximum structural cleaning enabled by the 2GB RAM upgrade.
     """
     out_path = input_path + "_compressed.pdf"
     doc = fitz.open(input_path)
     
     try:
         # Determine target DPI and JPEG quality based on slider (1-100)
-        # 1-20: Ultra (72 DPI, 10-30 Quality)
-        # 21-50: Balanced (120 DPI, 40-60 Quality)
-        # 51-100: Quality (150-300 DPI, 70-90 Quality)
-        
         target_dpi = 150
         jpeg_quality = 60
         
         if quality_slider <= 20:
             target_dpi = 72
-            jpeg_quality = 25
+            jpeg_quality = 30 # v001 benchmark uses 10-60, but let's stay slightly higher to prevent blur
         elif quality_slider <= 50:
             target_dpi = 120
             jpeg_quality = 50
@@ -36,64 +32,67 @@ def run_iterative_pdf_compression(input_path: str, quality_slider: int) -> str:
             target_dpi = 200
             jpeg_quality = 85
 
-        # --- STEP 1: Radical Image Re-encoding & Downsampling ---
-        for page_num in range(len(doc)):
-            page = doc[page_num]
-            image_list = page.get_images()
-            
-            for img_info in image_list:
-                xref = img_info[0]
-                try:
-                    pix = fitz.Pixmap(doc, xref)
-                    
-                    # Target pixel width based on page dimensions and target DPI
-                    target_width = int(page.rect.width * target_dpi / 72)
-                    
-                    # RADICAL: Scaling down if wider than target
-                    if pix.width > target_width:
-                        scale = target_width / pix.width
-                        new_pix = fitz.Pixmap(pix, int(pix.width * scale), int(pix.height * scale))
-                    else:
-                        new_pix = pix
+        # --- STEP 1: Exhaustive XREF Image Re-encoding ---
+        # Instead of iterating pages (which misses images in XObjects/Forms),
+        # we iterate every object in the PDF to find images.
+        for xref in range(1, doc.xref_length()):
+            if not doc.xref_is_image(xref):
+                continue
+                
+            try:
+                pix = fitz.Pixmap(doc, xref)
+                # target width (assume ~8.5 inch width standard if page context unknown)
+                # most textbooks are ~600-800 pixels across at 72dpi
+                target_width = 1200 if quality_slider > 50 else 800
+                
+                # Downsample large images
+                if pix.width > target_width:
+                    scale = target_width / pix.width
+                    new_pix = fitz.Pixmap(pix, int(pix.width * scale), int(pix.height * scale))
+                else:
+                    new_pix = pix
 
-                    # Mandatory RGB conversion for JPEG encoding
-                    if new_pix.n >= 4 or new_pix.alpha:
-                        new_pix = fitz.Pixmap(fitz.csRGB, new_pix)
-                    
-                    # Re-encode as highly compressed JPEG
-                    img_bytes = new_pix.tobytes("jpeg", jpeg_quality=jpeg_quality)
-                    
-                    # UPDATE MANDATORY: For Ultra/Balanced, we skip the size comparison check 
-                    # because even if small, re-encoding can clean up internal PDF waste/bloat 
-                    # and merge duplicate image streams.
-                    doc.update_stream(xref, img_bytes)
-                    doc.xref_set_key(xref, "Filter", "/DCTDecode")
-                    try: doc.xref_set_key(xref, "DecodeParms", "null")
-                    except: pass
-                    
-                    new_pix = None
-                    pix = None
-                except Exception as e:
-                    print(f"Skipping radical image {xref}: {e}")
+                # Mandatory RGB for JPEG
+                if new_pix.n >= 4 or new_pix.alpha:
+                    new_pix = fitz.Pixmap(fitz.csRGB, new_pix)
+                
+                # Re-encode
+                img_bytes = new_pix.tobytes("jpeg", jpeg_quality=jpeg_quality)
+                
+                # Update stream
+                doc.update_stream(xref, img_bytes)
+                doc.xref_set_key(xref, "Filter", "/DCTDecode")
+                try: doc.xref_set_key(xref, "DecodeParms", "null")
+                except: pass
+                
+                new_pix = None
+                pix = None
+            except Exception as e:
+                print(f"Skipping internal image {xref}: {e}")
 
-        # --- STEP 2: Maximum Structural Stripping ---
-        # We manually subset fonts to save massive space in text-heavy docs
+        # --- STEP 2: Structural Optimization (Standard Tier Safe) ---
+        # Clear metadata to remove hidden internal bloat
+        doc.set_metadata({})
+        
+        # Subset fonts (replaces full fonts with just used characters)
         try:
             doc.subset_fonts()
         except:
             pass
 
         save_options = {
-            "garbage": 4,          
-            "deflate": True,       
-            "clean": True,
-            "deflate_fonts": True, # Re-enabled now that OOM issues are mitigated
-            "pretty": False,       
+            "garbage": 4,          # Maximum duplicate stream removal
+            "deflate": True,       # Compress all streams
+            "clean": True,         # Re-structure the PDF syntax (Standard Tier only)
+            "deflate_fonts": True, # Aggressive font compression
+            "deflate_images": True,# Ensure all images are deflated
+            "pretty": False,       # No spaces in structure
+            "incremental": False   # Force full rewrite for size reduction
         }
         doc.save(out_path, **save_options)
             
     except Exception as e:
-        print(f"Error during deep compression: {e}")
+        print(f"Error during exhaustive compression: {e}")
         doc.save(out_path)
     finally:
         doc.close()
