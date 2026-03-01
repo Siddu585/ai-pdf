@@ -65,6 +65,12 @@ def run_iterative_pdf_compression(input_path: str, quality_slider: int) -> str:
                 continue
             try:
                 pix = fitz.Pixmap(doc, xref)
+                
+                # Normalize colorspace to avoid "pixmap must be Grayscale, RGB, or CMYK to save as JPEG"
+                if pix.colorspace.n > 3 or pix.colorspace.name in ("DeviceCMYK", "Indexed"):
+                    new_pix = fitz.Pixmap(fitz.csRGB, pix)
+                    pix = new_pix
+
                 target_width = int(8.5 * target_dpi)
                 if pix.width > target_width:
                     scale = target_width / pix.width
@@ -85,7 +91,8 @@ def run_iterative_pdf_compression(input_path: str, quality_slider: int) -> str:
                     doc.xref_set_key(xref, "Filter", "/DCTDecode")
                 new_pix = None
                 pix = None
-            except: pass
+            except Exception as e:
+                print(f"Error re-encoding image {xref}: {e}")
 
         doc.set_metadata({})
         doc.save(out_path, garbage=4, deflate=True, clean=True, deflate_fonts=True, deflate_images=True)
