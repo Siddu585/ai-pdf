@@ -61,6 +61,7 @@ function InstantDropContent() {
 
     const receiveBuffers = useRef<Map<number, ArrayBuffer[]>>(new Map());
     const receiveMetas = useRef<Map<number, any>>(new Map());
+    const receivedEofs = useRef<Set<number>>(new Set());
     const totalReceivedBytesRef = useRef(0);
     const totalSentBytesRef = useRef(0);
 
@@ -314,16 +315,32 @@ function InstantDropContent() {
                             setProgress(Math.round((trueSent / file.size) * 100));
                         } else break;
                     }
-                    sectorsFinished++;
+                    if (isActive.current && dc.readyState === 'open') {
+                        dc.send(JSON.stringify({ type: 'sector-eof', channel: chIdx }));
+                    }
                 });
 
                 await Promise.all(workers);
-                if (sectorsFinished >= numChannels) {
-                    logDebug(`Sender: All Sectors Finalized for ${file.name}`);
-                    dataChannelsRef.current[0]?.send(JSON.stringify({ type: 'file-eof' }));
-                    isResolved = true;
-                    resolve();
-                }
+
+                logDebug(`Sender: All Sectors Sent. Waiting for Receiver ACK for ${file.name}`);
+                await new Promise<void>((resolveAck) => {
+                    if (dataChannelsRef.current.length === 0 || !isActive.current) return resolveAck();
+                    const ackListener = (e: MessageEvent) => {
+                        try {
+                            if (typeof e.data === 'string') {
+                                const msg = JSON.parse(e.data);
+                                if (msg.type === 'file-ack' && msg.name === file.name) {
+                                    dataChannelsRef.current[0]?.removeEventListener('message', ackListener);
+                                    resolveAck();
+                                }
+                            }
+                        } catch (err) { }
+                    };
+                    dataChannelsRef.current[0]?.addEventListener('message', ackListener);
+                });
+
+                isResolved = true;
+                resolve();
             };
         });
     };
@@ -387,6 +404,7 @@ function InstantDropContent() {
                         receiveMeta.current = msg;
                         setIncomingMeta(msg); // Link to reactive UI labels
                         receiveBuffers.current = new Map();
+                        receivedEofs.current.clear();
                         totalReceivedBytesRef.current = 0;
                         setCurrentFileIndex(msg.currentIdx || 0);
                         setStatus('transferring');
@@ -399,17 +417,26 @@ function InstantDropContent() {
                         }
                     });
                     logDebug("Receiver: Broadcast READY to all channels");
-                } else if (msg.type === 'file-eof') {
-                    logDebug(`Receiver: Received EOF for ${receiveMeta.current?.name}`);
-                    if (receiveMeta.current) {
+                } else if (msg.type === 'sector-eof') {
+                    receivedEofs.current.add(msg.channel);
+                    logDebug(`Receiver: Received Sector EOF on channel ${msg.channel}. Total: ${receivedEofs.current.size}`);
+
+                    if (receiveMeta.current && receivedEofs.current.size >= dataChannelsRef.current.length) {
+                        logDebug(`Receiver: All sectors received for ${receiveMeta.current.name}`);
                         // Reassemble from parallel buffers
                         const fullBuffer: ArrayBuffer[] = [];
-                        for (let i = 0; i < 4; i++) {
+                        for (let i = 0; i < dataChannelsRef.current.length; i++) {
                             const sector = receiveBuffers.current.get(i) || [];
                             fullBuffer.push(...sector);
                         }
                         const blob = new Blob(fullBuffer, { type: receiveMeta.current.fileType });
                         setReceivedFiles(prev => [...prev, { blob, name: receiveMeta.current!.name }]);
+
+                        // Send ACK back to sender
+                        if (dataChannelsRef.current[0]?.readyState === 'open') {
+                            dataChannelsRef.current[0].send(JSON.stringify({ type: 'file-ack', name: receiveMeta.current.name }));
+                        }
+                        receivedEofs.current.clear();
                     }
                 } else if (msg.type === 'batch-eof') {
                     logDebug("Receiver: Transfer Complete");
