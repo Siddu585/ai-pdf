@@ -442,6 +442,7 @@ function InstantDropContent() {
                 } else if (msg.type === 'batch-eof') {
                     logDebug("Receiver: Transfer Complete");
                     setStatus('done');
+                    statusRef.current = 'done'; // Synchronous update to prevent dc.onclose race condition
                     disconnectEverything();
                 }
             } catch (err) {
