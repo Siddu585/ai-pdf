@@ -10,9 +10,9 @@ import { Footer } from "@/components/layout/Footer";
 import { useUsage } from "@/hooks/useUsage";
 import { PaywallModal } from "@/components/layout/PaywallModal";
 
-// Optimized Chunk size for DataChannel (64KB)
-const CHUNK_SIZE = 64 * 1024;
-const MAX_IN_FLIGHT = 8; // Parallel chunks in flight for saturated throughput
+// Optimized Chunk size for DataChannel (16KB for max compatibility)
+const CHUNK_SIZE = 16 * 1024;
+const MAX_IN_FLIGHT = 16; // Increased flight count since chunks are smaller
 const BACKEND_WS_URL = process.env.NEXT_PUBLIC_API_URL
     ? process.env.NEXT_PUBLIC_API_URL.trim().replace(/\/$/, "").replace(/^https:\/\//i, "wss://").replace(/^http:\/\//i, "ws://")
     : typeof window !== "undefined"
@@ -167,7 +167,14 @@ function InstantDropContent() {
                     const reader = new FileReader();
                     reader.onload = (e) => {
                         const buffer = e.target?.result as ArrayBuffer;
-                        dataChannelRef.current?.send(buffer);
+                        if (dataChannelRef.current?.readyState === 'open') {
+                            dataChannelRef.current?.send(buffer);
+                        }
+                    };
+                    reader.onerror = () => {
+                        console.error("FileReader error");
+                        isActive.current = false;
+                        setStatus('error');
                     };
                     reader.readAsArrayBuffer(slice);
 
@@ -258,6 +265,13 @@ function InstantDropContent() {
         }
     }, [initialRoom]);
 
+    // Cleanup WebRTC and WS on unmount
+    useEffect(() => {
+        return () => {
+            disconnectEverything();
+        };
+    }, []);
+
     const downloadAll = () => {
         receivedFiles.forEach(rf => {
             const url = URL.createObjectURL(rf.blob);
@@ -305,7 +319,8 @@ function InstantDropContent() {
 
     const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
         if (e.target.files && e.target.files.length > 0) {
-            startSending(e.target.files);
+            const selectedFiles = e.target.files;
+            handleAction(() => startSending(selectedFiles));
         }
     };
 
@@ -330,11 +345,11 @@ function InstantDropContent() {
                         <div className="space-y-8 w-full">
                             <div
                                 className="border-2 border-dashed border-border rounded-xl p-12 text-center hover:bg-muted/50 transition-colors cursor-pointer"
-                                onClick={() => handleAction(() => fileInputRef.current?.click())}
+                                onClick={() => fileInputRef.current?.click()}
                             >
                                 <UploadCloud className="w-16 h-16 text-muted-foreground mx-auto mb-4" />
                                 <h3 className="text-xl font-bold text-foreground mb-2">Send a File</h3>
-                                <p className="text-sm text-muted-foreground">Select any file up to 50MB</p>
+                                <p className="text-sm text-muted-foreground">Select files up to 200MB+</p>
                                 <input
                                     type="file"
                                     ref={fileInputRef}

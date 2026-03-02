@@ -32,11 +32,10 @@ def chat_with_pdf(pdf_path: str, user_query: str) -> str:
         return "Could not extract readable text from this PDF. It might be scanned pages (requires OCR)."
 
     try:
-        # Initialize Groq Llama3 8B model natively
         chat = ChatGroq(
             temperature=0.1, 
             groq_api_key=api_key, 
-            model_name="llama3-8b-8192"
+            model_name="llama-3.3-70b-versatile"
         )
         
         messages = [
