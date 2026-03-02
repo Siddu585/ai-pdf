@@ -43,6 +43,7 @@ function InstantDropContent() {
     const wsRef = useRef<WebSocket | null>(null);
     const peerRef = useRef<RTCPeerConnection | null>(null);
     const dataChannelRef = useRef<RTCDataChannel | null>(null);
+    const filesRef = useRef<File[]>([]);
     const remoteDescriptionSet = useRef(false);
     const iceBuffer = useRef<RTCIceCandidateInit[]>([]);
 
@@ -63,6 +64,7 @@ function InstantDropContent() {
     const startSending = (selectedFiles: FileList) => {
         const fileList = Array.from(selectedFiles);
         setFiles(fileList);
+        filesRef.current = fileList;
         setMode('send');
         setStatus('waiting');
 
@@ -151,6 +153,7 @@ function InstantDropContent() {
     };
 
     const setupDataChannel = (dc: RTCDataChannel) => {
+        dc.binaryType = 'arraybuffer';
         dc.onopen = () => {
             console.log("DataChannel Open, Mode:", mode);
             setStatus('transferring');
@@ -177,7 +180,7 @@ function InstantDropContent() {
                     } else if (msg.type === 'request-metadata') {
                         console.log("Receiver requested metadata, resending...");
                         // Resend current file metadata
-                        const file = files[currentFileIndex];
+                        const file = filesRef.current[currentFileIndex];
                         if (file) {
                             dc.send(JSON.stringify({
                                 type: 'metadata',
@@ -185,7 +188,7 @@ function InstantDropContent() {
                                 size: file.size,
                                 fileType: file.type,
                                 currentIdx: currentFileIndex,
-                                totalFiles: files.length
+                                totalFiles: filesRef.current.length
                             }));
                         }
                     }
@@ -202,10 +205,15 @@ function InstantDropContent() {
     };
 
     const startFileTransfer = async () => {
+        const currentFiles = filesRef.current;
+        if (currentFiles.length === 0) {
+            console.error("No files in filesRef to transfer");
+            return;
+        }
         isActive.current = true;
-        for (let i = 0; i < files.length; i++) {
+        for (let i = 0; i < currentFiles.length; i++) {
             setCurrentFileIndex(i);
-            await transferFileP2P(files[i], i, files.length);
+            await transferFileP2P(currentFiles[i], i, currentFiles.length);
         }
         dataChannelRef.current?.send(JSON.stringify({ type: 'batch-eof' }));
         setStatus('done');

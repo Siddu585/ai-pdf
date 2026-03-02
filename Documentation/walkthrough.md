@@ -63,8 +63,9 @@ As per user feedback, the engine has been **reverted** to the high-clarity Struc
 ## 7. Phase 13: Turbo Drop (Instant Drop 2.0) 🚀
 The "Instant Drop" feature has been upgraded to a high-speed, reliable P2P engine:
 *   **WebRTC P2P**: Direct device-to-device transfer bypassing the server for maximum speed.
-*   **Parallel Channels**: Uses up to 8 parallel DataChannels to saturate available bandwidth.
-*   **Chunk ACKs**: Implemented a flow-control and acknowledgment system for 200MB+ stability.
+*   **Signaling Reliability**: Fixed race conditions by implementing an **ICE Candidate Buffer** and 500ms handshake delay.
+*   **Metadata Recovery**: Implemented a "Request Metadata" fallback if the receiver misses initial file info.
+*   **WebSocket Heartbeats**: 10s ping intervals to prevent idle connection drops on mobile.
 *   **Google Photos**: Integrated Google Identity Services for direct "Save to Cloud" functionality.
 
 ## 📱 Mobile App (Android & iOS)
