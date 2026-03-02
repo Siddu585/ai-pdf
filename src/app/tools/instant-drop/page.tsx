@@ -48,9 +48,6 @@ function InstantDropContent() {
     const iceBuffer = useRef<RTCIceCandidateInit[]>([]);
 
     // Transfer state
-    const currentOffset = useRef(0);
-    const lastAckedOffset = useRef(0);
-    const inFlightCount = useRef(0);
     const isActive = useRef(false);
 
     // For receiving
@@ -106,10 +103,6 @@ function InstantDropContent() {
                     console.log("Adding remote ICE candidate");
                     await peerRef.current?.addIceCandidate(new RTCIceCandidate(data.candidate));
                 }
-            } else if (data.type === 'ack') {
-                lastAckedOffset.current = data.offset;
-                inFlightCount.current--;
-                sendNextQueuedChunk();
             }
         };
     };
@@ -154,11 +147,12 @@ function InstantDropContent() {
 
     const setupDataChannel = (dc: RTCDataChannel) => {
         dc.binaryType = 'arraybuffer';
+        dc.bufferedAmountLowThreshold = 64 * 1024; // 64KB
+
         dc.onopen = () => {
             console.log("DataChannel Open, Mode:", mode);
             setStatus('transferring');
             if (mode === 'send') {
-                // Small delay to ensure both sides are fully ready for string vs binary
                 setTimeout(() => {
                     console.log("Starting file transfer after delay");
                     startFileTransfer();
@@ -170,16 +164,11 @@ function InstantDropContent() {
             if (mode === 'receive') {
                 handleIncomingData(e.data);
             } else {
-                // Sender receiving ACK
+                // Sender receiving requests (e.g., metadata resend)
                 try {
                     const msg = JSON.parse(e.data);
-                    if (msg.type === 'ack') {
-                        lastAckedOffset.current = msg.offset;
-                        inFlightCount.current--;
-                        sendNextQueuedChunk();
-                    } else if (msg.type === 'request-metadata') {
+                    if (msg.type === 'request-metadata') {
                         console.log("Receiver requested metadata, resending...");
-                        // Resend current file metadata
                         const file = filesRef.current[currentFileIndex];
                         if (file) {
                             dc.send(JSON.stringify({
@@ -222,7 +211,10 @@ function InstantDropContent() {
 
     const transferFileP2P = (file: File, index: number, total: number) => {
         return new Promise<void>((resolve) => {
-            dataChannelRef.current?.send(JSON.stringify({
+            if (!dataChannelRef.current) return resolve();
+
+            // Send metadata
+            dataChannelRef.current.send(JSON.stringify({
                 type: 'metadata',
                 name: file.name,
                 size: file.size,
@@ -231,49 +223,41 @@ function InstantDropContent() {
                 totalFiles: total
             }));
 
-            currentOffset.current = 0;
-            lastAckedOffset.current = 0;
-            inFlightCount.current = 0;
+            let offset = 0;
+            const BUFFER_THRESHOLD = 64 * 1024; // 64KB
 
-            const sendLoop = () => {
-                if (!isActive.current) return;
+            const sendNextChunk = () => {
+                while (isActive.current && offset < file.size) {
+                    if (dataChannelRef.current!.bufferedAmount > BUFFER_THRESHOLD) {
+                        dataChannelRef.current!.onbufferedamountlow = () => {
+                            dataChannelRef.current!.onbufferedamountlow = null;
+                            sendNextChunk();
+                        };
+                        return;
+                    }
 
-                while (inFlightCount.current < MAX_IN_FLIGHT && currentOffset.current < file.size) {
-                    const slice = file.slice(currentOffset.current, currentOffset.current + CHUNK_SIZE);
+                    const slice = file.slice(offset, offset + CHUNK_SIZE);
                     const reader = new FileReader();
                     reader.onload = (e) => {
                         const buffer = e.target?.result as ArrayBuffer;
                         if (dataChannelRef.current?.readyState === 'open') {
-                            dataChannelRef.current?.send(buffer);
+                            dataChannelRef.current.send(buffer);
                         }
-                    };
-                    reader.onerror = () => {
-                        console.error("FileReader error");
-                        isActive.current = false;
-                        setStatus('error');
                     };
                     reader.readAsArrayBuffer(slice);
 
-                    currentOffset.current += CHUNK_SIZE;
-                    inFlightCount.current++;
-                    setProgress(Math.round((currentOffset.current / file.size) * 100));
+                    offset += CHUNK_SIZE;
+                    setProgress(Math.round((offset / file.size) * 100));
                 }
 
-                if (currentOffset.current >= file.size && inFlightCount.current === 0) {
+                if (offset >= file.size) {
                     dataChannelRef.current?.send(JSON.stringify({ type: 'file-eof' }));
                     resolve();
                 }
             };
 
-            const sendNextQueuedChunk = () => sendLoop();
-            // Store globally per file transfer
-            (window as any).sendNextQueuedChunk = sendNextQueuedChunk;
-            sendLoop();
+            sendNextChunk();
         });
-    };
-
-    const sendNextQueuedChunk = () => {
-        if ((window as any).sendNextQueuedChunk) (window as any).sendNextQueuedChunk();
     };
 
     // --- RECEIVER LOGIC (Turbo Drop 2.0) ---
@@ -359,8 +343,6 @@ function InstantDropContent() {
             if (receiveMeta.current?.size) {
                 setProgress(Math.round((receivedBytes.current / receiveMeta.current.size) * 100));
             }
-            // Send ACK back for reliability/speed control
-            dataChannelRef.current?.send(JSON.stringify({ type: 'ack', offset: receivedBytes.current }));
         }
     };
 
