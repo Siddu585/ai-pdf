@@ -5,9 +5,11 @@ import { Button } from "@/components/ui/button";
 import { FileDown, Menu, ShieldCheck } from "lucide-react";
 import { useState } from "react";
 import { PaywallModal } from "./PaywallModal";
+import { useUsage } from "@/hooks/useUsage";
 
 export function Navbar() {
   const [isPaywallOpen, setIsPaywallOpen] = useState(false);
+  const { deviceId } = useUsage();
 
   return (
     <nav className="sticky top-0 z-50 w-full border-b border-border/40 bg-background/95 backdrop-blur supports-[backdrop-filter]:bg-background/60">
@@ -51,6 +53,7 @@ export function Navbar() {
       <PaywallModal
         isOpen={isPaywallOpen}
         onClose={() => setIsPaywallOpen(false)}
+        deviceId={deviceId}
       />
     </nav>
   );
