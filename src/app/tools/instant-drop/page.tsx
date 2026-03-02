@@ -39,6 +39,7 @@ function InstantDropContent() {
     const [progress, setProgress] = useState(0);
     const [status, setStatus] = useState<"disconnected" | "waiting" | "connecting" | "transferring" | "done" | "error">("disconnected");
     const [receivedFiles, setReceivedFiles] = useState<{ blob: Blob, name: string }[]>([]);
+    const [incomingMeta, setIncomingMeta] = useState<any>(null); // New state for reactive UI labels
 
     const wsRef = useRef<WebSocket | null>(null);
     const [debugLogs, setDebugLogs] = useState<string[]>([]);
@@ -124,7 +125,10 @@ function InstantDropContent() {
     };
 
     const setupWebRTC = async (ws: WebSocket, isSender: boolean) => {
-        console.log("Setting up RTCPeerConnection, isSender:", isSender);
+        logDebug(`Setting up RTCPeerConnection (Parallel), isSender: ${isSender}`);
+        // HARD RESET for parallel channel persistence
+        dataChannelsRef.current = [];
+
         const peer = new RTCPeerConnection(ICE_SERVERS);
         peerRef.current = peer;
 
@@ -137,6 +141,14 @@ function InstantDropContent() {
 
         peer.onconnectionstatechange = () => {
             console.log("WebRTC Connection State:", peer.connectionState);
+            // Harden P2P stability with Handshake Retries and Adaptive Chunking
+            // Implement user-facing "View Technical Logs" for deep troubleshooting
+            // Resolve Turbo Drop "Ghosting" bug via `modeRef` State Mirroring
+            // Implement 128KB "Burst Mode" for ultra-high-speed transfers
+            // Implement "Nuclear" Parallel DataChannels (4x Concurrency) for 400%+ speed
+            // Fix Parallel Stalls & Progress "Illusion" via Unified Byte Counting
+            // Push Nuclear fixes to GitHub and verify Vercel deployment
+            // Verify all fixes with user.
             if (peer.connectionState === 'failed') {
                 setStatus('error');
             }
@@ -369,6 +381,7 @@ function InstantDropContent() {
                     } else {
                         logDebug(`Receiver: Received Metadata for ${msg.name} (Parallel: ${msg.isParallel})`);
                         receiveMeta.current = msg;
+                        setIncomingMeta(msg); // Link to reactive UI labels
                         receiveBuffers.current = new Map();
                         totalReceivedBytesRef.current = 0;
                         setCurrentFileIndex(msg.currentIdx || 0);
@@ -584,7 +597,7 @@ function InstantDropContent() {
                                             <p className="font-semibold text-foreground truncate max-w-[300px]">
                                                 {mode === 'send'
                                                     ? `Sending ${currentFileIndex + 1} of ${files.length}: ${files[currentFileIndex]?.name}`
-                                                    : `Receiving ${currentFileIndex + 1} of ${receiveMeta.current?.totalFiles || '?'}: ${receiveMeta.current?.name}`
+                                                    : `Receiving ${currentFileIndex + 1} of ${incomingMeta?.totalFiles || '?'}: ${incomingMeta?.name || 'Initializing...'}`
                                                 }
                                             </p>
                                             <p className="text-xs text-muted-foreground">
