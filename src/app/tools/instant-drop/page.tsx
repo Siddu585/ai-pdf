@@ -10,9 +10,9 @@ import { Footer } from "@/components/layout/Footer";
 import { useUsage } from "@/hooks/useUsage";
 import { PaywallModal } from "@/components/layout/PaywallModal";
 
-// Optimized Chunk size for DataChannel (64KB for performance)
-const CHUNK_SIZE = 64 * 1024;
-const MAX_IN_FLIGHT = 16; // Not used in refined logic but kept for constants
+// Optimized Chunk size for DataChannel (16KB for high compatibility)
+const CHUNK_SIZE = 16 * 1024;
+const MAX_IN_FLIGHT = 16;
 const BACKEND_WS_URL = process.env.NEXT_PUBLIC_API_URL
     ? process.env.NEXT_PUBLIC_API_URL.trim().replace(/\/$/, "").replace(/^https:\/\//i, "wss://").replace(/^http:\/\//i, "ws://")
     : typeof window !== "undefined"
@@ -41,6 +41,12 @@ function InstantDropContent() {
     const [receivedFiles, setReceivedFiles] = useState<{ blob: Blob, name: string }[]>([]);
 
     const wsRef = useRef<WebSocket | null>(null);
+    const [debugLogs, setDebugLogs] = useState<string[]>([]);
+    const logDebug = (msg: string) => {
+        const time = new Date().toLocaleTimeString();
+        console.log(`[${time}] ${msg}`);
+        setDebugLogs(prev => [`[${time}] ${msg}`, ...prev].slice(0, 50));
+    };
     const peerRef = useRef<RTCPeerConnection | null>(null);
     const dataChannelRef = useRef<RTCDataChannel | null>(null);
     const filesRef = useRef<File[]>([]);
@@ -127,7 +133,7 @@ function InstantDropContent() {
         };
 
         if (isSender) {
-            console.log("Creating DataChannel and Offer");
+            logDebug("Creating DataChannel (Sender)");
             const dc = peer.createDataChannel("file-transfer", { ordered: true });
             dataChannelRef.current = dc;
             setupDataChannel(dc);
@@ -136,9 +142,9 @@ function InstantDropContent() {
             await peer.setLocalDescription(offer);
             ws.send(JSON.stringify({ type: 'offer', sdp: offer }));
         } else {
-            console.log("Waiting for DataChannel");
+            logDebug("Awaiting DataChannel (Receiver)");
             peer.ondatachannel = (e) => {
-                console.log("Received DataChannel");
+                logDebug("Receiver: DataChannel Received from Peer");
                 dataChannelRef.current = e.channel;
                 setupDataChannel(e.channel);
             };
@@ -213,41 +219,46 @@ function InstantDropContent() {
         return new Promise<void>((resolve) => {
             if (!dataChannelRef.current) return resolve();
 
-            // 1. Send metadata
-            console.log("Sender: Sending Metadata for", file.name);
-            dataChannelRef.current.send(JSON.stringify({
-                type: 'metadata',
-                name: file.name,
-                size: file.size,
-                fileType: file.type,
-                currentIdx: index,
-                totalFiles: total
-            }));
+            let handshakeInterval: any;
+            let isResolved = false;
 
-            // 2. Wait for 'ready' signal from receiver
-            const waitForReady = () => {
-                return new Promise<void>((readyResolve) => {
-                    const checkReady = (e: MessageEvent) => {
-                        try {
-                            if (typeof e.data === 'string') {
-                                const msg = JSON.parse(e.data);
-                                if (msg.type === 'ready') {
-                                    console.log("Sender: Received Ready Signal");
-                                    dataChannelRef.current?.removeEventListener('message', checkReady);
-                                    readyResolve();
-                                }
-                            }
-                        } catch (err) { /* Ignore non-JSON or other messages */ }
-                    };
-                    dataChannelRef.current?.addEventListener('message', checkReady);
-                });
+            const sendMeta = () => {
+                if (isResolved || !dataChannelRef.current || dataChannelRef.current.readyState !== 'open') return;
+                logDebug(`Sender: Sending Metadata for ${file.name} (Attempt)`);
+                dataChannelRef.current.send(JSON.stringify({
+                    type: 'metadata',
+                    name: file.name,
+                    size: file.size,
+                    fileType: file.type,
+                    currentIdx: index,
+                    totalFiles: total
+                }));
             };
 
+            // 1. Start handshake with retry
+            sendMeta();
+            handshakeInterval = setInterval(sendMeta, 2000);
+
+            // 2. Wait for 'ready' signal
+            const checkReady = (e: MessageEvent) => {
+                try {
+                    if (typeof e.data === 'string') {
+                        const msg = JSON.parse(e.data);
+                        if (msg.type === 'ready') {
+                            logDebug("Sender: Received Ready Signal - Starting Stream");
+                            clearInterval(handshakeInterval);
+                            dataChannelRef.current?.removeEventListener('message', checkReady);
+                            startStreaming();
+                        }
+                    }
+                } catch (err) { /* Binary data ignore */ }
+            };
+            dataChannelRef.current?.addEventListener('message', checkReady);
+
             const startStreaming = async () => {
-                await waitForReady();
-                console.log("Sender: Starting stream for", file.name);
                 let offset = 0;
                 const THRESHOLD = 64 * 1024;
+                const CHUNK_SIZE = 16 * 1024; // 16KB chunk size
 
                 while (isActive.current && offset < file.size) {
                     if (dataChannelRef.current && dataChannelRef.current.bufferedAmount > THRESHOLD) {
@@ -256,6 +267,8 @@ function InstantDropContent() {
                                 dataChannelRef.current!.onbufferedamountlow = null;
                                 res();
                             };
+                            // Safety timeout for low threshold events
+                            setTimeout(res, 100);
                         });
                     }
 
@@ -266,22 +279,21 @@ function InstantDropContent() {
                         dataChannelRef.current.send(buffer);
                         offset += buffer.byteLength;
                         setProgress(Math.round((offset / file.size) * 100));
+                        // Yield to UI
+                        if (offset % (CHUNK_SIZE * 20) === 0) await new Promise(r => setTimeout(r, 0));
                     } else {
-                        console.log("Sender: DataChannel not open, aborting stream");
+                        logDebug("Sender: DataChannel closed mid-stream");
                         break;
                     }
                 }
 
                 if (offset >= file.size) {
-                    console.log("Sender: Finalizing file");
+                    logDebug(`Sender: Finalized ${file.name}`);
                     dataChannelRef.current?.send(JSON.stringify({ type: 'file-eof' }));
+                    isResolved = true;
                     resolve();
                 }
             };
-            startStreaming().catch(err => {
-                console.error("Sender: Stream failed", err);
-                resolve();
-            });
         });
     };
 
@@ -336,7 +348,7 @@ function InstantDropContent() {
             try {
                 const msg = JSON.parse(data);
                 if (msg.type === 'metadata') {
-                    console.log("Received Metadata:", msg.name);
+                    logDebug(`Receiver: Received Metadata for ${msg.name} (${(msg.size / 1024 / 1024).toFixed(2)} MB)`);
                     receiveMeta.current = msg;
                     receiveBuffer.current = [];
                     receivedBytes.current = 0;
@@ -344,9 +356,9 @@ function InstantDropContent() {
                     setStatus('transferring');
                     // Signal ready to sender
                     dataChannelRef.current?.send(JSON.stringify({ type: 'ready' }));
-                    console.log("Receiver: Sent Ready Signal");
+                    logDebug("Receiver: Sent READY signal to Sender");
                 } else if (msg.type === 'file-eof') {
-                    console.log("Received File EOF");
+                    logDebug(`Receiver: Received EOF for ${receiveMeta.current?.name}`);
                     if (receiveMeta.current) {
                         const blob = new Blob(receiveBuffer.current, { type: receiveMeta.current.type });
                         setReceivedFiles(prev => [...prev, { blob, name: receiveMeta.current!.name }]);
@@ -678,6 +690,25 @@ function InstantDropContent() {
                                     </Button>
                                 </div>
                             )}
+                        </div>
+                    )}
+
+                    {/* Debug Logs Section */}
+                    {debugLogs.length > 0 && (
+                        <div className="mt-12 w-full max-w-2xl text-left">
+                            <details className="group">
+                                <summary className="cursor-pointer text-sm font-semibold text-muted-foreground hover:text-foreground transition-colors flex items-center gap-2 mb-2">
+                                    <span className="w-2 h-2 rounded-full bg-indigo-500 animate-pulse" />
+                                    Technical Handshake Logs
+                                </summary>
+                                <div className="bg-muted/50 rounded-xl p-4 font-mono text-[10px] leading-relaxed max-h-64 overflow-auto border border-border">
+                                    {debugLogs.map((log, i) => (
+                                        <div key={i} className="mb-1 opacity-80 border-b border-border/10 pb-1">
+                                            {log}
+                                        </div>
+                                    ))}
+                                </div>
+                            </details>
                         </div>
                     )}
 
