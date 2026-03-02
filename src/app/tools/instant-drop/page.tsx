@@ -50,6 +50,11 @@ function InstantDropContent() {
     const peerRef = useRef<RTCPeerConnection | null>(null);
     const dataChannelRef = useRef<RTCDataChannel | null>(null);
     const filesRef = useRef<File[]>([]);
+    const modeRef = useRef(mode);
+    const statusRef = useRef(status);
+
+    useEffect(() => { modeRef.current = mode; }, [mode]);
+    useEffect(() => { statusRef.current = status; }, [status]);
     const remoteDescriptionSet = useRef(false);
     const iceBuffer = useRef<RTCIceCandidateInit[]>([]);
 
@@ -58,7 +63,7 @@ function InstantDropContent() {
 
     // For receiving
     const receiveBuffer = useRef<ArrayBuffer[]>([]);
-    const receiveMeta = useRef<{ name: string, size: number, type: string, totalFiles?: number, currentIdx?: number } | null>(null);
+    const receiveMeta = useRef<{ name: string, size: number, type: string, fileType?: string, totalFiles?: number, currentIdx?: number } | null>(null);
     const receivedBytes = useRef(0);
 
     const fileInputRef = useRef<HTMLInputElement>(null);
@@ -156,18 +161,17 @@ function InstantDropContent() {
         dc.bufferedAmountLowThreshold = 64 * 1024; // 64KB
 
         dc.onopen = () => {
-            console.log("DataChannel Open, Mode:", mode);
+            logDebug(`DataChannel Open, Mode (Ref): ${modeRef.current}`);
             setStatus('transferring');
-            if (mode === 'send') {
+            if (modeRef.current === 'send') {
                 setTimeout(() => {
-                    console.log("Starting file transfer after delay");
+                    logDebug("Starting file transfer after delay");
                     startFileTransfer();
                 }, 500);
             }
         };
         dc.onmessage = (e) => {
-            console.log("DataChannel message received, type:", typeof e.data);
-            if (mode === 'receive') {
+            if (modeRef.current === 'receive') {
                 handleIncomingData(e.data);
             } else {
                 // Sender receiving requests (e.g., metadata resend)
@@ -353,28 +357,33 @@ function InstantDropContent() {
                     receiveBuffer.current = [];
                     receivedBytes.current = 0;
                     setCurrentFileIndex(msg.currentIdx || 0);
+
                     setStatus('transferring');
-                    // Signal ready to sender
-                    dataChannelRef.current?.send(JSON.stringify({ type: 'ready' }));
-                    logDebug("Receiver: Sent READY signal to Sender");
+
+                    if (dataChannelRef.current?.readyState === 'open') {
+                        dataChannelRef.current.send(JSON.stringify({ type: 'ready' }));
+                        logDebug("Receiver: Sent READY signal to Sender");
+                    } else {
+                        logDebug("Receiver Error: DataChannel not open to send READY");
+                    }
                 } else if (msg.type === 'file-eof') {
                     logDebug(`Receiver: Received EOF for ${receiveMeta.current?.name}`);
                     if (receiveMeta.current) {
-                        const blob = new Blob(receiveBuffer.current, { type: receiveMeta.current.type });
+                        const blob = new Blob(receiveBuffer.current, { type: receiveMeta.current.fileType });
                         setReceivedFiles(prev => [...prev, { blob, name: receiveMeta.current!.name }]);
                     }
                 } else if (msg.type === 'batch-eof') {
-                    console.log("Received Batch EOF");
+                    logDebug("Receiver: Received Batch EOF - Transfer Complete");
                     setStatus('done');
                     disconnectEverything();
                 }
             } catch (err) {
-                console.error("Receiver message parse error:", err);
+                logDebug(`Receiver Parse Error: ${err}`);
             }
         } else {
             // Binary chunk
             if (!receiveMeta.current) {
-                console.warn("Received binary chunk but no metadata. Requesting metadata...");
+                logDebug("Receiver: Received binary chunk but no metadata. Requesting...");
                 dataChannelRef.current?.send(JSON.stringify({ type: 'request-metadata' }));
                 return;
             }
