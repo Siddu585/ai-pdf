@@ -222,7 +222,9 @@ function InstantDropContent() {
         };
         dc.onclose = () => {
             console.log("DataChannel Closed");
-            setStatus('disconnected');
+            if (statusRef.current !== 'done') {
+                setStatus('disconnected');
+            }
             isActive.current = false;
         };
     };
@@ -626,11 +628,14 @@ function InstantDropContent() {
                                         <div className="text-left w-full">
                                             <p className="font-semibold text-foreground truncate max-w-[300px]">
                                                 {mode === 'send'
-                                                    ? `Sending ${currentFileIndex + 1} of ${files.length}: ${files[currentFileIndex]?.name}`
-                                                    : `Receiving ${currentFileIndex + 1} of ${incomingMeta?.totalFiles || '?'}: ${incomingMeta?.name || 'Initializing...'}`
+                                                    ? `Processing File ${currentFileIndex + 1} of ${files.length}: ${files[currentFileIndex]?.name}`
+                                                    : `Processing File ${currentFileIndex + 1} of ${incomingMeta?.totalFiles || '?'}: ${incomingMeta?.name || 'Initializing...'}`
                                                 }
                                             </p>
-                                            <p className="text-xs text-muted-foreground">
+                                            <p className="text-xs text-muted-foreground flex items-center mt-1">
+                                                <span className="bg-indigo-100 text-indigo-700 dark:bg-indigo-900/40 dark:text-indigo-300 px-2 py-0.5 rounded-full font-bold inline-flex items-center gap-1 mr-2">
+                                                    ⚡ 4x Sector Speed
+                                                </span>
                                                 Batch size: {mode === 'send'
                                                     ? (files.reduce((acc, f) => acc + f.size, 0) / 1024 / 1024).toFixed(2)
                                                     : 'Calculating...'
@@ -638,6 +643,22 @@ function InstantDropContent() {
                                             </p>
                                         </div>
                                     </div>
+
+                                    {/* Overall Batch Progress */}
+                                    {mode === 'send' && status === 'transferring' && files.length > 1 && (
+                                        <div className="space-y-2 pb-4 border-b border-border/50">
+                                            <div className="flex justify-between text-xs font-bold text-indigo-600 dark:text-indigo-400">
+                                                <span>OVERALL BATCH PROGRESS</span>
+                                                <span>{Math.round(((currentFileIndex + (progress / 100)) / files.length) * 100)}%</span>
+                                            </div>
+                                            <div className="w-full bg-indigo-100 dark:bg-indigo-950/50 rounded-full h-2">
+                                                <div
+                                                    className="bg-indigo-600 dark:bg-indigo-400 h-2 rounded-full transition-all duration-300"
+                                                    style={{ width: `${((currentFileIndex + (progress / 100)) / files.length) * 100}%` }}
+                                                />
+                                            </div>
+                                        </div>
+                                    )}
 
                                     {status === 'connecting' && mode === 'send' && (
                                         <div className="flex items-center justify-center text-muted-foreground bg-secondary/10 p-4 rounded-xl">
@@ -709,10 +730,26 @@ function InstantDropContent() {
                                     )}
 
                                     {status === 'transferring' && (
-                                        <div className="space-y-2">
-                                            <p className="text-sm font-semibold truncate">Receiving {receiveMeta.current?.name}</p>
+                                        <div className="space-y-4">
+                                            {/* Overall Batch Progress */}
+                                            {incomingMeta?.totalFiles && incomingMeta.totalFiles > 1 && (
+                                                <div className="space-y-2 pb-4 border-b border-border/50">
+                                                    <div className="flex justify-between text-xs font-bold text-indigo-600 dark:text-indigo-400">
+                                                        <span>OVERALL BATCH PROGRESS</span>
+                                                        <span>{Math.round((((currentFileIndex || 0) + (progress / 100)) / incomingMeta.totalFiles) * 100)}%</span>
+                                                    </div>
+                                                    <div className="w-full bg-indigo-100 dark:bg-indigo-950/50 rounded-full h-2">
+                                                        <div
+                                                            className="bg-indigo-600 dark:bg-indigo-400 h-2 rounded-full transition-all duration-300"
+                                                            style={{ width: `${(((currentFileIndex || 0) + (progress / 100)) / incomingMeta.totalFiles) * 100}%` }}
+                                                        />
+                                                    </div>
+                                                </div>
+                                            )}
+
+                                            <p className="text-sm font-semibold truncate">Current File Part ({currentFileIndex + 1}): {receiveMeta.current?.name}</p>
                                             <div className="flex justify-between text-sm font-medium">
-                                                <span>Transferring...</span>
+                                                <span>Transferring File Data...</span>
                                                 <span>{progress}%</span>
                                             </div>
                                             <div className="w-full bg-muted rounded-full h-3">
@@ -786,11 +823,11 @@ function InstantDropContent() {
                     )}
 
                 </div>
-            </main>
+            </main >
 
             <Footer />
             <PaywallModal isOpen={isPaywallOpen} onClose={() => setIsPaywallOpen(false)} deviceId={deviceId} />
-        </div>
+        </div >
     );
 }
 
