@@ -295,7 +295,6 @@ function InstantDropContent() {
                         if (dc.bufferedAmount > THRESHOLD) {
                             await new Promise<void>(res => {
                                 dc.onbufferedamountlow = () => { dc.onbufferedamountlow = null; res(); };
-                                setTimeout(res, 20);
                             });
                         }
 
