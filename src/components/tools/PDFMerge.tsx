@@ -92,7 +92,7 @@ export function PDFMerge() {
     const [isMerging, setIsMerging] = useState(false);
     const [mergedPdfUrl, setMergedPdfUrl] = useState<string | null>(null);
 
-    const { recordUsage, isPaywallOpen, setIsPaywallOpen, handleAction } = useUsage();
+    const { recordUsage, isPaywallOpen, setIsPaywallOpen, handleAction, deviceId } = useUsage();
 
     const fileInputRef = useRef<HTMLInputElement>(null);
 
@@ -266,7 +266,7 @@ export function PDFMerge() {
                 </div>
             )}
 
-            <PaywallModal isOpen={isPaywallOpen} onClose={() => setIsPaywallOpen(false)} />
+            <PaywallModal isOpen={isPaywallOpen} onClose={() => setIsPaywallOpen(false)} deviceId={deviceId} />
         </div>
     );
 }
