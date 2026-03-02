@@ -152,23 +152,50 @@ function InstantDropContent() {
 
     const setupDataChannel = (dc: RTCDataChannel) => {
         dc.onopen = () => {
+            console.log("DataChannel Open, Mode:", mode);
             setStatus('transferring');
-            if (mode === 'send') startFileTransfer();
+            if (mode === 'send') {
+                // Small delay to ensure both sides are fully ready for string vs binary
+                setTimeout(() => {
+                    console.log("Starting file transfer after delay");
+                    startFileTransfer();
+                }, 500);
+            }
         };
         dc.onmessage = (e) => {
+            console.log("DataChannel message received, type:", typeof e.data);
             if (mode === 'receive') {
                 handleIncomingData(e.data);
             } else {
                 // Sender receiving ACK
-                const msg = JSON.parse(e.data);
-                if (msg.type === 'ack') {
-                    lastAckedOffset.current = msg.offset;
-                    inFlightCount.current--;
-                    sendNextQueuedChunk();
+                try {
+                    const msg = JSON.parse(e.data);
+                    if (msg.type === 'ack') {
+                        lastAckedOffset.current = msg.offset;
+                        inFlightCount.current--;
+                        sendNextQueuedChunk();
+                    } else if (msg.type === 'request-metadata') {
+                        console.log("Receiver requested metadata, resending...");
+                        // Resend current file metadata
+                        const file = files[currentFileIndex];
+                        if (file) {
+                            dc.send(JSON.stringify({
+                                type: 'metadata',
+                                name: file.name,
+                                size: file.size,
+                                fileType: file.type,
+                                currentIdx: currentFileIndex,
+                                totalFiles: files.length
+                            }));
+                        }
+                    }
+                } catch (err) {
+                    console.error("Sender message parse error:", err);
                 }
             }
         };
         dc.onclose = () => {
+            console.log("DataChannel Closed");
             setStatus('disconnected');
             isActive.current = false;
         };
@@ -289,24 +316,36 @@ function InstantDropContent() {
 
     const handleIncomingData = (data: any) => {
         if (typeof data === 'string') {
-            const msg = JSON.parse(data);
-            if (msg.type === 'metadata') {
-                receiveMeta.current = msg;
-                receiveBuffer.current = [];
-                receivedBytes.current = 0;
-                setCurrentFileIndex(msg.currentIdx || 0);
-                setStatus('transferring');
-            } else if (msg.type === 'file-eof') {
-                if (receiveMeta.current) {
-                    const blob = new Blob(receiveBuffer.current, { type: receiveMeta.current.type });
-                    setReceivedFiles(prev => [...prev, { blob, name: receiveMeta.current!.name }]);
+            try {
+                const msg = JSON.parse(data);
+                if (msg.type === 'metadata') {
+                    console.log("Received Metadata:", msg.name);
+                    receiveMeta.current = msg;
+                    receiveBuffer.current = [];
+                    receivedBytes.current = 0;
+                    setCurrentFileIndex(msg.currentIdx || 0);
+                    setStatus('transferring');
+                } else if (msg.type === 'file-eof') {
+                    console.log("Received File EOF");
+                    if (receiveMeta.current) {
+                        const blob = new Blob(receiveBuffer.current, { type: receiveMeta.current.type });
+                        setReceivedFiles(prev => [...prev, { blob, name: receiveMeta.current!.name }]);
+                    }
+                } else if (msg.type === 'batch-eof') {
+                    console.log("Received Batch EOF");
+                    setStatus('done');
+                    disconnectEverything();
                 }
-            } else if (msg.type === 'batch-eof') {
-                setStatus('done');
-                disconnectEverything();
+            } catch (err) {
+                console.error("Receiver message parse error:", err);
             }
         } else {
             // Binary chunk
+            if (!receiveMeta.current) {
+                console.warn("Received binary chunk but no metadata. Requesting metadata...");
+                dataChannelRef.current?.send(JSON.stringify({ type: 'request-metadata' }));
+                return;
+            }
             receiveBuffer.current.push(data);
             receivedBytes.current += data.byteLength;
             if (receiveMeta.current?.size) {
