@@ -10,9 +10,9 @@ import { Footer } from "@/components/layout/Footer";
 import { useUsage } from "@/hooks/useUsage";
 import { PaywallModal } from "@/components/layout/PaywallModal";
 
-// Optimized Chunk size for DataChannel (16KB for max compatibility)
-const CHUNK_SIZE = 16 * 1024;
-const MAX_IN_FLIGHT = 16; // Increased flight count since chunks are smaller
+// Optimized Chunk size for DataChannel (64KB for performance)
+const CHUNK_SIZE = 64 * 1024;
+const MAX_IN_FLIGHT = 16; // Not used in refined logic but kept for constants
 const BACKEND_WS_URL = process.env.NEXT_PUBLIC_API_URL
     ? process.env.NEXT_PUBLIC_API_URL.trim().replace(/\/$/, "").replace(/^https:\/\//i, "wss://").replace(/^http:\/\//i, "ws://")
     : typeof window !== "undefined"
@@ -213,7 +213,8 @@ function InstantDropContent() {
         return new Promise<void>((resolve) => {
             if (!dataChannelRef.current) return resolve();
 
-            // Send metadata
+            // 1. Send metadata
+            console.log("Sender: Sending Metadata for", file.name);
             dataChannelRef.current.send(JSON.stringify({
                 type: 'metadata',
                 name: file.name,
@@ -223,40 +224,64 @@ function InstantDropContent() {
                 totalFiles: total
             }));
 
-            let offset = 0;
-            const BUFFER_THRESHOLD = 64 * 1024; // 64KB
+            // 2. Wait for 'ready' signal from receiver
+            const waitForReady = () => {
+                return new Promise<void>((readyResolve) => {
+                    const checkReady = (e: MessageEvent) => {
+                        try {
+                            if (typeof e.data === 'string') {
+                                const msg = JSON.parse(e.data);
+                                if (msg.type === 'ready') {
+                                    console.log("Sender: Received Ready Signal");
+                                    dataChannelRef.current?.removeEventListener('message', checkReady);
+                                    readyResolve();
+                                }
+                            }
+                        } catch (err) { /* Ignore non-JSON or other messages */ }
+                    };
+                    dataChannelRef.current?.addEventListener('message', checkReady);
+                });
+            };
 
-            const sendNextChunk = () => {
+            const startStreaming = async () => {
+                await waitForReady();
+                console.log("Sender: Starting stream for", file.name);
+                let offset = 0;
+                const THRESHOLD = 64 * 1024;
+
                 while (isActive.current && offset < file.size) {
-                    if (dataChannelRef.current!.bufferedAmount > BUFFER_THRESHOLD) {
-                        dataChannelRef.current!.onbufferedamountlow = () => {
-                            dataChannelRef.current!.onbufferedamountlow = null;
-                            sendNextChunk();
-                        };
-                        return;
+                    if (dataChannelRef.current && dataChannelRef.current.bufferedAmount > THRESHOLD) {
+                        await new Promise<void>(res => {
+                            dataChannelRef.current!.onbufferedamountlow = () => {
+                                dataChannelRef.current!.onbufferedamountlow = null;
+                                res();
+                            };
+                        });
                     }
 
                     const slice = file.slice(offset, offset + CHUNK_SIZE);
-                    const reader = new FileReader();
-                    reader.onload = (e) => {
-                        const buffer = e.target?.result as ArrayBuffer;
-                        if (dataChannelRef.current?.readyState === 'open') {
-                            dataChannelRef.current.send(buffer);
-                        }
-                    };
-                    reader.readAsArrayBuffer(slice);
+                    const buffer = await slice.arrayBuffer();
 
-                    offset += CHUNK_SIZE;
-                    setProgress(Math.round((offset / file.size) * 100));
+                    if (dataChannelRef.current && dataChannelRef.current.readyState === 'open') {
+                        dataChannelRef.current.send(buffer);
+                        offset += buffer.byteLength;
+                        setProgress(Math.round((offset / file.size) * 100));
+                    } else {
+                        console.log("Sender: DataChannel not open, aborting stream");
+                        break;
+                    }
                 }
 
                 if (offset >= file.size) {
+                    console.log("Sender: Finalizing file");
                     dataChannelRef.current?.send(JSON.stringify({ type: 'file-eof' }));
                     resolve();
                 }
             };
-
-            sendNextChunk();
+            startStreaming().catch(err => {
+                console.error("Sender: Stream failed", err);
+                resolve();
+            });
         });
     };
 
@@ -317,6 +342,9 @@ function InstantDropContent() {
                     receivedBytes.current = 0;
                     setCurrentFileIndex(msg.currentIdx || 0);
                     setStatus('transferring');
+                    // Signal ready to sender
+                    dataChannelRef.current?.send(JSON.stringify({ type: 'ready' }));
+                    console.log("Receiver: Sent Ready Signal");
                 } else if (msg.type === 'file-eof') {
                     console.log("Received File EOF");
                     if (receiveMeta.current) {
