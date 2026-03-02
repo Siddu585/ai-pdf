@@ -48,7 +48,7 @@ function InstantDropContent() {
         setDebugLogs(prev => [`[${time}] ${msg}`, ...prev].slice(0, 50));
     };
     const peerRef = useRef<RTCPeerConnection | null>(null);
-    const dataChannelRef = useRef<RTCDataChannel | null>(null);
+    const dataChannelsRef = useRef<RTCDataChannel[]>([]);
     const filesRef = useRef<File[]>([]);
     const modeRef = useRef(mode);
     const statusRef = useRef(status);
@@ -57,6 +57,11 @@ function InstantDropContent() {
     useEffect(() => { statusRef.current = status; }, [status]);
     const remoteDescriptionSet = useRef(false);
     const iceBuffer = useRef<RTCIceCandidateInit[]>([]);
+
+    // Transfer reassembly state (Receiver)
+    const receiveBuffers = useRef<Map<number, ArrayBuffer[]>>(new Map());
+    const receiveMetas = useRef<Map<number, any>>(new Map());
+    const receivedBytesMap = useRef<Map<number, number>>(new Map());
 
     // Transfer state
     const isActive = useRef(false);
@@ -138,44 +143,49 @@ function InstantDropContent() {
         };
 
         if (isSender) {
-            logDebug("Creating DataChannel (Sender)");
-            const dc = peer.createDataChannel("file-transfer", { ordered: true });
-            dataChannelRef.current = dc;
-            setupDataChannel(dc);
-            dc.bufferedAmountLowThreshold = 256 * 1024; // 256KB for performance
+            logDebug("Creating 4 Parallel DataChannels (Sender)");
+            for (let i = 0; i < 4; i++) {
+                const dc = peer.createDataChannel(`file-transfer-${i}`, { ordered: true });
+                dataChannelsRef.current.push(dc);
+                setupDataChannel(dc, i);
+                dc.bufferedAmountLowThreshold = 512 * 1024; // 512KB for parallel throughput
+            }
 
             const offer = await peer.createOffer();
             await peer.setLocalDescription(offer);
             ws.send(JSON.stringify({ type: 'offer', sdp: offer }));
         } else {
-            logDebug("Awaiting DataChannel (Receiver)");
+            logDebug("Awaiting Parallel DataChannels (Receiver)");
             peer.ondatachannel = (e) => {
-                logDebug("Receiver: DataChannel Received from Peer");
-                dataChannelRef.current = e.channel;
-                setupDataChannel(e.channel);
+                const label = e.channel.label;
+                const index = parseInt(label.split('-').pop() || '0');
+                logDebug(`Receiver: DataChannel ${index} Received`);
+                dataChannelsRef.current[index] = e.channel;
+                setupDataChannel(e.channel, index);
             };
         }
     };
 
-    const setupDataChannel = (dc: RTCDataChannel) => {
+    const setupDataChannel = (dc: RTCDataChannel, channelIdx: number) => {
         dc.binaryType = 'arraybuffer';
-        dc.bufferedAmountLowThreshold = 64 * 1024; // 64KB
 
         dc.onopen = () => {
-            logDebug(`DataChannel Open, Mode (Ref): ${modeRef.current}`);
-            setStatus('transferring');
-            if (modeRef.current === 'send') {
-                setTimeout(() => {
-                    logDebug("Starting file transfer after delay");
-                    startFileTransfer();
-                }, 500);
+            logDebug(`Channel ${channelIdx} Open. Mode: ${modeRef.current}`);
+            // Only start transfer once index 0 is open
+            if (channelIdx === 0) {
+                setStatus('transferring');
+                if (modeRef.current === 'send') {
+                    setTimeout(() => {
+                        logDebug("Starting parallel file transfer...");
+                        startFileTransfer();
+                    }, 500);
+                }
             }
         };
         dc.onmessage = (e) => {
             if (modeRef.current === 'receive') {
-                handleIncomingData(e.data);
+                handleIncomingData(e.data, channelIdx);
             } else {
-                // Sender receiving requests (e.g., metadata resend)
                 try {
                     const msg = JSON.parse(e.data);
                     if (msg.type === 'request-metadata') {
@@ -206,94 +216,93 @@ function InstantDropContent() {
 
     const startFileTransfer = async () => {
         const currentFiles = filesRef.current;
-        if (currentFiles.length === 0) {
-            console.error("No files in filesRef to transfer");
-            return;
-        }
+        if (currentFiles.length === 0) return;
         isActive.current = true;
         for (let i = 0; i < currentFiles.length; i++) {
             setCurrentFileIndex(i);
-            await transferFileP2P(currentFiles[i], i, currentFiles.length);
+            await transferFileP2PParallel(currentFiles[i], i, currentFiles.length);
         }
-        dataChannelRef.current?.send(JSON.stringify({ type: 'batch-eof' }));
+        dataChannelsRef.current[0]?.send(JSON.stringify({ type: 'batch-eof' }));
         setStatus('done');
         isActive.current = false;
     };
 
-    const transferFileP2P = (file: File, index: number, total: number) => {
+    const transferFileP2PParallel = (file: File, index: number, total: number) => {
         return new Promise<void>((resolve) => {
-            if (!dataChannelRef.current) return resolve();
+            if (dataChannelsRef.current.length === 0) return resolve();
 
             let handshakeInterval: any;
             let isResolved = false;
 
             const sendMeta = () => {
-                if (isResolved || !dataChannelRef.current || dataChannelRef.current.readyState !== 'open') return;
-                logDebug(`Sender: Sending Metadata for ${file.name} (Attempt)`);
-                dataChannelRef.current.send(JSON.stringify({
+                if (isResolved || dataChannelsRef.current[0]?.readyState !== 'open') return;
+                logDebug(`Sender: Sending Parallel Metadata for ${file.name}`);
+                dataChannelsRef.current[0].send(JSON.stringify({
                     type: 'metadata',
                     name: file.name,
                     size: file.size,
                     fileType: file.type,
                     currentIdx: index,
-                    totalFiles: total
+                    totalFiles: total,
+                    isParallel: true,
+                    parallelChannels: dataChannelsRef.current.length
                 }));
             };
 
-            // 1. Start handshake with retry
             sendMeta();
             handshakeInterval = setInterval(sendMeta, 2000);
 
-            // 2. Wait for 'ready' signal
             const checkReady = (e: MessageEvent) => {
                 try {
                     if (typeof e.data === 'string') {
                         const msg = JSON.parse(e.data);
                         if (msg.type === 'ready') {
-                            logDebug("Sender: Received Ready Signal - Starting Stream");
+                            logDebug("Sender: Received Ready - Launching Nuclear 4-Sector Burst");
                             clearInterval(handshakeInterval);
-                            dataChannelRef.current?.removeEventListener('message', checkReady);
-                            startStreaming();
+                            dataChannelsRef.current[0]?.removeEventListener('message', checkReady);
+                            startParallelBurst();
                         }
                     }
-                } catch (err) { /* Binary data ignore */ }
+                } catch (err) { }
             };
-            dataChannelRef.current?.addEventListener('message', checkReady);
+            dataChannelsRef.current[0]?.addEventListener('message', checkReady);
 
-            const startStreaming = async () => {
-                let offset = 0;
-                const THRESHOLD = 256 * 1024; // 256KB
+            const startParallelBurst = async () => {
+                const numChannels = dataChannelsRef.current.length;
+                const sectorSize = Math.ceil(file.size / numChannels);
+                let sectorsFinished = 0;
 
-                while (isActive.current && offset < file.size) {
-                    if (dataChannelRef.current && dataChannelRef.current.bufferedAmount > THRESHOLD) {
-                        await new Promise<void>(res => {
-                            dataChannelRef.current!.onbufferedamountlow = () => {
-                                dataChannelRef.current!.onbufferedamountlow = null;
-                                res();
-                            };
-                            setTimeout(res, 50); // Faster safety timeout
-                        });
+                const workers = dataChannelsRef.current.map(async (dc, chIdx) => {
+                    let offset = chIdx * sectorSize;
+                    const end = Math.min(offset + sectorSize, file.size);
+                    const THRESHOLD = 1024 * 1024; // 1MB buffer for high speed
+
+                    while (isActive.current && offset < end) {
+                        if (dc.bufferedAmount > THRESHOLD) {
+                            await new Promise<void>(res => {
+                                dc.onbufferedamountlow = () => { dc.onbufferedamountlow = null; res(); };
+                                setTimeout(res, 20);
+                            });
+                        }
+
+                        const chunkLen = Math.min(CHUNK_SIZE, end - offset);
+                        const slice = file.slice(offset, offset + chunkLen);
+                        const buffer = await slice.arrayBuffer();
+
+                        if (dc.readyState === 'open') {
+                            dc.send(buffer);
+                            offset += buffer.byteLength;
+                            // Update global progress safely
+                            if (chIdx === 0) setProgress(Math.round(((offset - (chIdx * sectorSize)) / sectorSize) * 100));
+                        } else break;
                     }
+                    sectorsFinished++;
+                });
 
-                    const slice = file.slice(offset, offset + CHUNK_SIZE);
-                    const buffer = await slice.arrayBuffer();
-
-                    if (dataChannelRef.current && dataChannelRef.current.readyState === 'open') {
-                        dataChannelRef.current.send(buffer);
-                        offset += buffer.byteLength;
-                        setProgress(Math.round((offset / file.size) * 100));
-
-                        // Yield to UI less frequently (every 5MB) for maximum speed
-                        if (offset % (1024 * 1024 * 5) === 0) await new Promise(r => setTimeout(r, 0));
-                    } else {
-                        logDebug("Sender: DataChannel closed mid-stream");
-                        break;
-                    }
-                }
-
-                if (offset >= file.size) {
-                    logDebug(`Sender: Finalized ${file.name}`);
-                    dataChannelRef.current?.send(JSON.stringify({ type: 'file-eof' }));
+                await Promise.all(workers);
+                if (sectorsFinished >= numChannels) {
+                    logDebug(`Sender: All Sectors Finalized for ${file.name}`);
+                    dataChannelsRef.current[0]?.send(JSON.stringify({ type: 'file-eof' }));
                     isResolved = true;
                     resolve();
                 }
@@ -347,33 +356,36 @@ function InstantDropContent() {
         };
     };
 
-    const handleIncomingData = (data: any) => {
+    const handleIncomingData = (data: any, channelIdx: number) => {
         if (typeof data === 'string') {
             try {
                 const msg = JSON.parse(data);
                 if (msg.type === 'metadata') {
-                    logDebug(`Receiver: Received Metadata for ${msg.name} (${(msg.size / 1024 / 1024).toFixed(2)} MB)`);
+                    logDebug(`Receiver: Received Metadata for ${msg.name} (Parallel: ${msg.isParallel})`);
                     receiveMeta.current = msg;
-                    receiveBuffer.current = [];
+                    receiveBuffers.current = new Map();
                     receivedBytes.current = 0;
                     setCurrentFileIndex(msg.currentIdx || 0);
-
                     setStatus('transferring');
 
-                    if (dataChannelRef.current?.readyState === 'open') {
-                        dataChannelRef.current.send(JSON.stringify({ type: 'ready' }));
+                    if (dataChannelsRef.current[0]?.readyState === 'open') {
+                        dataChannelsRef.current[0].send(JSON.stringify({ type: 'ready' }));
                         logDebug("Receiver: Sent READY signal to Sender");
-                    } else {
-                        logDebug("Receiver Error: DataChannel not open to send READY");
                     }
                 } else if (msg.type === 'file-eof') {
                     logDebug(`Receiver: Received EOF for ${receiveMeta.current?.name}`);
                     if (receiveMeta.current) {
-                        const blob = new Blob(receiveBuffer.current, { type: receiveMeta.current.fileType });
+                        // Reassemble from parallel buffers
+                        const fullBuffer: ArrayBuffer[] = [];
+                        for (let i = 0; i < 4; i++) {
+                            const sector = receiveBuffers.current.get(i) || [];
+                            fullBuffer.push(...sector);
+                        }
+                        const blob = new Blob(fullBuffer, { type: receiveMeta.current.fileType });
                         setReceivedFiles(prev => [...prev, { blob, name: receiveMeta.current!.name }]);
                     }
                 } else if (msg.type === 'batch-eof') {
-                    logDebug("Receiver: Received Batch EOF - Transfer Complete");
+                    logDebug("Receiver: Transfer Complete");
                     setStatus('done');
                     disconnectEverything();
                 }
@@ -381,13 +393,10 @@ function InstantDropContent() {
                 logDebug(`Receiver Parse Error: ${err}`);
             }
         } else {
-            // Binary chunk
-            if (!receiveMeta.current) {
-                logDebug("Receiver: Received binary chunk but no metadata. Requesting...");
-                dataChannelRef.current?.send(JSON.stringify({ type: 'request-metadata' }));
-                return;
-            }
-            receiveBuffer.current.push(data);
+            // Binary sector chunk
+            const sector = receiveBuffers.current.get(channelIdx) || [];
+            sector.push(data);
+            receiveBuffers.current.set(channelIdx, sector);
             receivedBytes.current += data.byteLength;
             if (receiveMeta.current?.size) {
                 setProgress(Math.round((receivedBytes.current / receiveMeta.current.size) * 100));
