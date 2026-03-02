@@ -23,6 +23,7 @@ const ICE_SERVERS = {
     iceServers: [
         { urls: "stun:stun.l.google.com:19302" },
         { urls: "stun:stun1.l.google.com:19302" },
+        { urls: "stun:stun2.l.google.com:19302" },
     ]
 };
 
@@ -42,6 +43,8 @@ function InstantDropContent() {
     const wsRef = useRef<WebSocket | null>(null);
     const peerRef = useRef<RTCPeerConnection | null>(null);
     const dataChannelRef = useRef<RTCDataChannel | null>(null);
+    const remoteDescriptionSet = useRef(false);
+    const iceBuffer = useRef<RTCIceCandidateInit[]>([]);
 
     // Transfer state
     const currentOffset = useRef(0);
@@ -69,6 +72,15 @@ function InstantDropContent() {
         const ws = new WebSocket(`${BACKEND_WS_URL}/ws/drop/${newRoomId}/sender`);
         wsRef.current = ws;
 
+        ws.onopen = () => {
+            console.log("Sender WS Opened");
+            // Heartbeat
+            const heartbeat = setInterval(() => {
+                if (ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify({ type: 'ping' }));
+            }, 10000);
+            ws.onclose = () => clearInterval(heartbeat);
+        };
+
         ws.onmessage = async (event) => {
             console.log("Sender WS Message:", event.data);
             const data = JSON.parse(event.data);
@@ -78,9 +90,20 @@ function InstantDropContent() {
             } else if (data.type === 'answer') {
                 console.log("Received answer, setting remote description");
                 await peerRef.current?.setRemoteDescription(new RTCSessionDescription(data.sdp));
+                remoteDescriptionSet.current = true;
+                // Flush buffered candidates
+                for (const candidate of iceBuffer.current) {
+                    await peerRef.current?.addIceCandidate(new RTCIceCandidate(candidate));
+                }
+                iceBuffer.current = [];
             } else if (data.type === 'ice-candidate') {
-                console.log("Received remote ICE candidate");
-                await peerRef.current?.addIceCandidate(new RTCIceCandidate(data.candidate));
+                if (!remoteDescriptionSet.current) {
+                    console.log("Buffering remote ICE candidate");
+                    iceBuffer.current.push(data.candidate);
+                } else {
+                    console.log("Adding remote ICE candidate");
+                    await peerRef.current?.addIceCandidate(new RTCIceCandidate(data.candidate));
+                }
             } else if (data.type === 'ack') {
                 lastAckedOffset.current = data.offset;
                 inFlightCount.current--;
@@ -227,6 +250,14 @@ function InstantDropContent() {
         const ws = new WebSocket(`${BACKEND_WS_URL}/ws/drop/${code}/receiver`);
         wsRef.current = ws;
 
+        ws.onopen = () => {
+            console.log("Receiver WS Opened");
+            const heartbeat = setInterval(() => {
+                if (ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify({ type: 'ping' }));
+            }, 10000);
+            ws.onclose = () => clearInterval(heartbeat);
+        };
+
         ws.onmessage = async (event) => {
             console.log("Receiver WS Message:", event.data);
             const data = JSON.parse(event.data);
@@ -234,12 +265,24 @@ function InstantDropContent() {
                 console.log("Received offer, setting up WebRTC and creating answer");
                 await setupWebRTC(ws, false);
                 await peerRef.current?.setRemoteDescription(new RTCSessionDescription(data.sdp));
+                remoteDescriptionSet.current = true;
                 const answer = await peerRef.current?.createAnswer();
                 await peerRef.current?.setLocalDescription(answer);
                 ws.send(JSON.stringify({ type: 'answer', sdp: answer }));
+
+                // Flush buffered candidates
+                for (const candidate of iceBuffer.current) {
+                    await peerRef.current?.addIceCandidate(new RTCIceCandidate(candidate));
+                }
+                iceBuffer.current = [];
             } else if (data.type === 'ice-candidate') {
-                console.log("Received remote ICE candidate (Receiver)");
-                await peerRef.current?.addIceCandidate(new RTCIceCandidate(data.candidate));
+                if (!remoteDescriptionSet.current) {
+                    console.log("Buffering remote ICE candidate (Receiver)");
+                    iceBuffer.current.push(data.candidate);
+                } else {
+                    console.log("Adding remote ICE candidate (Receiver)");
+                    await peerRef.current?.addIceCandidate(new RTCIceCandidate(data.candidate));
+                }
             }
         };
     };
