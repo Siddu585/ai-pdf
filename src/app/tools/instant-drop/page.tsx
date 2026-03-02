@@ -306,8 +306,12 @@ function InstantDropContent() {
                             dc.send(buffer);
                             offset += buffer.byteLength;
                             totalSentBytesRef.current += buffer.byteLength;
-                            // Update global progress using totalSentBytesRef
-                            setProgress(Math.round((totalSentBytesRef.current / file.size) * 100));
+
+                            // True Network Synchronization: Only count bytes that have left the buffer
+                            const totalBuffered = dataChannelsRef.current.reduce((acc, c) => acc + (c.readyState === 'open' ? c.bufferedAmount : 0), 0);
+                            const trueSent = Math.max(0, totalSentBytesRef.current - totalBuffered);
+
+                            setProgress(Math.round((trueSent / file.size) * 100));
                         } else break;
                     }
                     sectorsFinished++;
@@ -702,19 +706,21 @@ function InstantDropContent() {
                                     <h2 className="text-xl font-bold text-green-700 dark:text-green-400">{receivedFiles.length} Files Received</h2>
                                     <p className="text-sm text-muted-foreground">The whole batch is ready for you!</p>
 
-                                    <Button className="w-full bg-indigo-600 hover:bg-indigo-700 text-white font-bold h-12 mb-3" onClick={downloadAll}>
-                                        <Download className="w-5 h-5 mr-2" />
-                                        Save to Device Storage
+                                    <Button className="w-full bg-indigo-600 hover:bg-indigo-700 text-white font-bold h-14 mb-3 shadow-lg shadow-indigo-500/20 text-lg border-2 border-indigo-400/50" onClick={downloadAll}>
+                                        <Download className="w-6 h-6 mr-3 animate-bounce" />
+                                        Download Files to Device
                                     </Button>
 
-                                    <Button
-                                        variant="outline"
-                                        className="w-full border-indigo-200 hover:bg-indigo-50 text-indigo-700 font-bold h-12"
-                                        onClick={handleSaveToGooglePhotos}
-                                    >
-                                        <img src="https://www.gstatic.com/images/branding/product/1x/photos_96dp.png" className="w-5 h-5 mr-2" />
-                                        Save to Google Photos
-                                    </Button>
+                                    {process.env.NEXT_PUBLIC_GOOGLE_CLIENT_ID && (
+                                        <Button
+                                            variant="outline"
+                                            className="w-full border-indigo-200 hover:bg-indigo-50 text-indigo-700 font-bold h-12"
+                                            onClick={handleSaveToGooglePhotos}
+                                        >
+                                            <img src="https://www.gstatic.com/images/branding/product/1x/photos_96dp.png" className="w-5 h-5 mr-2" />
+                                            Save to Google Photos
+                                        </Button>
+                                    )}
 
                                     <Button variant="ghost" onClick={() => { setMode('select'); setStatus('disconnected'); setReceivedFiles([]); }}>
                                         Receive More
