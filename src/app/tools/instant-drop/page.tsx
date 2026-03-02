@@ -58,10 +58,10 @@ function InstantDropContent() {
     const remoteDescriptionSet = useRef(false);
     const iceBuffer = useRef<RTCIceCandidateInit[]>([]);
 
-    // Transfer reassembly state (Receiver)
     const receiveBuffers = useRef<Map<number, ArrayBuffer[]>>(new Map());
     const receiveMetas = useRef<Map<number, any>>(new Map());
-    const receivedBytesMap = useRef<Map<number, number>>(new Map());
+    const totalReceivedBytesRef = useRef(0);
+    const totalSentBytesRef = useRef(0);
 
     // Transfer state
     const isActive = useRef(false);
@@ -219,6 +219,7 @@ function InstantDropContent() {
         if (currentFiles.length === 0) return;
         isActive.current = true;
         for (let i = 0; i < currentFiles.length; i++) {
+            totalSentBytesRef.current = 0;
             setCurrentFileIndex(i);
             await transferFileP2PParallel(currentFiles[i], i, currentFiles.length);
         }
@@ -292,8 +293,9 @@ function InstantDropContent() {
                         if (dc.readyState === 'open') {
                             dc.send(buffer);
                             offset += buffer.byteLength;
-                            // Update global progress safely
-                            if (chIdx === 0) setProgress(Math.round(((offset - (chIdx * sectorSize)) / sectorSize) * 100));
+                            totalSentBytesRef.current += buffer.byteLength;
+                            // Update global progress using totalSentBytesRef
+                            setProgress(Math.round((totalSentBytesRef.current / file.size) * 100));
                         } else break;
                     }
                     sectorsFinished++;
@@ -361,17 +363,25 @@ function InstantDropContent() {
             try {
                 const msg = JSON.parse(data);
                 if (msg.type === 'metadata') {
-                    logDebug(`Receiver: Received Metadata for ${msg.name} (Parallel: ${msg.isParallel})`);
-                    receiveMeta.current = msg;
-                    receiveBuffers.current = new Map();
-                    receivedBytes.current = 0;
-                    setCurrentFileIndex(msg.currentIdx || 0);
-                    setStatus('transferring');
-
-                    if (dataChannelsRef.current[0]?.readyState === 'open') {
-                        dataChannelsRef.current[0].send(JSON.stringify({ type: 'ready' }));
-                        logDebug("Receiver: Sent READY signal to Sender");
+                    // Idempotent check: don't reset if we're already receiving this file
+                    if (receiveMeta.current?.name === msg.name && statusRef.current === 'transferring') {
+                        logDebug(`Receiver: Redundant Metadata for ${msg.name} - Ignoring reset`);
+                    } else {
+                        logDebug(`Receiver: Received Metadata for ${msg.name} (Parallel: ${msg.isParallel})`);
+                        receiveMeta.current = msg;
+                        receiveBuffers.current = new Map();
+                        totalReceivedBytesRef.current = 0;
+                        setCurrentFileIndex(msg.currentIdx || 0);
+                        setStatus('transferring');
                     }
+
+                    // Always broadcast READY on all open channels to be safe
+                    dataChannelsRef.current.forEach(dc => {
+                        if (dc.readyState === 'open') {
+                            dc.send(JSON.stringify({ type: 'ready' }));
+                        }
+                    });
+                    logDebug("Receiver: Broadcast READY to all channels");
                 } else if (msg.type === 'file-eof') {
                     logDebug(`Receiver: Received EOF for ${receiveMeta.current?.name}`);
                     if (receiveMeta.current) {
@@ -397,9 +407,9 @@ function InstantDropContent() {
             const sector = receiveBuffers.current.get(channelIdx) || [];
             sector.push(data);
             receiveBuffers.current.set(channelIdx, sector);
-            receivedBytes.current += data.byteLength;
+            totalReceivedBytesRef.current += data.byteLength;
             if (receiveMeta.current?.size) {
-                setProgress(Math.round((receivedBytes.current / receiveMeta.current.size) * 100));
+                setProgress(Math.round((totalReceivedBytesRef.current / receiveMeta.current.size) * 100));
             }
         }
     };
