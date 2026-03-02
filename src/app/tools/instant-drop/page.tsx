@@ -10,8 +10,8 @@ import { Footer } from "@/components/layout/Footer";
 import { useUsage } from "@/hooks/useUsage";
 import { PaywallModal } from "@/components/layout/PaywallModal";
 
-// Optimized Chunk size for DataChannel (16KB for high compatibility)
-const CHUNK_SIZE = 16 * 1024;
+// Optimized Chunk size for DataChannel (128KB for high speed)
+const CHUNK_SIZE = 128 * 1024;
 const MAX_IN_FLIGHT = 16;
 const BACKEND_WS_URL = process.env.NEXT_PUBLIC_API_URL
     ? process.env.NEXT_PUBLIC_API_URL.trim().replace(/\/$/, "").replace(/^https:\/\//i, "wss://").replace(/^http:\/\//i, "ws://")
@@ -142,6 +142,7 @@ function InstantDropContent() {
             const dc = peer.createDataChannel("file-transfer", { ordered: true });
             dataChannelRef.current = dc;
             setupDataChannel(dc);
+            dc.bufferedAmountLowThreshold = 256 * 1024; // 256KB for performance
 
             const offer = await peer.createOffer();
             await peer.setLocalDescription(offer);
@@ -261,8 +262,7 @@ function InstantDropContent() {
 
             const startStreaming = async () => {
                 let offset = 0;
-                const THRESHOLD = 64 * 1024;
-                const CHUNK_SIZE = 16 * 1024; // 16KB chunk size
+                const THRESHOLD = 256 * 1024; // 256KB
 
                 while (isActive.current && offset < file.size) {
                     if (dataChannelRef.current && dataChannelRef.current.bufferedAmount > THRESHOLD) {
@@ -271,8 +271,7 @@ function InstantDropContent() {
                                 dataChannelRef.current!.onbufferedamountlow = null;
                                 res();
                             };
-                            // Safety timeout for low threshold events
-                            setTimeout(res, 100);
+                            setTimeout(res, 50); // Faster safety timeout
                         });
                     }
 
@@ -283,8 +282,9 @@ function InstantDropContent() {
                         dataChannelRef.current.send(buffer);
                         offset += buffer.byteLength;
                         setProgress(Math.round((offset / file.size) * 100));
-                        // Yield to UI
-                        if (offset % (CHUNK_SIZE * 20) === 0) await new Promise(r => setTimeout(r, 0));
+
+                        // Yield to UI less frequently (every 5MB) for maximum speed
+                        if (offset % (1024 * 1024 * 5) === 0) await new Promise(r => setTimeout(r, 0));
                     } else {
                         logDebug("Sender: DataChannel closed mid-stream");
                         break;
