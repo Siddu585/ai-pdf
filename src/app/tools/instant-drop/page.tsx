@@ -70,12 +70,16 @@ function InstantDropContent() {
         wsRef.current = ws;
 
         ws.onmessage = async (event) => {
+            console.log("Sender WS Message:", event.data);
             const data = JSON.parse(event.data);
             if (data.type === 'peer-connected') {
+                console.log("Peer connected, starting WebRTC setup");
                 setupWebRTC(ws, true);
             } else if (data.type === 'answer') {
+                console.log("Received answer, setting remote description");
                 await peerRef.current?.setRemoteDescription(new RTCSessionDescription(data.sdp));
             } else if (data.type === 'ice-candidate') {
+                console.log("Received remote ICE candidate");
                 await peerRef.current?.addIceCandidate(new RTCIceCandidate(data.candidate));
             } else if (data.type === 'ack') {
                 lastAckedOffset.current = data.offset;
@@ -86,14 +90,26 @@ function InstantDropContent() {
     };
 
     const setupWebRTC = async (ws: WebSocket, isSender: boolean) => {
+        console.log("Setting up RTCPeerConnection, isSender:", isSender);
         const peer = new RTCPeerConnection(ICE_SERVERS);
         peerRef.current = peer;
 
         peer.onicecandidate = (e) => {
-            if (e.candidate) ws.send(JSON.stringify({ type: 'ice-candidate', candidate: e.candidate }));
+            if (e.candidate) {
+                console.log("Generated local ICE candidate");
+                ws.send(JSON.stringify({ type: 'ice-candidate', candidate: e.candidate }));
+            }
+        };
+
+        peer.onconnectionstatechange = () => {
+            console.log("WebRTC Connection State:", peer.connectionState);
+            if (peer.connectionState === 'failed') {
+                setStatus('error');
+            }
         };
 
         if (isSender) {
+            console.log("Creating DataChannel and Offer");
             const dc = peer.createDataChannel("file-transfer", { ordered: true });
             dataChannelRef.current = dc;
             setupDataChannel(dc);
@@ -102,7 +118,9 @@ function InstantDropContent() {
             await peer.setLocalDescription(offer);
             ws.send(JSON.stringify({ type: 'offer', sdp: offer }));
         } else {
+            console.log("Waiting for DataChannel");
             peer.ondatachannel = (e) => {
+                console.log("Received DataChannel");
                 dataChannelRef.current = e.channel;
                 setupDataChannel(e.channel);
             };
@@ -210,14 +228,17 @@ function InstantDropContent() {
         wsRef.current = ws;
 
         ws.onmessage = async (event) => {
+            console.log("Receiver WS Message:", event.data);
             const data = JSON.parse(event.data);
             if (data.type === 'offer') {
+                console.log("Received offer, setting up WebRTC and creating answer");
                 await setupWebRTC(ws, false);
                 await peerRef.current?.setRemoteDescription(new RTCSessionDescription(data.sdp));
                 const answer = await peerRef.current?.createAnswer();
                 await peerRef.current?.setLocalDescription(answer);
                 ws.send(JSON.stringify({ type: 'answer', sdp: answer }));
             } else if (data.type === 'ice-candidate') {
+                console.log("Received remote ICE candidate (Receiver)");
                 await peerRef.current?.addIceCandidate(new RTCIceCandidate(data.candidate));
             }
         };

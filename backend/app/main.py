@@ -163,6 +163,7 @@ async def record_usage_endpoint(request: Request, data: dict):
 
 @app.websocket("/ws/drop/{room_id}/{client_type}")
 async def drop_websocket(websocket: WebSocket, room_id: str, client_type: str):
+    print(f"WS Connect Attempt: Room={room_id}, Type={client_type}")
     await manager.connect(websocket, room_id, client_type)
     
     # Notify the other peer
@@ -178,10 +179,16 @@ async def drop_websocket(websocket: WebSocket, room_id: str, client_type: str):
             if room_id in manager.rooms and other in manager.rooms[room_id]:
                 other_ws = manager.rooms[room_id][other]
                 if "text" in message and message["text"]:
+                    # print(f"Relaying text from {client_type} to {other} in {room_id}")
                     await other_ws.send_text(message["text"])
                 elif "bytes" in message and message["bytes"]:
+                    # print(f"Relaying binary from {client_type} to {other} in {room_id}")
                     await other_ws.send_bytes(message["bytes"])
+            else:
+                # Other peer not yet connected, message dropped
+                pass
     except WebSocketDisconnect:
+        print(f"WS Disconnect: Room={room_id}, Type={client_type}")
         manager.disconnect(websocket, room_id, client_type)
         await manager.send_message({"type": "peer-disconnected", "client_type": client_type}, room_id, other)
 
