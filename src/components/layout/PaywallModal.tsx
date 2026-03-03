@@ -29,11 +29,11 @@ const PLANS = [
         badge: "Popular",
     },
     {
-        id: "1year",
-        label: "1 Year",
+        id: "lifetime",
+        label: "Lifetime",
         price: "₹449",
         priceEnvKey: "NEXT_PUBLIC_PADDLE_PRICE_ID_1Y",
-        desc: "₹449 billed once",
+        desc: "₹449 one-time, forever",
         badge: "Best Value",
     },
 ];
@@ -41,7 +41,7 @@ const PLANS = [
 export function PaywallModal({ isOpen, onClose, deviceId }: PaywallModalProps) {
     const [isLoading, setIsLoading] = useState(false);
     const [paddle, setPaddle] = useState<Paddle | null>(null);
-    const [selectedPlan, setSelectedPlan] = useState("6month");
+    const [selectedPlan, setSelectedPlan] = useState("lifetime");
 
     // Initialize Paddle on mount
     useEffect(() => {
@@ -152,8 +152,8 @@ export function PaywallModal({ isOpen, onClose, deviceId }: PaywallModalProps) {
                                 key={p.id}
                                 onClick={() => setSelectedPlan(p.id)}
                                 className={`relative rounded-xl border-2 p-3 text-center transition-all cursor-pointer ${selectedPlan === p.id
-                                        ? "border-indigo-500 bg-indigo-50 dark:bg-indigo-950/50"
-                                        : "border-border hover:border-indigo-300"
+                                    ? "border-indigo-500 bg-indigo-50 dark:bg-indigo-950/50"
+                                    : "border-border hover:border-indigo-300"
                                     }`}
                             >
                                 {p.badge && (
