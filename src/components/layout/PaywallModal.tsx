@@ -1,6 +1,6 @@
 "use client";
 
-import { X, Lock, FileCheck, Zap, Download, Loader2 } from "lucide-react";
+import { X, Lock, FileCheck, Zap, Download, Loader2, Check } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { useState, useEffect } from "react";
 import { initializePaddle, Paddle } from "@paddle/paddle-js";
@@ -11,14 +11,42 @@ interface PaywallModalProps {
     deviceId: string;
 }
 
+const PLANS = [
+    {
+        id: "3month",
+        label: "3 Months",
+        price: "₹149",
+        priceEnvKey: "NEXT_PUBLIC_PADDLE_PRICE_ID_3M",
+        desc: "₹149 billed once",
+        badge: null,
+    },
+    {
+        id: "6month",
+        label: "6 Months",
+        price: "₹299",
+        priceEnvKey: "NEXT_PUBLIC_PADDLE_PRICE_ID_6M",
+        desc: "₹299 billed once",
+        badge: "Popular",
+    },
+    {
+        id: "1year",
+        label: "1 Year",
+        price: "₹449",
+        priceEnvKey: "NEXT_PUBLIC_PADDLE_PRICE_ID_1Y",
+        desc: "₹449 billed once",
+        badge: "Best Value",
+    },
+];
+
 export function PaywallModal({ isOpen, onClose, deviceId }: PaywallModalProps) {
     const [isLoading, setIsLoading] = useState(false);
     const [paddle, setPaddle] = useState<Paddle | null>(null);
+    const [selectedPlan, setSelectedPlan] = useState("6month");
 
     // Initialize Paddle on mount
     useEffect(() => {
         initializePaddle({
-            environment: "production", // Live mode
+            environment: "production",
             token: process.env.NEXT_PUBLIC_PADDLE_CLIENT_TOKEN || "test_token",
         }).then((paddleInstance: Paddle | undefined) => {
             if (paddleInstance) setPaddle(paddleInstance);
@@ -27,31 +55,33 @@ export function PaywallModal({ isOpen, onClose, deviceId }: PaywallModalProps) {
 
     if (!isOpen) return null;
 
+    const plan = PLANS.find((p) => p.id === selectedPlan) || PLANS[1];
+
+    const getPriceId = (envKey: string) => {
+        const map: Record<string, string | undefined> = {
+            NEXT_PUBLIC_PADDLE_PRICE_ID_3M: process.env.NEXT_PUBLIC_PADDLE_PRICE_ID_3M,
+            NEXT_PUBLIC_PADDLE_PRICE_ID_6M: process.env.NEXT_PUBLIC_PADDLE_PRICE_ID_6M,
+            NEXT_PUBLIC_PADDLE_PRICE_ID_1Y: process.env.NEXT_PUBLIC_PADDLE_PRICE_ID_1Y,
+        };
+        return map[envKey] || process.env.NEXT_PUBLIC_PADDLE_PRICE_ID || "pri_placeholder";
+    };
+
     const handleUpgrade = async () => {
         if (!paddle) {
             console.error("Paddle not initialized");
             return;
         }
-
         setIsLoading(true);
         try {
-            // Open Paddle Checkout Overlay
             paddle.Checkout.open({
-                items: [
-                    {
-                        priceId: process.env.NEXT_PUBLIC_PADDLE_PRICE_ID || "pri_01jm123456789",
-                        quantity: 1,
-                    },
-                ],
-                customData: {
-                    userKey: deviceId,
-                },
+                items: [{ priceId: getPriceId(plan.priceEnvKey), quantity: 1 }],
+                customData: { userKey: deviceId },
                 settings: {
                     displayMode: "overlay",
                     theme: "light",
                     locale: "en",
                     successUrl: `${window.location.origin}/checkout/success`,
-                }
+                },
             });
         } catch (error) {
             console.error("Paddle checkout error:", error);
@@ -85,7 +115,7 @@ export function PaywallModal({ isOpen, onClose, deviceId }: PaywallModalProps) {
                 {/* Feature List */}
                 <div className="p-8 pb-6 bg-background">
                     <h3 className="font-semibold text-lg mb-4">Upgrade to Swap PDF Pro</h3>
-                    <ul className="space-y-4 mb-8">
+                    <ul className="space-y-4 mb-6">
                         <li className="flex items-start gap-3">
                             <div className="bg-green-100 dark:bg-green-900/30 p-1 rounded-full shrink-0">
                                 <FileCheck className="w-4 h-4 text-green-600 dark:text-green-400" />
@@ -115,6 +145,33 @@ export function PaywallModal({ isOpen, onClose, deviceId }: PaywallModalProps) {
                         </li>
                     </ul>
 
+                    {/* Plan Selector */}
+                    <div className="grid grid-cols-3 gap-3 mb-6">
+                        {PLANS.map((p) => (
+                            <button
+                                key={p.id}
+                                onClick={() => setSelectedPlan(p.id)}
+                                className={`relative rounded-xl border-2 p-3 text-center transition-all cursor-pointer ${selectedPlan === p.id
+                                        ? "border-indigo-500 bg-indigo-50 dark:bg-indigo-950/50"
+                                        : "border-border hover:border-indigo-300"
+                                    }`}
+                            >
+                                {p.badge && (
+                                    <span className="absolute -top-2.5 left-1/2 -translate-x-1/2 text-[10px] font-bold bg-indigo-600 text-white px-2 py-0.5 rounded-full whitespace-nowrap">
+                                        {p.badge}
+                                    </span>
+                                )}
+                                <div className="font-bold text-lg leading-tight">{p.price}</div>
+                                <div className="text-xs text-muted-foreground mt-0.5">{p.label}</div>
+                                {selectedPlan === p.id && (
+                                    <div className="absolute top-1.5 right-1.5">
+                                        <Check className="w-3 h-3 text-indigo-600" />
+                                    </div>
+                                )}
+                            </button>
+                        ))}
+                    </div>
+
                     {/* Action Buttons */}
                     <div className="space-y-3">
                         <Button
@@ -128,7 +185,7 @@ export function PaywallModal({ isOpen, onClose, deviceId }: PaywallModalProps) {
                                     Opening Checkout...
                                 </>
                             ) : (
-                                "Upgrade Now - $5 Lifetime"
+                                `Upgrade Now — ${plan.price}`
                             )}
                         </Button>
                         <Button variant="ghost" className="w-full h-12 text-muted-foreground" onClick={onClose} disabled={isLoading}>
