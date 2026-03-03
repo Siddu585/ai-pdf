@@ -11,8 +11,8 @@ import { Footer } from "@/components/layout/Footer";
 import { useUsage } from "@/hooks/useUsage";
 import { PaywallModal } from "@/components/layout/PaywallModal";
 
-// Optimized Chunk size for DataChannel (128KB for high speed)
-const CHUNK_SIZE = 128 * 1024;
+// Optimized Chunk size (256KB — doubles throughput vs 128KB)
+const CHUNK_SIZE = 256 * 1024;
 const MAX_IN_FLIGHT = 16;
 const BACKEND_WS_URL = process.env.NEXT_PUBLIC_API_URL
     ? process.env.NEXT_PUBLIC_API_URL.trim().replace(/\/$/, "").replace(/^https:\/\//i, "wss://").replace(/^http:\/\//i, "ws://")
@@ -155,7 +155,7 @@ function InstantDropContent() {
                 const dc = peer.createDataChannel(`file-transfer-${i}`, { ordered: true });
                 dataChannelsRef.current.push(dc);
                 setupDataChannel(dc, i);
-                dc.bufferedAmountLowThreshold = 512 * 1024; // 512KB for parallel throughput
+                dc.bufferedAmountLowThreshold = 4 * 1024 * 1024; // 4MB — maximize pipeline
             }
 
             const offer = await peer.createOffer();
@@ -280,33 +280,45 @@ function InstantDropContent() {
             const startParallelBurst = async () => {
                 const numChannels = dataChannelsRef.current.length;
                 const sectorSize = Math.ceil(file.size / numChannels);
+
+                // PRE-READ all sectors into memory BEFORE sending.
+                // This eliminates the disk-read bottleneck inside the send loop.
+                logDebug(`Sender: Pre-reading ${file.size} bytes into ${numChannels} sectors`);
+                const sectorBuffers: ArrayBuffer[] = await Promise.all(
+                    dataChannelsRef.current.map((_, chIdx) => {
+                        const start = chIdx * sectorSize;
+                        const end = Math.min(start + sectorSize, file.size);
+                        return file.slice(start, end).arrayBuffer();
+                    })
+                );
+                logDebug(`Sender: All sectors pre-read. Starting parallel burst.`);
+
                 let sectorsFinished = 0;
 
                 const workers = dataChannelsRef.current.map(async (dc, chIdx) => {
-                    let offset = chIdx * sectorSize;
-                    const end = Math.min(offset + sectorSize, file.size);
-                    const THRESHOLD = 1024 * 1024; // 1MB buffer for high speed
+                    const sectorData = sectorBuffers[chIdx];
+                    const THRESHOLD = 4 * 1024 * 1024; // 4MB buffer drain threshold
+                    let offset = 0;
 
-                    while (isActive.current && offset < end) {
+                    while (isActive.current && offset < sectorData.byteLength) {
                         if (dc.bufferedAmount > THRESHOLD) {
                             await new Promise<void>(res => {
                                 dc.onbufferedamountlow = () => { dc.onbufferedamountlow = null; res(); };
                             });
                         }
 
-                        const chunkLen = Math.min(CHUNK_SIZE, end - offset);
-                        const slice = file.slice(offset, offset + chunkLen);
-                        const buffer = await slice.arrayBuffer();
+                        const chunkLen = Math.min(CHUNK_SIZE, sectorData.byteLength - offset);
+                        const chunk = sectorData.slice(offset, offset + chunkLen);
 
                         if (dc.readyState === 'open') {
-                            dc.send(buffer);
-                            offset += buffer.byteLength;
-                            totalSentBytesRef.current += buffer.byteLength;
+                            dc.send(chunk);
+                            offset += chunkLen;
+                            totalSentBytesRef.current += chunkLen;
 
-                            // True Network Synchronization: Only count bytes that have left the buffer
-                            const totalBuffered = dataChannelsRef.current.reduce((acc, c) => acc + (c.readyState === 'open' ? c.bufferedAmount : 0), 0);
+                            const totalBuffered = dataChannelsRef.current.reduce(
+                                (acc, c) => acc + (c.readyState === 'open' ? c.bufferedAmount : 0), 0
+                            );
                             const trueSent = Math.max(0, totalSentBytesRef.current - totalBuffered);
-
                             setProgress(Math.round((trueSent / file.size) * 100));
                         } else break;
                     }
