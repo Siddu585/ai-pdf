@@ -42,6 +42,9 @@ function InstantDropContent() {
     const [receivedFiles, setReceivedFiles] = useState<{ blob: Blob, name: string }[]>([]);
     const [incomingMeta, setIncomingMeta] = useState<any>(null); // New state for reactive UI labels
     const [isZipping, setIsZipping] = useState(false);
+    const [compressImages, setCompressImages] = useState(false);
+    const [isCompressing, setIsCompressing] = useState(false);
+    const [transferSpeed, setTransferSpeed] = useState<number | null>(null); // MB/s
 
     const wsRef = useRef<WebSocket | null>(null);
     const logDebug = (msg: string) => {
@@ -53,9 +56,37 @@ function InstantDropContent() {
     const filesRef = useRef<File[]>([]);
     const modeRef = useRef(mode);
     const statusRef = useRef(status);
+    // Speed tracking
+    const lastBytesRef = useRef(0);
+    const speedTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
-    useEffect(() => { modeRef.current = mode; }, [mode]);
-    useEffect(() => { statusRef.current = status; }, [status]);
+    // Compress an image file to JPG using canvas (works for JPEG, PNG, WEBP)
+    const compressImageFile = async (file: File): Promise<File> => {
+        const compressableTypes = ['image/jpeg', 'image/jpg', 'image/png', 'image/webp'];
+        if (!compressableTypes.includes(file.type)) return file; // skip DNG/HEIC/raw
+        return new Promise((resolve) => {
+            const img = new Image();
+            const url = URL.createObjectURL(file);
+            img.onload = () => {
+                const canvas = document.createElement('canvas');
+                canvas.width = img.naturalWidth;
+                canvas.height = img.naturalHeight;
+                const ctx = canvas.getContext('2d')!;
+                ctx.drawImage(img, 0, 0);
+                canvas.toBlob((blob) => {
+                    URL.revokeObjectURL(url);
+                    if (blob) {
+                        const outName = file.name.replace(/\.[^.]+$/, '.jpg');
+                        resolve(new File([blob], outName, { type: 'image/jpeg' }));
+                    } else resolve(file);
+                }, 'image/jpeg', 0.80);
+            };
+            img.onerror = () => { URL.revokeObjectURL(url); resolve(file); };
+            img.src = url;
+        });
+    };
+
+
     const remoteDescriptionSet = useRef(false);
     const iceBuffer = useRef<RTCIceCandidateInit[]>([]);
 
@@ -181,6 +212,14 @@ function InstantDropContent() {
             // Only start transfer once index 0 is open
             if (channelIdx === 0) {
                 setStatus('transferring');
+                // Start speed timer
+                lastBytesRef.current = 0;
+                if (speedTimerRef.current) clearInterval(speedTimerRef.current);
+                speedTimerRef.current = setInterval(() => {
+                    const bytesSinceLast = totalSentBytesRef.current + totalReceivedBytesRef.current - lastBytesRef.current;
+                    lastBytesRef.current = totalSentBytesRef.current + totalReceivedBytesRef.current;
+                    setTransferSpeed(parseFloat((bytesSinceLast / 1024 / 1024).toFixed(1)));
+                }, 1000);
                 if (modeRef.current === 'send') {
                     setTimeout(() => {
                         logDebug("Starting parallel file transfer...");
@@ -220,6 +259,9 @@ function InstantDropContent() {
                 setStatus('disconnected');
             }
             isActive.current = false;
+            // Stop speed timer
+            if (speedTimerRef.current) { clearInterval(speedTimerRef.current); speedTimerRef.current = null; }
+            setTransferSpeed(null);
         };
     };
 
@@ -599,10 +641,17 @@ function InstantDropContent() {
         document.body.appendChild(script);
     };
 
-    const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const handleFileChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
         if (e.target.files && e.target.files.length > 0) {
-            const selectedFiles = e.target.files;
-            handleAction(() => startSending(selectedFiles));
+            let fileList = Array.from(e.target.files) as File[];
+            if (compressImages) {
+                setIsCompressing(true);
+                fileList = await Promise.all(fileList.map(f => compressImageFile(f)));
+                setIsCompressing(false);
+            }
+            const dt = new DataTransfer();
+            fileList.forEach(f => dt.items.add(f));
+            handleAction(() => startSending(dt.files));
         }
     };
 
@@ -641,6 +690,28 @@ function InstantDropContent() {
                                     className="hidden"
                                 />
                             </div>
+
+                            {/* Compress Images Toggle */}
+                            <div className="flex items-center justify-center gap-3 text-sm mt-2">
+                                <button
+                                    onClick={() => setCompressImages(v => !v)}
+                                    className={`relative inline-flex h-6 w-11 items-center rounded-full transition-colors ${compressImages ? 'bg-indigo-600' : 'bg-muted-foreground/30'
+                                        }`}
+                                >
+                                    <span className={`inline-block h-4 w-4 transform rounded-full bg-white transition-transform ${compressImages ? 'translate-x-6' : 'translate-x-1'
+                                        }`} />
+                                </button>
+                                <span className="text-muted-foreground">
+                                    Compress images to JPG before sending
+                                    <span className="ml-1 text-xs text-indigo-500">(~10x smaller)</span>
+                                </span>
+                            </div>
+                            {isCompressing && (
+                                <div className="flex items-center justify-center gap-2 text-indigo-600 text-sm">
+                                    <Loader2 className="w-4 h-4 animate-spin" />
+                                    Compressing images...
+                                </div>
+                            )}
 
                             <div className="relative">
                                 <div className="absolute inset-0 flex items-center">
@@ -752,9 +823,19 @@ function InstantDropContent() {
 
                                     {status === 'transferring' && (
                                         <div className="space-y-2">
-                                            <div className="flex justify-between text-sm font-medium">
+                                            <div className="flex justify-between items-center text-sm font-medium">
                                                 <span>{mode === 'send' ? 'Sending...' : 'Receiving...'}</span>
-                                                <span>{progress}%</span>
+                                                <div className="flex items-center gap-2">
+                                                    {transferSpeed !== null && (
+                                                        <span className={`text-xs font-bold px-2 py-0.5 rounded-full ${transferSpeed >= 5 ? 'bg-green-100 text-green-700 dark:bg-green-900/40 dark:text-green-300'
+                                                                : transferSpeed >= 1 ? 'bg-amber-100 text-amber-700 dark:bg-amber-900/40 dark:text-amber-300'
+                                                                    : 'bg-red-100 text-red-700 dark:bg-red-900/40 dark:text-red-300'
+                                                            }`}>
+                                                            ⚡ {transferSpeed} MB/s
+                                                        </span>
+                                                    )}
+                                                    <span>{progress}%</span>
+                                                </div>
                                             </div>
                                             <div className="w-full bg-muted rounded-full h-3">
                                                 <div
