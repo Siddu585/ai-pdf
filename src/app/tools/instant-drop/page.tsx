@@ -843,24 +843,7 @@ function InstantDropContent() {
                         </div>
                     )}
 
-                    {/* Debug Logs Section */}
-                    {debugLogs.length > 0 && (
-                        <div className="mt-12 w-full max-w-2xl text-left">
-                            <details className="group">
-                                <summary className="cursor-pointer text-sm font-semibold text-muted-foreground hover:text-foreground transition-colors flex items-center gap-2 mb-2">
-                                    <span className="w-2 h-2 rounded-full bg-indigo-500 animate-pulse" />
-                                    Technical Handshake Logs
-                                </summary>
-                                <div className="bg-muted/50 rounded-xl p-4 font-mono text-[10px] leading-relaxed max-h-64 overflow-auto border border-border">
-                                    {debugLogs.map((log, i) => (
-                                        <div key={i} className="mb-1 opacity-80 border-b border-border/10 pb-1">
-                                            {log}
-                                        </div>
-                                    ))}
-                                </div>
-                            </details>
-                        </div>
-                    )}
+                    {/* Debug Logs Section Removed */}
 
                 </div>
             </main >
