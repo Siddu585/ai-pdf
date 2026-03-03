@@ -4,6 +4,7 @@ import Link from "next/link";
 import { Button } from "@/components/ui/button";
 import { FileDown, Menu, ShieldCheck } from "lucide-react";
 import { useState } from "react";
+import { SignInButton, SignedIn, SignedOut, UserButton } from "@clerk/nextjs";
 import { PaywallModal } from "./PaywallModal";
 import { useUsage } from "@/hooks/useUsage";
 
@@ -35,7 +36,14 @@ export function Navbar() {
 
         <div className="flex items-center gap-4">
           <div className="hidden sm:flex items-center gap-4">
-            <Button variant="ghost" className="text-sm">Log in</Button>
+            <SignedOut>
+              <SignInButton mode="modal">
+                <Button variant="ghost" className="text-sm font-semibold">Log in</Button>
+              </SignInButton>
+            </SignedOut>
+            <SignedIn>
+              <UserButton afterSignOutUrl="/" />
+            </SignedIn>
             <Button
               className="bg-secondary text-secondary-foreground hover:bg-secondary/90 font-semibold shadow-sm transition-all"
               onClick={() => setIsPaywallOpen(true)}
