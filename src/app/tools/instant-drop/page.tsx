@@ -142,16 +142,10 @@ function InstantDropContent() {
 
         peer.onconnectionstatechange = () => {
             console.log("WebRTC Connection State:", peer.connectionState);
-            // Harden P2P stability with Handshake Retries and Adaptive Chunking
-            // Implement user-facing "View Technical Logs" for deep troubleshooting
-            // Resolve Turbo Drop "Ghosting" bug via `modeRef` State Mirroring
-            // Implement 128KB "Burst Mode" for ultra-high-speed transfers
-            // Implement "Nuclear" Parallel DataChannels (4x Concurrency) for 400%+ speed
-            // Fix Parallel Stalls & Progress "Illusion" via Unified Byte Counting
-            // Push Nuclear fixes to GitHub and verify Vercel deployment
-            // Verify all fixes with user.
             if (peer.connectionState === 'failed') {
-                setStatus('error');
+                if (statusRef.current !== 'done') {
+                    setStatus('error');
+                }
             }
         };
 
@@ -479,8 +473,9 @@ function InstantDropContent() {
         };
     }, []);
 
-    const downloadAll = () => {
-        receivedFiles.forEach(rf => {
+    const downloadAll = async () => {
+        for (let i = 0; i < receivedFiles.length; i++) {
+            const rf = receivedFiles[i];
             const url = URL.createObjectURL(rf.blob);
             const a = document.createElement("a");
             a.href = url;
@@ -488,8 +483,11 @@ function InstantDropContent() {
             document.body.appendChild(a);
             a.click();
             document.body.removeChild(a);
-            URL.revokeObjectURL(url);
-        });
+            setTimeout(() => URL.revokeObjectURL(url), 100);
+
+            // Wait 500ms between downloads to politely ask the browser not to block us
+            await new Promise(res => setTimeout(res, 500));
+        }
     };
 
     const handleSaveToGooglePhotos = async () => {
@@ -768,25 +766,34 @@ function InstantDropContent() {
                                 <div className="flex flex-col items-center justify-center p-6 bg-green-50 dark:bg-green-900/10 border border-green-200 dark:border-green-800 rounded-xl space-y-4">
                                     <CheckCircle className="w-12 h-12 text-green-500" />
                                     <h2 className="text-xl font-bold text-green-700 dark:text-green-400">{receivedFiles.length} Files Received</h2>
-                                    <p className="text-sm text-muted-foreground">The whole batch is ready for you!</p>
+                                    <p className="text-sm text-muted-foreground text-center">Tap 'Save' for individual files or download all.</p>
 
                                     <Button className="w-full bg-indigo-600 hover:bg-indigo-700 text-white font-bold h-14 mb-3 shadow-lg shadow-indigo-500/20 text-lg border-2 border-indigo-400/50" onClick={downloadAll}>
                                         <Download className="w-6 h-6 mr-3 animate-bounce" />
-                                        Download Files to Device
+                                        Download All ({receivedFiles.length})
                                     </Button>
 
-                                    {process.env.NEXT_PUBLIC_GOOGLE_CLIENT_ID && (
-                                        <Button
-                                            variant="outline"
-                                            className="w-full border-indigo-200 hover:bg-indigo-50 text-indigo-700 font-bold h-12"
-                                            onClick={handleSaveToGooglePhotos}
-                                        >
-                                            <img src="https://www.gstatic.com/images/branding/product/1x/photos_96dp.png" className="w-5 h-5 mr-2" />
-                                            Save to Google Photos
-                                        </Button>
-                                    )}
+                                    <div className="w-full space-y-2 mt-2 max-h-48 overflow-y-auto pr-2 custom-scrollbar">
+                                        {receivedFiles.map((rf, idx) => (
+                                            <div key={idx} className="flex items-center justify-between p-3 bg-card border rounded-lg">
+                                                <p className="text-xs font-semibold text-left truncate flex-1 mr-2">{rf.name}</p>
+                                                <Button size="sm" variant="secondary" onClick={() => {
+                                                    const url = URL.createObjectURL(rf.blob);
+                                                    const a = document.createElement("a");
+                                                    a.href = url;
+                                                    a.download = rf.name;
+                                                    document.body.appendChild(a);
+                                                    a.click();
+                                                    document.body.removeChild(a);
+                                                    setTimeout(() => URL.revokeObjectURL(url), 100);
+                                                }}>
+                                                    Save
+                                                </Button>
+                                            </div>
+                                        ))}
+                                    </div>
 
-                                    <Button variant="ghost" onClick={() => { setMode('select'); setStatus('disconnected'); setReceivedFiles([]); }}>
+                                    <Button variant="ghost" className="mt-4" onClick={() => { setMode('select'); setStatus('disconnected'); setReceivedFiles([]); }}>
                                         Receive More
                                     </Button>
                                 </div>
