@@ -3,7 +3,8 @@
 import { useState, useRef, useEffect, Suspense } from "react";
 import { useSearchParams } from "next/navigation";
 import { QRCodeSVG } from "qrcode.react";
-import { UploadCloud, Download, CheckCircle, Smartphone, Loader2 } from "lucide-react";
+import { UploadCloud, Download, CheckCircle, Smartphone, Loader2, Archive } from "lucide-react";
+import JSZip from "jszip";
 import { Button } from "@/components/ui/button";
 import { Navbar } from "@/components/layout/Navbar";
 import { Footer } from "@/components/layout/Footer";
@@ -40,6 +41,7 @@ function InstantDropContent() {
     const [status, setStatus] = useState<"disconnected" | "waiting" | "connecting" | "transferring" | "done" | "error">("disconnected");
     const [receivedFiles, setReceivedFiles] = useState<{ blob: Blob, name: string }[]>([]);
     const [incomingMeta, setIncomingMeta] = useState<any>(null); // New state for reactive UI labels
+    const [isZipping, setIsZipping] = useState(false);
 
     const wsRef = useRef<WebSocket | null>(null);
     const [debugLogs, setDebugLogs] = useState<string[]>([]);
@@ -490,6 +492,30 @@ function InstantDropContent() {
         }
     };
 
+    const downloadZip = async () => {
+        setIsZipping(true);
+        try {
+            const zip = new JSZip();
+            receivedFiles.forEach(rf => {
+                zip.file(rf.name, rf.blob);
+            });
+            const content = await zip.generateAsync({ type: "blob" });
+            const url = URL.createObjectURL(content);
+            const a = document.createElement("a");
+            a.href = url;
+            a.download = `PDFDrop_Batch_${Math.floor(Date.now() / 1000)}.zip`;
+            document.body.appendChild(a);
+            a.click();
+            document.body.removeChild(a);
+            setTimeout(() => URL.revokeObjectURL(url), 100);
+        } catch (error) {
+            console.error("Error creating ZIP:", error);
+            alert("Failed to create ZIP file. Please try downloading individually.");
+        } finally {
+            setIsZipping(false);
+        }
+    };
+
     const handleSaveToGooglePhotos = async () => {
         const clientId = process.env.NEXT_PUBLIC_GOOGLE_CLIENT_ID;
         if (!clientId) {
@@ -768,10 +794,16 @@ function InstantDropContent() {
                                     <h2 className="text-xl font-bold text-green-700 dark:text-green-400">{receivedFiles.length} Files Received</h2>
                                     <p className="text-sm text-muted-foreground text-center">Tap 'Save' for individual files or download all.</p>
 
-                                    <Button className="w-full bg-indigo-600 hover:bg-indigo-700 text-white font-bold h-14 mb-3 shadow-lg shadow-indigo-500/20 text-lg border-2 border-indigo-400/50" onClick={downloadAll}>
-                                        <Download className="w-6 h-6 mr-3 animate-bounce" />
-                                        Download All ({receivedFiles.length})
-                                    </Button>
+                                    <div className="flex gap-2 w-full mb-3">
+                                        <Button className="flex-1 bg-indigo-600 hover:bg-indigo-700 text-white font-bold h-14 shadow-lg shadow-indigo-500/20" onClick={downloadAll}>
+                                            <Download className="w-5 h-5 mr-2 animate-bounce" />
+                                            Download All
+                                        </Button>
+                                        <Button className="flex-1 bg-amber-500 hover:bg-amber-600 text-white font-bold h-14 shadow-lg shadow-amber-500/20 border-2 border-amber-400/50" onClick={downloadZip} disabled={isZipping}>
+                                            {isZipping ? <Loader2 className="w-5 h-5 mr-2 animate-spin" /> : <Archive className="w-5 h-5 mr-2" />}
+                                            {isZipping ? "Zipping..." : "Download as ZIP"}
+                                        </Button>
+                                    </div>
 
                                     <div className="w-full space-y-2 mt-2 max-h-48 overflow-y-auto pr-2 custom-scrollbar">
                                         {receivedFiles.map((rf, idx) => (
