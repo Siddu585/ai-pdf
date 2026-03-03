@@ -44,11 +44,9 @@ function InstantDropContent() {
     const [isZipping, setIsZipping] = useState(false);
 
     const wsRef = useRef<WebSocket | null>(null);
-    const [debugLogs, setDebugLogs] = useState<string[]>([]);
     const logDebug = (msg: string) => {
         const time = new Date().toLocaleTimeString();
         console.log(`[${time}] ${msg}`);
-        setDebugLogs(prev => [`[${time}] ${msg}`, ...prev].slice(0, 50));
     };
     const peerRef = useRef<RTCPeerConnection | null>(null);
     const dataChannelsRef = useRef<RTCDataChannel[]>([]);
@@ -475,20 +473,43 @@ function InstantDropContent() {
         };
     }, []);
 
+    // Smart save: images use native share sheet (→ Google Photos / iOS Library), docs use anchor download
+    const isImageFile = (blob: Blob, name: string) => {
+        const imageTypes = ['image/jpeg', 'image/jpg', 'image/png', 'image/gif', 'image/webp', 'image/heic', 'image/heif'];
+        const ext = name.split('.').pop()?.toLowerCase() || '';
+        const imageExts = ['jpg', 'jpeg', 'png', 'gif', 'webp', 'heic', 'heif', 'bmp', 'tiff'];
+        return imageTypes.includes(blob.type) || imageExts.includes(ext);
+    };
+
+    const smartSaveFile = async (blob: Blob, name: string) => {
+        // For images on mobile: use Web Share API so OS offers "Save to Photos / Google Photos"
+        if (isImageFile(blob, name) && navigator.canShare) {
+            const file = new File([blob], name, { type: blob.type || 'image/jpeg' });
+            if (navigator.canShare({ files: [file] })) {
+                try {
+                    await navigator.share({ files: [file], title: name });
+                    return;
+                } catch (_) {
+                    // User cancelled share or share failed - fall through to anchor download
+                }
+            }
+        }
+        // Default: anchor-click download (works for all file types, all devices)
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = name;
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+        setTimeout(() => URL.revokeObjectURL(url), 100);
+    };
+
     const downloadAll = async () => {
         for (let i = 0; i < receivedFiles.length; i++) {
             const rf = receivedFiles[i];
-            const url = URL.createObjectURL(rf.blob);
-            const a = document.createElement("a");
-            a.href = url;
-            a.download = rf.name;
-            document.body.appendChild(a);
-            a.click();
-            document.body.removeChild(a);
-            setTimeout(() => URL.revokeObjectURL(url), 100);
-
-            // Wait 500ms between downloads to politely ask the browser not to block us
-            await new Promise(res => setTimeout(res, 500));
+            await smartSaveFile(rf.blob, rf.name);
+            await new Promise(res => setTimeout(res, 400));
         }
     };
 
@@ -500,14 +521,7 @@ function InstantDropContent() {
                 zip.file(rf.name, rf.blob);
             });
             const content = await zip.generateAsync({ type: "blob" });
-            const url = URL.createObjectURL(content);
-            const a = document.createElement("a");
-            a.href = url;
-            a.download = `PDFDrop_Batch_${Math.floor(Date.now() / 1000)}.zip`;
-            document.body.appendChild(a);
-            a.click();
-            document.body.removeChild(a);
-            setTimeout(() => URL.revokeObjectURL(url), 100);
+            await smartSaveFile(content, `TurboDrop_Batch_${Math.floor(Date.now() / 1000)}.zip`);
         } catch (error) {
             console.error("Error creating ZIP:", error);
             alert("Failed to create ZIP file. Please try downloading individually.");
@@ -809,17 +823,8 @@ function InstantDropContent() {
                                         {receivedFiles.map((rf, idx) => (
                                             <div key={idx} className="flex items-center justify-between p-3 bg-card border rounded-lg">
                                                 <p className="text-xs font-semibold text-left truncate flex-1 mr-2">{rf.name}</p>
-                                                <Button size="sm" variant="secondary" onClick={() => {
-                                                    const url = URL.createObjectURL(rf.blob);
-                                                    const a = document.createElement("a");
-                                                    a.href = url;
-                                                    a.download = rf.name;
-                                                    document.body.appendChild(a);
-                                                    a.click();
-                                                    document.body.removeChild(a);
-                                                    setTimeout(() => URL.revokeObjectURL(url), 100);
-                                                }}>
-                                                    Save
+                                                <Button size="sm" variant="secondary" onClick={() => smartSaveFile(rf.blob, rf.name)}>
+                                                    {isImageFile(rf.blob, rf.name) ? '📷 Save' : '💾 Save'}
                                                 </Button>
                                             </div>
                                         ))}
