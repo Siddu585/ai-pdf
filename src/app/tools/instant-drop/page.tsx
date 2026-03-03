@@ -506,8 +506,33 @@ function InstantDropContent() {
     };
 
     const downloadAll = async () => {
-        for (let i = 0; i < receivedFiles.length; i++) {
-            const rf = receivedFiles[i];
+        const images = receivedFiles.filter(rf => isImageFile(rf.blob, rf.name));
+        const docs = receivedFiles.filter(rf => !isImageFile(rf.blob, rf.name));
+
+        // Batch-share 3+ images in one native share sheet (one tap → Save to Photos/Google Photos)
+        if (images.length >= 3 && navigator.canShare) {
+            const imageFiles = images.map(rf => new File([rf.blob], rf.name, { type: rf.blob.type || 'image/jpeg' }));
+            if (navigator.canShare({ files: imageFiles })) {
+                try {
+                    await navigator.share({ files: imageFiles, title: `${images.length} Photos` });
+                } catch (_) {
+                    // Cancelled or failed — fall back to per-image downloads
+                    for (const rf of images) {
+                        await smartSaveFile(rf.blob, rf.name);
+                        await new Promise(res => setTimeout(res, 400));
+                    }
+                }
+            }
+        } else {
+            // < 3 images: save one by one
+            for (const rf of images) {
+                await smartSaveFile(rf.blob, rf.name);
+                await new Promise(res => setTimeout(res, 400));
+            }
+        }
+
+        // Always download non-image files individually
+        for (const rf of docs) {
             await smartSaveFile(rf.blob, rf.name);
             await new Promise(res => setTimeout(res, 400));
         }
