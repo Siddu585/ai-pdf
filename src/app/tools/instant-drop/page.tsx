@@ -107,7 +107,7 @@ function InstantDropContent() {
     const fileInputRef = useRef<HTMLInputElement>(null);
 
     // --- SENDER LOGIC (Turbo Drop 2.0) ---
-    const startSending = (selectedFiles: FileList) => {
+    const startSending = (selectedFiles: FileList | File[]) => {
         const fileList = Array.from(selectedFiles);
         setFiles(fileList);
         filesRef.current = fileList;
@@ -661,9 +661,7 @@ function InstantDropContent() {
                 fileList = await Promise.all(fileList.map(f => compressImageFile(f)));
                 setIsCompressing(false);
             }
-            const dt = new DataTransfer();
-            fileList.forEach(f => dt.items.add(f));
-            handleAction(() => startSending(dt.files));
+            handleAction(() => startSending(fileList));
         }
     };
 
