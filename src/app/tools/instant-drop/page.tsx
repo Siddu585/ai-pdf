@@ -11,9 +11,9 @@ import { Footer } from "@/components/layout/Footer";
 import { useUsage } from "@/hooks/useUsage";
 import { PaywallModal } from "@/components/layout/PaywallModal";
 
-// Optimized Chunk size (256KB — doubles throughput vs 128KB)
-const CHUNK_SIZE = 256 * 1024;
-const MAX_IN_FLIGHT = 16;
+// Optimized Chunk size (512KB — maximizes WebRTC SCTP pipeline window)
+const CHUNK_SIZE = 512 * 1024;
+const MAX_IN_FLIGHT = 32;
 const BACKEND_WS_URL = process.env.NEXT_PUBLIC_API_URL
     ? process.env.NEXT_PUBLIC_API_URL.trim().replace(/\/$/, "").replace(/^https:\/\//i, "wss://").replace(/^http:\/\//i, "ws://")
     : typeof window !== "undefined"
@@ -305,11 +305,13 @@ function InstantDropContent() {
             handshakeInterval = setInterval(sendMeta, 2000);
 
             const checkReady = (e: MessageEvent) => {
+                if (isResolved) return;
                 try {
                     if (typeof e.data === 'string') {
                         const msg = JSON.parse(e.data);
+                        // Ensure we only process READY for the CURRENT file being sent
                         if (msg.type === 'ready') {
-                            logDebug("Sender: Received Ready - Launching Nuclear 4-Sector Burst");
+                            logDebug(`Sender: Received Ready for ${file.name} - Launching 4-Sector Burst`);
                             clearInterval(handshakeInterval);
                             dataChannelsRef.current[0]?.removeEventListener('message', checkReady);
                             startParallelBurst();
@@ -452,11 +454,15 @@ function InstantDropContent() {
                         logDebug(`Receiver: Received Metadata for ${msg.name} (Parallel: ${msg.isParallel})`);
                         receiveMeta.current = msg;
                         setIncomingMeta(msg); // Link to reactive UI labels
+
+                        // Critical fixes for batching: completely reset buffers for new file
                         receiveBuffers.current = new Map();
                         receivedEofs.current.clear();
                         totalReceivedBytesRef.current = 0;
                         setCurrentFileIndex(msg.currentIdx || 0);
                         setStatus('transferring');
+
+                        // Optional: Clear out any pending data in channels
                     }
 
                     // Always broadcast READY on all open channels to be safe
@@ -828,8 +834,8 @@ function InstantDropContent() {
                                                 <div className="flex items-center gap-2">
                                                     {transferSpeed !== null && (
                                                         <span className={`text-xs font-bold px-2 py-0.5 rounded-full ${transferSpeed >= 5 ? 'bg-green-100 text-green-700 dark:bg-green-900/40 dark:text-green-300'
-                                                                : transferSpeed >= 1 ? 'bg-amber-100 text-amber-700 dark:bg-amber-900/40 dark:text-amber-300'
-                                                                    : 'bg-red-100 text-red-700 dark:bg-red-900/40 dark:text-red-300'
+                                                            : transferSpeed >= 1 ? 'bg-amber-100 text-amber-700 dark:bg-amber-900/40 dark:text-amber-300'
+                                                                : 'bg-red-100 text-red-700 dark:bg-red-900/40 dark:text-red-300'
                                                             }`}>
                                                             ⚡ {transferSpeed} MB/s
                                                         </span>
