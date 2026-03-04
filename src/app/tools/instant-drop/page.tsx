@@ -11,8 +11,8 @@ import { Footer } from "@/components/layout/Footer";
 import { useUsage } from "@/hooks/useUsage";
 import { PaywallModal } from "@/components/layout/PaywallModal";
 
-// Optimized Chunk size (512KB — maximizes WebRTC SCTP pipeline window)
-const CHUNK_SIZE = 512 * 1024;
+// Strict WebRTC cross-browser compatible Chunk size (64KB limits maxMessageSize exceptions)
+const CHUNK_SIZE = 64 * 1024;
 const MAX_IN_FLIGHT = 32;
 const BACKEND_WS_URL = process.env.NEXT_PUBLIC_API_URL
     ? process.env.NEXT_PUBLIC_API_URL.trim().replace(/\/$/, "").replace(/^https:\/\//i, "wss://").replace(/^http:\/\//i, "ws://")
@@ -355,15 +355,21 @@ function InstantDropContent() {
                         const chunk = sectorData.slice(offset, offset + chunkLen);
 
                         if (dc.readyState === 'open') {
-                            dc.send(chunk);
-                            offset += chunkLen;
-                            totalSentBytesRef.current += chunkLen;
+                            try {
+                                dc.send(chunk);
+                                offset += chunkLen;
+                                totalSentBytesRef.current += chunkLen;
 
-                            const totalBuffered = dataChannelsRef.current.reduce(
-                                (acc, c) => acc + (c.readyState === 'open' ? c.bufferedAmount : 0), 0
-                            );
-                            const trueSent = Math.max(0, totalSentBytesRef.current - totalBuffered);
-                            setProgress(Math.round((trueSent / file.size) * 100));
+                                const totalBuffered = dataChannelsRef.current.reduce(
+                                    (acc, c) => acc + (c.readyState === 'open' ? c.bufferedAmount : 0), 0
+                                );
+                                const trueSent = Math.max(0, totalSentBytesRef.current - totalBuffered);
+                                setProgress(Math.round((trueSent / file.size) * 100));
+                            } catch (err) {
+                                console.error("WebRTC Send Error (likely maxMessageSize or buffer full):", err);
+                                // If send fails (e.g., buffer overflow), wait and try again
+                                await new Promise(res => setTimeout(res, 100));
+                            }
                         } else break;
                     }
                     if (isActive.current && dc.readyState === 'open') {
