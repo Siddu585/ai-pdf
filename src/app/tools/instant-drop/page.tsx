@@ -816,7 +816,7 @@ function InstantDropContent() {
                         {/* Gigabit Pro Badge (Session Reactive) */}
                         {clerkLoaded ? (
                             <>
-                                {usingGigabitRelay ? (
+                                {(isPro || usingGigabitRelay) ? (
                                     <div className="px-3 py-1 rounded-full bg-indigo-500/10 border border-indigo-500/20 flex items-center gap-2 shadow-[0_0_15px_rgba(99,102,241,0.1)]">
                                         <div className="w-1.5 h-1.5 rounded-full bg-indigo-500 animate-pulse" />
                                         <span className="text-[11px] font-bold text-indigo-600 dark:text-indigo-400 tracking-wide uppercase">⚡ Gigabit Pro</span>
