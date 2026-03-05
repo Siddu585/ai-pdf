@@ -9,7 +9,7 @@ export function useUsage() {
     const [usageCount, setUsageCount] = useState(0);
     const [deviceId, setDeviceId] = useState("");
     const [isPaywallOpen, setIsPaywallOpen] = useState(false);
-    const email = user?.primaryEmailAddress?.emailAddress || "";
+    const email = user?.primaryEmailAddress?.emailAddress?.trim().toLowerCase() || "";
     const [isPro, setIsPro] = useState(isProEmail(email));
     const [loading, setLoading] = useState(true);
 

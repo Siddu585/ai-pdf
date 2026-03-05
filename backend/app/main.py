@@ -150,10 +150,11 @@ tracker = UsageTracker()
 
 @app.get("/api/usage/status")
 async def get_usage_status(request: Request, deviceId: str = "", email: str = ""):
-    key = tracker.get_key(request, deviceId)
+    # Normalize email
+    email_norm = email.lower().strip() if email else ""
     is_pro = (deviceId in tracker.pro_users if deviceId else False) or \
-             (email in tracker.pro_users if email else False) or \
-             (email in tracker.HARDCODED_PRO if email else False)
+             (email_norm in tracker.pro_users if email_norm else False) or \
+             (email_norm in tracker.HARDCODED_PRO if email_norm else False)
     
     if is_pro:
         return {"count": 0, "limit": 999, "remaining": 999, "is_pro": True}
