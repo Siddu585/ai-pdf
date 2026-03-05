@@ -47,6 +47,7 @@ function InstantDropContent() {
     const [compressImages, setCompressImages] = useState(false);
     const [isCompressing, setIsCompressing] = useState(false);
     const [transferSpeed, setTransferSpeed] = useState<number | null>(null); // MB/s
+    const [usingGigabitRelay, setUsingGigabitRelay] = useState(false);
 
     const wsRef = useRef<WebSocket | null>(null);
     const logDebug = (msg: string) => {
@@ -219,15 +220,18 @@ function InstantDropContent() {
                         const turnData = await turnRes.json();
                         if (Array.isArray(turnData)) {
                             currentIceServers = [...currentIceServers, ...turnData];
+                            setUsingGigabitRelay(true);
                             logDebug(`Sender: Injected ${turnData.length} TURN relay servers. Sharing with receiver...`);
                             // PRO-SHARING SIGNAL: Send TURN servers to peer via WebSocket
                             ws.send(JSON.stringify({ type: 'pro-turn-servers', iceServers: turnData }));
                         }
                     } else {
                         logDebug("Sender: Failed to fetch TURN servers (Auth error or Server down)");
+                        setUsingGigabitRelay(false);
                     }
                 } else {
                     logDebug("Sender: Free Tier - Using STUN-only transport");
+                    setUsingGigabitRelay(false);
                 }
             }
             // RECEIVER LOGIC: Use Shared or Fallback
@@ -243,6 +247,7 @@ function InstantDropContent() {
                 if (sharedTurnServersRef.current) {
                     logDebug(`Receiver: Using Shared Gigabit Relay from Pro Sender (${sharedTurnServersRef.current.length} servers)`);
                     currentIceServers = [...currentIceServers, ...sharedTurnServersRef.current];
+                    setUsingGigabitRelay(true);
                 } else {
                     // Fallback: If Pro-Sharing didn't arrive, try personal Pro status
                     if (isProRef.current) {
@@ -252,15 +257,18 @@ function InstantDropContent() {
                             const turnData = await turnRes.json();
                             if (Array.isArray(turnData)) {
                                 currentIceServers = [...currentIceServers, ...turnData];
+                                setUsingGigabitRelay(true);
                             }
                         }
                     } else {
                         logDebug("Receiver: Free Tier - Falling back to STUN-only");
+                        setUsingGigabitRelay(false);
                     }
                 }
             }
         } catch (e) {
             logDebug("WebRTC Config Error: falling back to STUN-only");
+            setUsingGigabitRelay(false);
         }
 
         const peer = new RTCPeerConnection({ iceServers: currentIceServers });
@@ -805,10 +813,10 @@ function InstantDropContent() {
                     </div>
 
                     <div className="flex items-center gap-4">
-                        {/* Gigabit Pro Badge */}
+                        {/* Gigabit Pro Badge (Session Reactive) */}
                         {clerkLoaded ? (
                             <>
-                                {isPro ? (
+                                {usingGigabitRelay ? (
                                     <div className="px-3 py-1 rounded-full bg-indigo-500/10 border border-indigo-500/20 flex items-center gap-2 shadow-[0_0_15px_rgba(99,102,241,0.1)]">
                                         <div className="w-1.5 h-1.5 rounded-full bg-indigo-500 animate-pulse" />
                                         <span className="text-[11px] font-bold text-indigo-600 dark:text-indigo-400 tracking-wide uppercase">⚡ Gigabit Pro</span>
