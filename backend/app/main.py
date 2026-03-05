@@ -91,17 +91,30 @@ from datetime import datetime
 
 class UsageTracker:
     def __init__(self):
-        self.usage_file = "usage_log.json"
-        self.pro_file = "pro_users.json"
+        # Use absolute path to ensure reliability across CWD changes
+        base_dir = os.path.dirname(os.path.abspath(__file__))
+        self.usage_file = os.path.join(base_dir, "usage_log.json")
+        self.pro_file = os.path.join(base_dir, "..", "pro_users.json") # One level up in backend/
+        
         self.data = self._load(self.usage_file)
         self.pro_users = self._load(self.pro_file)
+        
+        # Hardcoded Fail-safe Whitelist (matches pro-whitelist.ts)
+        self.HARDCODED_PRO = {
+            "siddhantjangam33@gmail.com",
+            "swapnali89narwade@gmail.com",
+            "siddhantcil590@gmail.com",
+            "siddhant.jangams@gmail.com"
+        }
 
     def _load(self, filename):
         if os.path.exists(filename):
             try:
                 with open(filename, "r") as f:
                     return json.load(f)
-            except: return {}
+            except: 
+                print(f"Error loading {filename}")
+                return {}
         return {}
 
     def _save(self, filename, data):
@@ -115,9 +128,9 @@ class UsageTracker:
         # Hash IP + Device ID to create a unique tracker
         return hashlib.sha256(f"{ip}:{device_id}".encode()).hexdigest()
 
-    def check_and_record(self, key: str, device_id: str = ""):
-        # Skip limits for Pro users (Check raw device ID)
-        if device_id and device_id in self.pro_users:
+    def check_and_record(self, key: str, device_id: str = "", email: str = ""):
+        # Skip limits for Pro users (Check raw device ID or Email whitelist)
+        if (device_id and device_id in self.pro_users) or (email and email in self.pro_users):
             return True, 0
             
         today = datetime.now().strftime("%Y-%m-%d")
@@ -125,10 +138,6 @@ class UsageTracker:
             self.data[today] = {}
         
         count = self.data[today].get(key, 0)
-        # TEMPORARY BYPASS FOR TESTING
-        # if count >= 5:
-        #     return False, count
-        
         self.data[today][key] = count + 1
         self._save(self.usage_file, self.data)
         return True, count + 1
@@ -140,9 +149,11 @@ class UsageTracker:
 tracker = UsageTracker()
 
 @app.get("/api/usage/status")
-async def get_usage_status(request: Request, deviceId: str = ""):
+async def get_usage_status(request: Request, deviceId: str = "", email: str = ""):
     key = tracker.get_key(request, deviceId)
-    is_pro = deviceId in tracker.pro_users if deviceId else False
+    is_pro = (deviceId in tracker.pro_users if deviceId else False) or \
+             (email in tracker.pro_users if email else False) or \
+             (email in tracker.HARDCODED_PRO if email else False)
     
     if is_pro:
         return {"count": 0, "limit": 999, "remaining": 999, "is_pro": True}
@@ -155,8 +166,9 @@ async def get_usage_status(request: Request, deviceId: str = ""):
 @app.post("/api/usage/record")
 async def record_usage_endpoint(request: Request, data: dict):
     deviceId = data.get("deviceId", "")
+    email = data.get("email", "")
     key = tracker.get_key(request, deviceId)
-    allowed, count = tracker.check_and_record(key, deviceId)
+    allowed, count = tracker.check_and_record(key, deviceId, email)
     return {"allowed": True, "count": count, "remaining": 999}
 
 # -------------------------------
