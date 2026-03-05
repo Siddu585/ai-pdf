@@ -1,4 +1,5 @@
 from fastapi import FastAPI, UploadFile, File, Form, HTTPException, WebSocket, WebSocketDisconnect, Request
+from starlette.websockets import WebSocketState
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse
 import stripe
@@ -46,13 +47,17 @@ class ConnectionManager:
             if not self.rooms[room_id]:
                 del self.rooms[room_id]
 
+    def is_connected(self, websocket: WebSocket):
+        return websocket.client_state == WebSocketState.CONNECTED
+
     async def send_message(self, message: dict, room_id: str, to_client: str):
         if room_id in self.rooms and to_client in self.rooms[room_id]:
             ws = self.rooms[room_id][to_client]
-            try:
-                await ws.send_json(message)
-            except Exception:
-                pass
+            if self.is_connected(ws):
+                try:
+                    await ws.send_json(message)
+                except Exception:
+                    pass
 
 manager = ConnectionManager()
 
@@ -191,12 +196,17 @@ async def drop_websocket(websocket: WebSocket, room_id: str, client_type: str):
             # Relay messages to the other client verbatim
             if room_id in manager.rooms and other in manager.rooms[room_id]:
                 other_ws = manager.rooms[room_id][other]
-                if "text" in message and message["text"]:
-                    # print(f"Relaying text from {client_type} to {other} in {room_id}")
-                    await other_ws.send_text(message["text"])
-                elif "bytes" in message and message["bytes"]:
-                    # print(f"Relaying binary from {client_type} to {other} in {room_id}")
-                    await other_ws.send_bytes(message["bytes"])
+                if manager.is_connected(other_ws):
+                    if "text" in message and message["text"]:
+                        try:
+                            await other_ws.send_text(message["text"])
+                        except Exception:
+                            pass
+                    elif "bytes" in message and message["bytes"]:
+                        try:
+                            await other_ws.send_bytes(message["bytes"])
+                        except Exception:
+                            pass
             else:
                 # Other peer not yet connected, message dropped
                 pass
