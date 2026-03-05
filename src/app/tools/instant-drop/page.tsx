@@ -56,6 +56,15 @@ function InstantDropContent() {
     const filesRef = useRef<File[]>([]);
     const modeRef = useRef(mode);
     const statusRef = useRef(status);
+
+    useEffect(() => {
+        modeRef.current = mode;
+    }, [mode]);
+
+    useEffect(() => {
+        statusRef.current = status;
+    }, [status]);
+
     // Speed tracking
     const lastBytesRef = useRef(0);
     const speedTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
