@@ -56,6 +56,16 @@ function InstantDropContent() {
     const filesRef = useRef<File[]>([]);
     const modeRef = useRef(mode);
     const statusRef = useRef(status);
+    const isProRef = useRef(isPro);
+    const emailRef = useRef(email);
+    const deviceIdRef = useRef(deviceId);
+
+    useEffect(() => {
+        isProRef.current = isPro;
+        emailRef.current = email;
+        deviceIdRef.current = deviceId;
+        logDebug(`Syncing Refs: isPro=${isPro}, email=${email}`);
+    }, [isPro, email, deviceId]);
 
     useEffect(() => {
         modeRef.current = mode;
@@ -172,10 +182,18 @@ function InstantDropContent() {
 
         let currentIceServers = [...ICE_SERVERS.iceServers];
         try {
+            // RACE CONDITION FIX: Wait up to 3 seconds for Pro-status to load if it's currently false
+            let attempts = 0;
+            while (!isProRef.current && attempts < 6) {
+                logDebug(`Waiting for Pro-tier authorization (Attempt ${attempts + 1}/6)...`);
+                await new Promise(r => setTimeout(r, 500));
+                attempts++;
+            }
+
             // Only fetch high-speed TURN relay for Pro users
-            if (isPro) {
+            if (isProRef.current) {
                 logDebug("Fetching high-speed TURN relay servers (Pro Tier)...");
-                const turnRes = await fetch(`/api/turn?deviceId=${deviceId}&email=${encodeURIComponent(email || "")}`);
+                const turnRes = await fetch(`/api/turn?deviceId=${deviceIdRef.current}&email=${encodeURIComponent(emailRef.current || "")}`);
                 if (turnRes.ok) {
                     const turnData = await turnRes.json();
                     if (Array.isArray(turnData)) {
@@ -183,10 +201,10 @@ function InstantDropContent() {
                         logDebug(`Injected ${turnData.length} TURN relay servers`);
                     }
                 } else {
-                    logDebug("Failed to fetch TURN servers, falling back to STUN-only");
+                    logDebug("Failed to fetch TURN servers (Server error)");
                 }
             } else {
-                logDebug("Free Tier: Using STUN-only transport");
+                logDebug("Free Tier: Using STUN-only transport (Relay restricted)");
             }
         } catch (e) {
             logDebug("Error fetching TURN servers, falling back to STUN-only");
