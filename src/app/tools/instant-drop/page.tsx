@@ -129,7 +129,7 @@ function InstantDropContent() {
     const fileInputRef = useRef<HTMLInputElement>(null);
 
     // --- SENDER LOGIC (Turbo Drop 2.0) ---
-    const startSending = (selectedFiles: FileList | File[]) => {
+    const prepareFilesForSending = (selectedFiles: FileList | File[]) => {
         const fileList = Array.from(selectedFiles);
         setFiles(fileList);
         filesRef.current = fileList;
@@ -155,8 +155,25 @@ function InstantDropContent() {
             console.log("Sender WS Message:", event.data);
             const data = JSON.parse(event.data);
             if (data.type === 'peer-connected') {
-                console.log("Peer connected, starting WebRTC setup");
-                setupWebRTC(ws, true);
+                setStatus('connecting');
+                logDebug("Sender: Initiating P2P connection...");
+
+                // Add a connection timeout
+                const connTimeout = setTimeout(() => {
+                    if (peerRef.current?.connectionState !== 'connected') {
+                        logDebug("Sender: Connection Timeout (30000ms) - Check network...");
+                        // Only set error if we aren't already closed/done
+                        if (isActive.current) setStatus('error');
+                    }
+                }, 30000);
+
+                await setupWebRTC(ws, true);
+            } else if (data.type === 'receiver-ready') {
+                logDebug("Sender: Peer is ready. Starting WebRTC Setup...");
+                startP2P();
+            } else if (data.type === 'file-ready') {
+                logDebug("Sender: Receiver is ready for files. Starting transmission...");
+                startFileTransfer();
             } else if (data.type === 'answer') {
                 console.log("Received answer, setting remote description");
                 await peerRef.current?.setRemoteDescription(new RTCSessionDescription(data.sdp));
@@ -215,20 +232,31 @@ function InstantDropContent() {
             }
             // RECEIVER LOGIC: Use Shared or Fallback
             else {
+                // Wait up to 2 seconds for Pro-Sharing signal if it hasn't arrived yet
+                let waitAttempts = 0;
+                while (!sharedTurnServersRef.current && waitAttempts < 4) {
+                    logDebug(`Receiver: Waiting for shared Gigabit Relay (${waitAttempts + 1}/4)...`);
+                    await new Promise(r => setTimeout(r, 500));
+                    waitAttempts++;
+                }
+
                 if (sharedTurnServersRef.current) {
                     logDebug(`Receiver: Using Shared Gigabit Relay from Pro Sender (${sharedTurnServersRef.current.length} servers)`);
                     currentIceServers = [...currentIceServers, ...sharedTurnServersRef.current];
-                } else if (isProRef.current) {
-                    logDebug("Receiver: Using personal Pro Tier TURN servers...");
-                    const turnRes = await fetch(`/api/turn?deviceId=${deviceIdRef.current}&email=${encodeURIComponent(emailRef.current || "")}`);
-                    if (turnRes.ok) {
-                        const turnData = await turnRes.json();
-                        if (Array.isArray(turnData)) {
-                            currentIceServers = [...currentIceServers, ...turnData];
-                        }
-                    }
                 } else {
-                    logDebug("Receiver: Free Tier - Falling back to STUN-only");
+                    // Fallback: If Pro-Sharing didn't arrive, try personal Pro status
+                    if (isProRef.current) {
+                        logDebug("Receiver: Pro-Sharing not found, fetching personal TURN servers...");
+                        const turnRes = await fetch(`/api/turn?deviceId=${deviceIdRef.current}&email=${encodeURIComponent(emailRef.current || "")}`);
+                        if (turnRes.ok) {
+                            const turnData = await turnRes.json();
+                            if (Array.isArray(turnData)) {
+                                currentIceServers = [...currentIceServers, ...turnData];
+                            }
+                        }
+                    } else {
+                        logDebug("Receiver: Free Tier - Falling back to STUN-only");
+                    }
                 }
             }
         } catch (e) {
@@ -343,6 +371,14 @@ function InstantDropContent() {
             if (speedTimerRef.current) { clearInterval(speedTimerRef.current); speedTimerRef.current = null; }
             setTransferSpeed(null);
         };
+    };
+
+    const startP2P = async () => {
+        if (!peerRef.current) return;
+        logDebug("Sender: Creating offer...");
+        const offer = await peerRef.current.createOffer();
+        await peerRef.current.setLocalDescription(offer);
+        wsRef.current?.send(JSON.stringify({ type: 'offer', sdp: offer }));
     };
 
     const startFileTransfer = async () => {
@@ -487,7 +523,8 @@ function InstantDropContent() {
         wsRef.current = ws;
 
         ws.onopen = () => {
-            console.log("Receiver WS Opened");
+            logDebug("Receiver: WebSocket Tunnel Established");
+            ws.send(JSON.stringify({ type: 'receiver-ready' }));
             const heartbeat = setInterval(() => {
                 if (ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify({ type: 'ping' }));
             }, 10000);
@@ -498,7 +535,10 @@ function InstantDropContent() {
             console.log("Receiver WS Message:", event.data);
             const data = JSON.parse(event.data);
             if (data.type === 'offer') {
-                console.log("Received offer, setting up WebRTC and creating answer");
+                logDebug("Receiver: Received offer, initiating Gigabit-Handshake...");
+                // Clear any existing connection
+                if (peerRef.current) peerRef.current.close();
+
                 await setupWebRTC(ws, false);
                 await peerRef.current?.setRemoteDescription(new RTCSessionDescription(data.sdp));
                 remoteDescriptionSet.current = true;
@@ -731,15 +771,19 @@ function InstantDropContent() {
         document.body.appendChild(script);
     };
 
-    const handleFileChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const handleFileSelection = async (files: FileList) => {
+        let fileList = Array.from(files) as File[];
+        if (compressImages) {
+            setIsCompressing(true);
+            fileList = await Promise.all(fileList.map(f => compressImageFile(f)));
+            setIsCompressing(false);
+        }
+        handleAction(() => prepareFilesForSending(fileList));
+    };
+
+    const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
         if (e.target.files && e.target.files.length > 0) {
-            let fileList = Array.from(e.target.files) as File[];
-            if (compressImages) {
-                setIsCompressing(true);
-                fileList = await Promise.all(fileList.map(f => compressImageFile(f)));
-                setIsCompressing(false);
-            }
-            handleAction(() => startSending(fileList));
+            handleAction(() => handleFileSelection(e.target.files!));
         }
     };
 
