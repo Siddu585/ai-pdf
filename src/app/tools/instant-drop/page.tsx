@@ -242,19 +242,25 @@ function InstantDropContent() {
                 handleIncomingData(e.data, channelIdx);
             } else {
                 try {
-                    const msg = JSON.parse(e.data);
-                    if (msg.type === 'request-metadata') {
-                        console.log("Receiver requested metadata, resending...");
-                        const file = filesRef.current[currentFileIndex];
-                        if (file) {
-                            dc.send(JSON.stringify({
-                                type: 'metadata',
-                                name: file.name,
-                                size: file.size,
-                                fileType: file.type,
-                                currentIdx: currentFileIndex,
-                                totalFiles: filesRef.current.length
-                            }));
+                    if (typeof e.data === 'string') {
+                        const msg = JSON.parse(e.data);
+                        if (msg.type === 'request-metadata') {
+                            console.log("Receiver requested metadata, resending...");
+                            const file = filesRef.current[currentFileIndex];
+                            if (file) {
+                                dc.send(JSON.stringify({
+                                    type: 'metadata',
+                                    name: file.name,
+                                    size: file.size,
+                                    fileType: file.type,
+                                    currentIdx: currentFileIndex,
+                                    totalFiles: filesRef.current.length
+                                }));
+                            }
+                        } else {
+                            // Route all other sender messages (ready, file-ack) through standard DOM events
+                            // to bypass iOS Safari bugs with RTCDataChannel.addEventListener
+                            window.dispatchEvent(new CustomEvent('webrtc-sender-msg', { detail: msg }));
                         }
                     }
                 } catch (err) {
@@ -313,22 +319,19 @@ function InstantDropContent() {
             sendMeta();
             handshakeInterval = setInterval(sendMeta, 2000);
 
-            const checkReady = (e: MessageEvent) => {
+            const checkReady = (e: any) => {
                 if (isResolved) return;
                 try {
-                    if (typeof e.data === 'string') {
-                        const msg = JSON.parse(e.data);
-                        // Ensure we only process READY for the CURRENT file being sent
-                        if (msg.type === 'ready') {
-                            logDebug(`Sender: Received Ready for ${file.name} - Launching 4-Sector Burst`);
-                            clearInterval(handshakeInterval);
-                            dataChannelsRef.current[0]?.removeEventListener('message', checkReady);
-                            startParallelBurst();
-                        }
+                    const msg = e.detail;
+                    if (msg.type === 'ready') {
+                        logDebug(`Sender: Received Ready for ${file.name} - Launching 4-Sector Burst`);
+                        clearInterval(handshakeInterval);
+                        window.removeEventListener('webrtc-sender-msg', checkReady);
+                        startParallelBurst();
                     }
                 } catch (err) { }
             };
-            dataChannelsRef.current[0]?.addEventListener('message', checkReady);
+            window.addEventListener('webrtc-sender-msg', checkReady);
 
             const startParallelBurst = async () => {
                 const numChannels = dataChannelsRef.current.length;
@@ -391,18 +394,16 @@ function InstantDropContent() {
                 logDebug(`Sender: All Sectors Sent. Waiting for Receiver ACK for ${file.name}`);
                 await new Promise<void>((resolveAck) => {
                     if (dataChannelsRef.current.length === 0 || !isActive.current) return resolveAck();
-                    const ackListener = (e: MessageEvent) => {
+                    const ackListener = (e: any) => {
                         try {
-                            if (typeof e.data === 'string') {
-                                const msg = JSON.parse(e.data);
-                                if (msg.type === 'file-ack' && msg.name === file.name) {
-                                    dataChannelsRef.current[0]?.removeEventListener('message', ackListener);
-                                    resolveAck();
-                                }
+                            const msg = e.detail;
+                            if (msg.type === 'file-ack' && msg.name === file.name) {
+                                window.removeEventListener('webrtc-sender-msg', ackListener);
+                                resolveAck();
                             }
                         } catch (err) { }
                     };
-                    dataChannelsRef.current[0]?.addEventListener('message', ackListener);
+                    window.addEventListener('webrtc-sender-msg', ackListener);
                 });
 
                 isResolved = true;
