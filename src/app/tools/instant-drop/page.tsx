@@ -170,7 +170,24 @@ function InstantDropContent() {
         // HARD RESET for parallel channel persistence
         dataChannelsRef.current = [];
 
-        const peer = new RTCPeerConnection(ICE_SERVERS);
+        let currentIceServers = [...ICE_SERVERS.iceServers];
+        try {
+            logDebug("Fetching high-speed TURN relay servers...");
+            const turnRes = await fetch('/api/turn');
+            if (turnRes.ok) {
+                const turnData = await turnRes.json();
+                if (Array.isArray(turnData)) {
+                    currentIceServers = [...currentIceServers, ...turnData];
+                    logDebug(`Injected ${turnData.length} TURN relay servers`);
+                }
+            } else {
+                logDebug("Failed to fetch TURN servers, falling back to STUN-only");
+            }
+        } catch (e) {
+            logDebug("Error fetching TURN servers, falling back to STUN-only");
+        }
+
+        const peer = new RTCPeerConnection({ iceServers: currentIceServers });
         peerRef.current = peer;
 
         peer.onicecandidate = (e) => {
