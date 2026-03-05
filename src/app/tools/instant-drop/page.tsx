@@ -34,7 +34,7 @@ function InstantDropContent() {
 
     const [mode, setMode] = useState<'select' | 'send' | 'receive'>(initialRoom ? 'receive' : 'select');
     const [roomId, setRoomId] = useState<string>(initialRoom || "");
-    const { recordUsage, isPaywallOpen, setIsPaywallOpen, handleAction, deviceId, isPro } = useUsage();
+    const { recordUsage, isPaywallOpen, setIsPaywallOpen, handleAction, deviceId, isPro, email } = useUsage();
     const [files, setFiles] = useState<File[]>([]);
     const [currentFileIndex, setCurrentFileIndex] = useState(0);
     const [progress, setProgress] = useState(0);
@@ -175,7 +175,7 @@ function InstantDropContent() {
             // Only fetch high-speed TURN relay for Pro users
             if (isPro) {
                 logDebug("Fetching high-speed TURN relay servers (Pro Tier)...");
-                const turnRes = await fetch(`/api/turn?deviceId=${deviceId}`);
+                const turnRes = await fetch(`/api/turn?deviceId=${deviceId}&email=${encodeURIComponent(email || "")}`);
                 if (turnRes.ok) {
                     const turnData = await turnRes.json();
                     if (Array.isArray(turnData)) {

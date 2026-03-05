@@ -1,4 +1,6 @@
 import { NextResponse } from 'next/server';
+import fs from 'fs';
+import path from 'path';
 
 export async function GET(request: Request) {
     const { searchParams } = new URL(request.url);
@@ -12,16 +14,24 @@ export async function GET(request: Request) {
         return NextResponse.json({ error: "TURN credentials not configured" }, { status: 500 });
     }
 
+    // PRO CHECK: Load the whitelist
     try {
-        // PRO CHECK logic (Frontend can pass ?email= during setupWebRTC)
-        // If no email is provided, or it's not a pro email, we return a 403 or empty array to force STUN only
-        if (email) {
-            // Note: In production, the backend /api/usage/status already checks pro_users.json.
-            // For now, we allow the fetch but we could add a secondary check here if needed.
-            // Since this API is local to our Next.js, we assume the frontend is doing the check
-            // but we'll fulfill the request only if the frontend asks for it explicitly.
+        const whitelistPath = path.join(process.cwd(), 'pro_users.json');
+        if (fs.existsSync(whitelistPath)) {
+            const whitelist = JSON.parse(fs.readFileSync(whitelistPath, 'utf8'));
+            if (!email || !whitelist[email]) {
+                console.log(`TURN Denied: User ${email} is not in Pro whitelist`);
+                return NextResponse.json({ error: "High-speed relay is a Pro feature. Upgrade to unlock!" }, { status: 403 });
+            }
+        } else {
+            // If file doesn't exist, we fallback to allowing for now (or vice versa)
+            // But since I just created it, it should exist.
         }
+    } catch (err) {
+        console.error("Error reading whitelist:", err);
+    }
 
+    try {
         // Metered.ca provides a REST API to get ephemeral credentials
         const response = await fetch(`https://${domain}/api/v1/turn/credentials?apiKey=${secret}`, {
             method: 'POST',

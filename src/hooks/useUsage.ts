@@ -1,13 +1,17 @@
 import { useState, useEffect } from "react";
+import { useUser } from "@clerk/nextjs";
 
 const API_BASE = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
 
 export function useUsage() {
+    const { user } = useUser();
     const [usageCount, setUsageCount] = useState(0);
     const [deviceId, setDeviceId] = useState("");
     const [isPaywallOpen, setIsPaywallOpen] = useState(false);
     const [isPro, setIsPro] = useState(false);
     const [loading, setLoading] = useState(true);
+
+    const email = user?.primaryEmailAddress?.emailAddress || "";
 
     // Generate a simple Hardware ID
     useEffect(() => {
@@ -28,12 +32,16 @@ export function useUsage() {
 
         const id = generateDeviceId();
         setDeviceId(id);
-        fetchStatus(id);
-    }, []);
+        fetchStatus(id, email);
+    }, [email]);
 
-    const fetchStatus = async (id: string) => {
+    const fetchStatus = async (id: string, email: string = "") => {
         try {
-            const res = await fetch(`${API_BASE}/api/usage/status?deviceId=${id}`);
+            const url = new URL(`${API_BASE}/api/usage/status`);
+            url.searchParams.append("deviceId", id);
+            if (email) url.searchParams.append("email", email);
+
+            const res = await fetch(url.toString());
             const data = await res.json();
             setUsageCount(data.count || 0);
             setIsPro(data.is_pro || false);
@@ -84,6 +92,7 @@ export function useUsage() {
     return {
         usageCount,
         deviceId,
+        email, // Return the email for TURN API usage
         isPro,
         canUse,
         remainingUses: 999, // Math.max(0, 5 - usageCount),
