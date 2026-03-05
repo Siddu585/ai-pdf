@@ -1,5 +1,6 @@
 import { useState, useEffect } from "react";
 import { useUser } from "@clerk/nextjs";
+import { isProEmail } from "@/lib/pro-whitelist";
 
 const API_BASE = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
 
@@ -8,10 +9,9 @@ export function useUsage() {
     const [usageCount, setUsageCount] = useState(0);
     const [deviceId, setDeviceId] = useState("");
     const [isPaywallOpen, setIsPaywallOpen] = useState(false);
-    const [isPro, setIsPro] = useState(false);
-    const [loading, setLoading] = useState(true);
-
     const email = user?.primaryEmailAddress?.emailAddress || "";
+    const [isPro, setIsPro] = useState(isProEmail(email));
+    const [loading, setLoading] = useState(true);
 
     // Generate a simple Hardware ID
     useEffect(() => {
@@ -32,6 +32,7 @@ export function useUsage() {
 
         const id = generateDeviceId();
         setDeviceId(id);
+        setIsPro(isProEmail(email));
         fetchStatus(id, email);
     }, [email]);
 
@@ -44,7 +45,11 @@ export function useUsage() {
             const res = await fetch(url.toString());
             const data = await res.json();
             setUsageCount(data.count || 0);
-            setIsPro(data.is_pro || false);
+
+            // Sync with backend but respect local whitelist if it's already true
+            const backendIsPro = data.is_pro || false;
+            const localIsPro = isProEmail(email);
+            setIsPro(backendIsPro || localIsPro);
         } catch (e) {
             console.error("Failed to fetch usage status", e);
         } finally {
