@@ -34,7 +34,7 @@ function InstantDropContent() {
 
     const [mode, setMode] = useState<'select' | 'send' | 'receive'>(initialRoom ? 'receive' : 'select');
     const [roomId, setRoomId] = useState<string>(initialRoom || "");
-    const { recordUsage, isPaywallOpen, setIsPaywallOpen, handleAction, deviceId } = useUsage();
+    const { recordUsage, isPaywallOpen, setIsPaywallOpen, handleAction, deviceId, isPro } = useUsage();
     const [files, setFiles] = useState<File[]>([]);
     const [currentFileIndex, setCurrentFileIndex] = useState(0);
     const [progress, setProgress] = useState(0);
@@ -172,16 +172,21 @@ function InstantDropContent() {
 
         let currentIceServers = [...ICE_SERVERS.iceServers];
         try {
-            logDebug("Fetching high-speed TURN relay servers...");
-            const turnRes = await fetch('/api/turn');
-            if (turnRes.ok) {
-                const turnData = await turnRes.json();
-                if (Array.isArray(turnData)) {
-                    currentIceServers = [...currentIceServers, ...turnData];
-                    logDebug(`Injected ${turnData.length} TURN relay servers`);
+            // Only fetch high-speed TURN relay for Pro users
+            if (isPro) {
+                logDebug("Fetching high-speed TURN relay servers (Pro Tier)...");
+                const turnRes = await fetch(`/api/turn?deviceId=${deviceId}`);
+                if (turnRes.ok) {
+                    const turnData = await turnRes.json();
+                    if (Array.isArray(turnData)) {
+                        currentIceServers = [...currentIceServers, ...turnData];
+                        logDebug(`Injected ${turnData.length} TURN relay servers`);
+                    }
+                } else {
+                    logDebug("Failed to fetch TURN servers, falling back to STUN-only");
                 }
             } else {
-                logDebug("Failed to fetch TURN servers, falling back to STUN-only");
+                logDebug("Free Tier: Using STUN-only transport");
             }
         } catch (e) {
             logDebug("Error fetching TURN servers, falling back to STUN-only");

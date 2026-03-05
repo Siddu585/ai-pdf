@@ -84,6 +84,7 @@ export function useUsage() {
     return {
         usageCount,
         deviceId,
+        isPro,
         canUse,
         remainingUses: 999, // Math.max(0, 5 - usageCount),
         recordUsage,
