@@ -3,10 +3,10 @@
 import { useState, useRef, useEffect, Suspense } from "react";
 import { useSearchParams } from "next/navigation";
 import { QRCodeSVG } from "qrcode.react";
-import { UploadCloud, Download, CheckCircle, Smartphone, Loader2, Archive } from "lucide-react";
+import { UploadCloud, Download, CheckCircle, Smartphone, Loader2, Archive, Zap, X } from "lucide-react";
+import Link from "next/link";
 import JSZip from "jszip";
 import { Button } from "@/components/ui/button";
-import { Navbar } from "@/components/layout/Navbar";
 import { Footer } from "@/components/layout/Footer";
 import { useUsage } from "@/hooks/useUsage";
 import { PaywallModal } from "@/components/layout/PaywallModal";
@@ -59,6 +59,7 @@ function InstantDropContent() {
     const isProRef = useRef(isPro);
     const emailRef = useRef(email);
     const deviceIdRef = useRef(deviceId);
+    const sharedTurnServersRef = useRef<any[] | null>(null);
 
     useEffect(() => {
         isProRef.current = isPro;
@@ -182,32 +183,54 @@ function InstantDropContent() {
 
         let currentIceServers = [...ICE_SERVERS.iceServers];
         try {
-            // RACE CONDITION FIX: Wait up to 3 seconds for Pro-status to load if it's currently false
-            let attempts = 0;
-            while (!isProRef.current && attempts < 6) {
-                logDebug(`Waiting for Pro-tier authorization (Attempt ${attempts + 1}/6)...`);
-                await new Promise(r => setTimeout(r, 500));
-                attempts++;
-            }
+            // SENDER LOGIC: Fetch and Share
+            if (isSender) {
+                // RACE CONDITION FIX: Wait up to 3 seconds for Pro-status to load
+                let attempts = 0;
+                while (!isProRef.current && attempts < 6) {
+                    logDebug(`Sender: Waiting for Pro-tier authorization (Attempt ${attempts + 1}/6)...`);
+                    await new Promise(r => setTimeout(r, 500));
+                    attempts++;
+                }
 
-            // Only fetch high-speed TURN relay for Pro users
-            if (isProRef.current) {
-                logDebug("Fetching high-speed TURN relay servers (Pro Tier)...");
-                const turnRes = await fetch(`/api/turn?deviceId=${deviceIdRef.current}&email=${encodeURIComponent(emailRef.current || "")}`);
-                if (turnRes.ok) {
-                    const turnData = await turnRes.json();
-                    if (Array.isArray(turnData)) {
-                        currentIceServers = [...currentIceServers, ...turnData];
-                        logDebug(`Injected ${turnData.length} TURN relay servers`);
+                if (isProRef.current) {
+                    logDebug("Sender: Fetching high-speed TURN relay servers (Pro Tier)...");
+                    const turnRes = await fetch(`/api/turn?deviceId=${deviceIdRef.current}&email=${encodeURIComponent(emailRef.current || "")}`);
+                    if (turnRes.ok) {
+                        const turnData = await turnRes.json();
+                        if (Array.isArray(turnData)) {
+                            currentIceServers = [...currentIceServers, ...turnData];
+                            logDebug(`Sender: Injected ${turnData.length} TURN relay servers. Sharing with receiver...`);
+                            // PRO-SHARING SIGNAL: Send TURN servers to peer via WebSocket
+                            ws.send(JSON.stringify({ type: 'pro-turn-servers', iceServers: turnData }));
+                        }
+                    } else {
+                        logDebug("Sender: Failed to fetch TURN servers (Auth error or Server down)");
                     }
                 } else {
-                    logDebug("Failed to fetch TURN servers (Server error)");
+                    logDebug("Sender: Free Tier - Using STUN-only transport");
                 }
-            } else {
-                logDebug("Free Tier: Using STUN-only transport (Relay restricted)");
+            }
+            // RECEIVER LOGIC: Use Shared or Fallback
+            else {
+                if (sharedTurnServersRef.current) {
+                    logDebug(`Receiver: Using Shared Gigabit Relay from Pro Sender (${sharedTurnServersRef.current.length} servers)`);
+                    currentIceServers = [...currentIceServers, ...sharedTurnServersRef.current];
+                } else if (isProRef.current) {
+                    logDebug("Receiver: Using personal Pro Tier TURN servers...");
+                    const turnRes = await fetch(`/api/turn?deviceId=${deviceIdRef.current}&email=${encodeURIComponent(emailRef.current || "")}`);
+                    if (turnRes.ok) {
+                        const turnData = await turnRes.json();
+                        if (Array.isArray(turnData)) {
+                            currentIceServers = [...currentIceServers, ...turnData];
+                        }
+                    }
+                } else {
+                    logDebug("Receiver: Free Tier - Falling back to STUN-only");
+                }
             }
         } catch (e) {
-            logDebug("Error fetching TURN servers, falling back to STUN-only");
+            logDebug("WebRTC Config Error: falling back to STUN-only");
         }
 
         const peer = new RTCPeerConnection({ iceServers: currentIceServers });
@@ -486,6 +509,9 @@ function InstantDropContent() {
                     await peerRef.current?.addIceCandidate(new RTCIceCandidate(candidate));
                 }
                 iceBuffer.current = [];
+            } else if (data.type === 'pro-turn-servers') {
+                logDebug(`Receiver: Received shared Gigabit Relay servers from Pro Sender`);
+                sharedTurnServersRef.current = data.iceServers;
             } else if (data.type === 'ice-candidate') {
                 if (!remoteDescriptionSet.current) {
                     console.log("Buffering remote ICE candidate (Receiver)");
@@ -717,7 +743,40 @@ function InstantDropContent() {
 
     return (
         <div className="min-h-screen bg-background flex flex-col font-sans">
-            <Navbar />
+            {/* Header */}
+            <header className="fixed top-0 left-0 right-0 z-50 bg-background/80 backdrop-blur-xl border-b border-border">
+                <div className="max-w-7xl mx-auto px-6 h-16 flex items-center justify-between">
+                    <div className="flex items-center gap-3">
+                        <div className="w-10 h-10 rounded-xl bg-gradient-to-br from-indigo-500 to-purple-600 flex items-center justify-center shadow-lg shadow-indigo-500/20">
+                            <Zap className="w-5 h-5 text-white" />
+                        </div>
+                        <div>
+                            <h1 className="text-lg font-bold tracking-tight text-foreground">
+                                Instant Drop
+                            </h1>
+                            <p className="text-[10px] text-muted-foreground font-medium tracking-wider uppercase">v0009 Gigabit Relay</p>
+                        </div>
+                    </div>
+
+                    <div className="flex items-center gap-4">
+                        {/* Gigabit Pro Badge */}
+                        {isPro ? (
+                            <div className="px-3 py-1 rounded-full bg-indigo-500/10 border border-indigo-500/20 flex items-center gap-2 shadow-[0_0_15px_rgba(99,102,241,0.1)]">
+                                <div className="w-1.5 h-1.5 rounded-full bg-indigo-500 animate-pulse" />
+                                <span className="text-[11px] font-bold text-indigo-600 dark:text-indigo-400 tracking-wide uppercase">⚡ Gigabit Pro</span>
+                            </div>
+                        ) : (
+                            <div className="px-3 py-1 rounded-full bg-muted border border-border flex items-center gap-2">
+                                <div className="w-1.5 h-1.5 rounded-full bg-muted-foreground/30" />
+                                <span className="text-[11px] font-medium text-muted-foreground tracking-wide uppercase">Free Tier (STUN Only)</span>
+                            </div>
+                        )}
+                        <Link href="/" className="p-2 hover:bg-muted rounded-full transition-colors group">
+                            <X className="w-5 h-5 text-muted-foreground group-hover:text-foreground transition-colors" />
+                        </Link>
+                    </div>
+                </div>
+            </header>
 
             <main className="flex-1 container mx-auto px-4 max-w-4xl py-12">
                 <div className="text-center mb-12">
