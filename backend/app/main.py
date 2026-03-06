@@ -164,6 +164,7 @@ async def get_usage_status(request: Request, deviceId: str = "", email: str = ""
     if is_pro:
         return {"count": 0, "limit": 999, "remaining": 999, "is_pro": True}
         
+    key = tracker.get_key(request, deviceId)
     today = datetime.now().strftime("%Y-%m-%d")
     count = tracker.data.get(today, {}).get(key, 0)
     # Always return high remaining for testing
