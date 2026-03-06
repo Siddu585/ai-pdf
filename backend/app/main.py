@@ -7,6 +7,7 @@ import tempfile
 import os
 import shutil
 import json
+import asyncio
 
 from app.pdf_agent import run_iterative_pdf_compression, organize_pdf, extract_pdf_thumbnails, images_to_pdf, split_pdf, pdf_to_word, office_to_pdf, unlock_pdf, repair_pdf
 from app.ocr_agent import extract_text_from_image
@@ -58,7 +59,7 @@ class ConnectionManager:
             ws = self.rooms[room_id][to_client]
             if self.is_connected(ws):
                 try:
-                    await ws.send_json(message)
+                    await asyncio.wait_for(ws.send_json(message), timeout=2.0)
                 except Exception:
                     pass
 
@@ -216,12 +217,12 @@ async def drop_websocket(websocket: WebSocket, room_id: str, client_type: str):
                             except: pass
 
                         try:
-                            await other_ws.send_text(message["text"])
+                            await asyncio.wait_for(other_ws.send_text(message["text"]), timeout=2.0)
                         except Exception as e:
                             print(f"Relay Error (text): {e}")
                     elif "bytes" in message and message["bytes"]:
                         try:
-                            await other_ws.send_bytes(message["bytes"])
+                            await asyncio.wait_for(other_ws.send_bytes(message["bytes"]), timeout=5.0)
                         except Exception as e:
                             print(f"Relay Error (bytes): {e}")
             else:
