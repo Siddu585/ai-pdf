@@ -4,14 +4,47 @@ import { isProEmail } from "@/lib/pro-whitelist";
 
 const API_BASE = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
 
+const SESSION_KEY_EMAIL = 'turbo_pro_email';
+const SESSION_KEY_IS_PRO = 'turbo_is_pro';
+
 export function useUsage() {
     const { user } = useUser();
     const [usageCount, setUsageCount] = useState(0);
     const [deviceId, setDeviceId] = useState("");
     const [isPaywallOpen, setIsPaywallOpen] = useState(false);
-    const email = user?.primaryEmailAddress?.emailAddress?.trim().toLowerCase() || "";
-    const [isPro, setIsPro] = useState(isProEmail(email));
+    const liveEmail = user?.primaryEmailAddress?.emailAddress?.trim().toLowerCase() || "";
+
+    // Use sessionStorage as fallback to preserve email if Clerk background sync fails
+    const getEffectiveEmail = () => {
+        if (liveEmail) {
+            // We have a live email from Clerk, persist it for fallback
+            if (typeof window !== 'undefined') sessionStorage.setItem(SESSION_KEY_EMAIL, liveEmail);
+            return liveEmail;
+        }
+        // Fallback: use last known email from sessionStorage
+        if (typeof window !== 'undefined') return sessionStorage.getItem(SESSION_KEY_EMAIL) || "";
+        return "";
+    };
+
+    const email = getEffectiveEmail();
+
+    // Sticky Pro: once confirmed Pro, stays Pro for the entire browser session
+    const getInitialPro = () => {
+        const localPro = isProEmail(email);
+        if (localPro) return true;
+        if (typeof window !== 'undefined') return sessionStorage.getItem(SESSION_KEY_IS_PRO) === 'true';
+        return false;
+    };
+
+    const [isPro, setIsPro] = useState(getInitialPro());
     const [loading, setLoading] = useState(true);
+
+    const setStickyPro = (val: boolean) => {
+        if (val && typeof window !== 'undefined') {
+            sessionStorage.setItem(SESSION_KEY_IS_PRO, 'true'); // sticky once set
+        }
+        setIsPro(prev => prev || val); // never downgrade within a session
+    };
 
     // Generate a simple Hardware ID
     useEffect(() => {
@@ -36,11 +69,11 @@ export function useUsage() {
         fetchStatus(id, email);
     }, [email]);
 
-    const fetchStatus = async (id: string, email: string = "") => {
+    const fetchStatus = async (id: string, em: string = "") => {
         try {
             const url = new URL(`${API_BASE}/api/usage/status`);
             url.searchParams.append("deviceId", id);
-            if (email) url.searchParams.append("email", email);
+            if (em) url.searchParams.append("email", em);
 
             const res = await fetch(url.toString());
             const data = await res.json();
@@ -48,8 +81,8 @@ export function useUsage() {
 
             // Sync with backend but respect local whitelist if it's already true
             const backendIsPro = data.is_pro || false;
-            const localIsPro = isProEmail(email);
-            setIsPro(backendIsPro || localIsPro);
+            const localIsPro = isProEmail(em);
+            setStickyPro(backendIsPro || localIsPro);
         } catch (e) {
             console.error("Failed to fetch usage status", e);
         } finally {
@@ -68,7 +101,7 @@ export function useUsage() {
             });
             const data = await res.json();
             setUsageCount(data.count || usageCount + 1);
-            setIsPro(data.is_pro || isPro);
+            setStickyPro(data.is_pro || false);
         } catch (e) {
             if (!isPro) setUsageCount(prev => prev + 1);
         }
