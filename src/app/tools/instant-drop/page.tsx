@@ -63,6 +63,7 @@ function InstantDropContent() {
     const emailRef = useRef(email);
     const deviceIdRef = useRef(deviceId);
     const sharedTurnServersRef = useRef<any[] | null>(null);
+    const connTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
     useEffect(() => {
         isProRef.current = isPro;
@@ -119,6 +120,11 @@ function InstantDropContent() {
         remoteDescriptionSet.current = false;
         sharedTurnServersRef.current = null;
         isActive.current = false;
+
+        if (connTimeoutRef.current) {
+            clearTimeout(connTimeoutRef.current);
+            connTimeoutRef.current = null;
+        }
 
         if (speedTimerRef.current) {
             clearInterval(speedTimerRef.current);
@@ -206,11 +212,11 @@ function InstantDropContent() {
                 logDebug("Sender: Initiating P2P connection...");
 
                 // Add a connection timeout
-                const connTimeout = setTimeout(() => {
+                if (connTimeoutRef.current) clearTimeout(connTimeoutRef.current);
+                connTimeoutRef.current = setTimeout(() => {
                     if (peerRef.current?.connectionState !== 'connected') {
                         logDebug("Sender: Connection Timeout (30000ms) - Check network...");
-                        // Only set error if we aren't already closed/done
-                        if (isActive.current) setStatus('error');
+                        setStatus('error');
                     }
                 }, 30000);
 
@@ -238,6 +244,10 @@ function InstantDropContent() {
                     console.log("Adding remote ICE candidate");
                     await peerRef.current?.addIceCandidate(new RTCIceCandidate(data.candidate));
                 }
+            } else if (data.type === 'peer-disconnected') {
+                logDebug("Sender: Remote peer disconnected. Resetting session...");
+                resetConnection();
+                setStatus('waiting');
             }
         };
     };
@@ -590,6 +600,15 @@ function InstantDropContent() {
             const data = JSON.parse(event.data);
             if (data.type === 'offer') {
                 logDebug("Receiver: Received offer, initiating Gigabit-Handshake...");
+
+                if (connTimeoutRef.current) clearTimeout(connTimeoutRef.current);
+                connTimeoutRef.current = setTimeout(() => {
+                    if (peerRef.current?.connectionState !== 'connected') {
+                        logDebug("Receiver: Connection Timeout (30000ms) - Check network...");
+                        setStatus('error');
+                    }
+                }, 30000);
+
                 // Clear any existing connection
                 if (peerRef.current) peerRef.current.close();
 
@@ -616,6 +635,10 @@ function InstantDropContent() {
                     console.log("Adding remote ICE candidate (Receiver)");
                     await peerRef.current?.addIceCandidate(new RTCIceCandidate(data.candidate));
                 }
+            } else if (data.type === 'peer-disconnected') {
+                logDebug("Receiver: Remote peer disconnected. Resetting state...");
+                resetConnection();
+                setStatus('disconnected');
             }
         };
     };
