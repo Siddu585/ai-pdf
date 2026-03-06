@@ -191,29 +191,44 @@ async def drop_websocket(websocket: WebSocket, room_id: str, client_type: str):
     
     try:
         while True:
-            # Native receive to handle both JSON text signaling and raw binary fallback chunks
             message = await websocket.receive()
             
-            # Relay messages to the other client verbatim
+            # 1. Handle Disconnect Message correctly for low-level receive()
+            if message.get("type") == "websocket.disconnect":
+                print(f"WS Disconnect Message: Room={room_id}, Type={client_type}")
+                break
+
+            # 2. Relay messages to the other client verbatim
             if room_id in manager.rooms and other in manager.rooms[room_id]:
                 other_ws = manager.rooms[room_id][other]
                 if manager.is_connected(other_ws):
+                    # Debug logging for critical handshake steps
                     if "text" in message and message["text"]:
+                        msg_text = message["text"]
+                        if '"type"' in msg_text:
+                            # Log the type of signal passing through
+                            try:
+                                msg_json = json.loads(msg_text)
+                                print(f"Relaying Signal: {msg_json.get('type')} from {client_type} to {other} in {room_id}")
+                            except: pass
+
                         try:
                             await other_ws.send_text(message["text"])
-                        except Exception:
-                            pass
+                        except Exception as e:
+                            print(f"Relay Error (text): {e}")
                     elif "bytes" in message and message["bytes"]:
                         try:
                             await other_ws.send_bytes(message["bytes"])
-                        except Exception:
-                            pass
+                        except Exception as e:
+                            print(f"Relay Error (bytes): {e}")
             else:
                 # Other peer not yet connected, message dropped
                 pass
-    except WebSocketDisconnect:
-        print(f"WS Disconnect: Room={room_id}, Type={client_type}")
+    except (WebSocketDisconnect, RuntimeError) as e:
+        print(f"WS Loop Exit: Room={room_id}, Type={client_type}, Reason={e}")
+    finally:
         manager.disconnect(websocket, room_id, client_type)
+        print(f"Peer Disconnected Cleaned Up: Room={room_id}, Type={client_type}")
         await manager.send_message({"type": "peer-disconnected", "client_type": client_type}, room_id, other)
 
 @app.post("/api/compress-image")
