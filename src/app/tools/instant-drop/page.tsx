@@ -83,6 +83,51 @@ function InstantDropContent() {
     const lastBytesRef = useRef(0);
     const speedTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
+    // --- CONNECTION HARDENING: Robust State Purge ---
+    const resetConnection = () => {
+        logDebug("Purging all active connections for a fresh start...");
+
+        // 1. Close WebRTC Peer Connection
+        if (peerRef.current) {
+            try {
+                // Remove listeners to prevent state updates during closure
+                peerRef.current.onicecandidate = null;
+                peerRef.current.ontrack = null;
+                peerRef.current.onconnectionstatechange = null;
+                peerRef.current.oniceconnectionstatechange = null;
+                peerRef.current.ondatachannel = null;
+
+                peerRef.current.close();
+            } catch (e) { console.error("Error closing peer:", e); }
+            peerRef.current = null;
+        }
+
+        // 2. Close Data Channels
+        dataChannelsRef.current.forEach(dc => {
+            try { dc.close(); } catch (e) { }
+        });
+        dataChannelsRef.current = [];
+
+        // 3. Close WebSocket
+        if (wsRef.current) {
+            try { wsRef.current.close(); } catch (e) { }
+            wsRef.current = null;
+        }
+
+        // 4. Clear Buffers and Intervals
+        iceBuffer.current = [];
+        remoteDescriptionSet.current = false;
+        sharedTurnServersRef.current = null;
+        isActive.current = false;
+
+        if (speedTimerRef.current) {
+            clearInterval(speedTimerRef.current);
+            speedTimerRef.current = null;
+        }
+        setTransferSpeed(null);
+        setUsingGigabitRelay(isProRef.current); // Reset to base status
+    };
+
     // Compress an image file to JPG using canvas (works for JPEG, PNG, WEBP)
     const compressImageFile = async (file: File): Promise<File> => {
         const compressableTypes = ['image/jpeg', 'image/jpg', 'image/png', 'image/webp'];
@@ -131,6 +176,7 @@ function InstantDropContent() {
 
     // --- SENDER LOGIC (Turbo Drop 2.0) ---
     const prepareFilesForSending = (selectedFiles: FileList | File[]) => {
+        resetConnection(); // Ensure a clean slate before any new session
         const fileList = Array.from(selectedFiles);
         setFiles(fileList);
         filesRef.current = fileList;
@@ -1139,7 +1185,12 @@ function InstantDropContent() {
                                         ))}
                                     </div>
 
-                                    <Button variant="ghost" className="mt-4" onClick={() => { setMode('select'); setStatus('disconnected'); setReceivedFiles([]); }}>
+                                    <Button variant="ghost" className="mt-4" onClick={() => {
+                                        resetConnection();
+                                        setMode('select');
+                                        setStatus('disconnected');
+                                        setReceivedFiles([]);
+                                    }}>
                                         Receive More
                                     </Button>
                                 </div>
@@ -1149,7 +1200,11 @@ function InstantDropContent() {
                                 <div className="p-6 bg-red-50 text-red-600 rounded-xl border border-red-200">
                                     <p className="font-bold">Connection Failed</p>
                                     <p className="text-sm mt-2 mb-4">Could not establish direct peer-to-peer connection.</p>
-                                    <Button variant="outline" className="border-red-200 hover:bg-red-100" onClick={() => { setMode('select'); setStatus('disconnected'); }}>
+                                    <Button variant="outline" className="border-red-200 hover:bg-red-100" onClick={() => {
+                                        resetConnection();
+                                        setMode('select');
+                                        setStatus('disconnected');
+                                    }}>
                                         Try Again
                                     </Button>
                                 </div>
