@@ -39,7 +39,7 @@ def extract_text_from_image(image_path: str) -> str:
                     {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{encoded_string}"}}
                 ]
             }],
-            model="llama-3.2-11b-vision-preview",
+            model="llama-3.2-90b-vision-preview",
             temperature=0.1
         )
         return chat_completion.choices[0].message.content
