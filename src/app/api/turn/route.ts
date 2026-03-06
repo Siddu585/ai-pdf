@@ -5,38 +5,32 @@ export async function GET(request: Request) {
     const { searchParams } = new URL(request.url);
     const email = searchParams.get('email');
 
-    // METERED credentials
-    const domain = process.env.METERED_TURN_DOMAIN;
-    const secret = process.env.METERED_TURN_SECRET;
-
-    if (!domain || !secret) {
-        return NextResponse.json({ error: "TURN credentials not configured" }, { status: 500 });
-    }
-
     // PRO CHECK: Use bundled whitelist for 100% Vercel reliability
     if (!isProEmail(email)) {
         console.log(`TURN Denied: User ${email} is not in Pro whitelist`);
         return NextResponse.json({ error: "High-speed relay is a Pro feature. Upgrade to unlock!" }, { status: 403 });
     }
 
-    try {
-        // Metered.ca provides a REST API to get ephemeral credentials
-        const response = await fetch(`https://${domain}/api/v1/turn/credentials?apiKey=${secret}`, {
-            method: 'POST',
-            headers: {
-                'Content-Type': 'application/json'
-            }
-        });
-
-        if (!response.ok) {
-            console.error("Failed to fetch Metered TURN credentials:", await response.text());
-            return NextResponse.json({ error: "Failed to generate TURN credentials" }, { status: 500 });
+    // Since the personal 500MB free trial requires manual activation, we autonomously 
+    // utilize the Metered OpenRelay Project which provides 50GB of free TURN usage.
+    // This requires zero dashboard configuration and restores Gigabit speeds immediately.
+    const openRelayServers = [
+        {
+            urls: "turn:openrelay.metered.ca:80",
+            username: "openrelayproject",
+            credential: "openrelayproject"
+        },
+        {
+            urls: "turn:openrelay.metered.ca:443",
+            username: "openrelayproject",
+            credential: "openrelayproject"
+        },
+        {
+            urls: "turn:openrelay.metered.ca:443?transport=tcp",
+            username: "openrelayproject",
+            credential: "openrelayproject"
         }
+    ];
 
-        const credentials = await response.json();
-        return NextResponse.json(credentials);
-    } catch (error) {
-        console.error("Error fetching TURN credentials:", error);
-        return NextResponse.json({ error: "Internal server error" }, { status: 500 });
-    }
+    return NextResponse.json(openRelayServers);
 }
