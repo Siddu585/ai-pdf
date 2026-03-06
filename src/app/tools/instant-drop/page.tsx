@@ -1000,23 +1000,29 @@ function InstantDropContent() {
 
                     {mode !== 'select' && (
                         <div className="space-y-8 animate-in fade-in zoom-in-95 duration-300 w-full">
-                            {mode === 'send' && status === 'waiting' && (
+                            {mode === 'send' && (status === 'waiting' || status === 'connecting' || status === 'transferring') && (
                                 <>
-                                    <h2 className="text-2xl font-bold">Ready to Send</h2>
-                                    <p className="text-muted-foreground">Scan the QR code with another device to download.</p>
+                                    <h2 className="text-2xl font-bold">
+                                        {status === 'waiting' ? 'Ready to Send' : 'Sending File'}
+                                    </h2>
+                                    {status === 'waiting' && (
+                                        <p className="text-muted-foreground">Scan the QR code with another device to download.</p>
+                                    )}
 
-                                    <div className="bg-background rounded-2xl p-6 shadow-sm inline-block mx-auto border border-border">
-                                        <QRCodeSVG
-                                            value={`${typeof window !== 'undefined' ? window.location.origin : ''}/tools/instant-drop?room=${roomId}`}
-                                            size={200}
-                                            level="H"
-                                            includeMargin={true}
-                                            fgColor="#000"
-                                            bgColor="#FFF"
-                                        />
-                                    </div>
+                                    {status === 'waiting' && (
+                                        <div className="bg-background rounded-2xl p-6 shadow-sm inline-block mx-auto border border-border">
+                                            <QRCodeSVG
+                                                value={`${typeof window !== 'undefined' ? window.location.origin : ''}/tools/instant-drop?room=${roomId}`}
+                                                size={200}
+                                                level="H"
+                                                includeMargin={true}
+                                                fgColor="#000"
+                                                bgColor="#FFF"
+                                            />
+                                        </div>
+                                    )}
 
-                                    <div className="text-3xl font-mono font-bold tracking-[0.5em] text-indigo-600 bg-indigo-50 dark:bg-indigo-950/30 py-4 rounded-xl">
+                                    <div className={`text-3xl font-mono font-bold tracking-[0.5em] text-indigo-600 bg-indigo-50 dark:bg-indigo-950/30 py-4 rounded-xl ${status !== 'waiting' ? 'opacity-50' : ''}`}>
                                         {roomId}
                                     </div>
                                 </>

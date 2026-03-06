@@ -34,27 +34,22 @@ export function Navbar() {
           </div>
         </div>
 
-        <div className="flex items-center gap-4">
-          <div className="hidden sm:flex items-center gap-4">
+        <div className="flex items-center gap-2 sm:gap-4">
             <SignedOut>
               <SignInButton mode="modal">
-                <Button variant="ghost" className="text-sm font-semibold">Log in</Button>
+                <Button variant="ghost" size="sm" className="text-xs sm:text-sm font-semibold px-2 sm:px-4">Log in</Button>
               </SignInButton>
             </SignedOut>
             <SignedIn>
               <UserButton afterSignOutUrl="/" />
             </SignedIn>
             <Button
-              className="bg-secondary text-secondary-foreground hover:bg-secondary/90 font-semibold shadow-sm transition-all"
+              size="sm"
+              className="bg-secondary text-secondary-foreground hover:bg-secondary/90 font-semibold shadow-sm transition-all text-xs sm:text-sm px-3 sm:px-4 h-8 sm:h-9"
               onClick={() => setIsPaywallOpen(true)}
             >
               Go Pro
             </Button>
-          </div>
-          <Button variant="ghost" size="icon" className="md:hidden">
-            <Menu className="h-5 w-5" />
-            <span className="sr-only">Toggle Menu</span>
-          </Button>
         </div>
       </div>
 

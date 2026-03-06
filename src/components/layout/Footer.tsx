@@ -17,7 +17,7 @@ export function Footer() {
                             </span>
                         </Link>
                         <p className="text-sm text-muted-foreground mb-4">
-                            Fast, private, browser-based PDF & photo tools. Built for speed and privacy.
+                            Fast, intelligent PDF & AI tools. Powered by advanced server-side processing.
                         </p>
                     </div>
 
@@ -34,10 +34,10 @@ export function Footer() {
                     <div>
                         <h4 className="font-semibold text-foreground mb-4">Company & Legal</h4>
                         <ul className="space-y-2 text-sm text-muted-foreground">
-                            <li><Link href="#" className="hover:text-secondary transition-colors">About Us</Link></li>
-                            <li><Link href="#" className="hover:text-secondary transition-colors">Privacy Policy</Link></li>
-                            <li><Link href="#" className="hover:text-secondary transition-colors">Terms of Service</Link></li>
-                            <li><Link href="#" className="hover:text-secondary transition-colors">Contact Support</Link></li>
+                            <li><Link href="/about" className="hover:text-secondary transition-colors">About Us</Link></li>
+                            <li><Link href="/privacy" className="hover:text-secondary transition-colors">Privacy Policy</Link></li>
+                            <li><Link href="/terms" className="hover:text-secondary transition-colors">Terms of Service</Link></li>
+                            <li><Link href="/contact" className="hover:text-secondary transition-colors">Contact Support</Link></li>
                         </ul>
                     </div>
 
@@ -54,7 +54,7 @@ export function Footer() {
 
                 <div className="mt-12 pt-8 border-t border-border flex flex-col md:flex-row items-center justify-between text-xs text-muted-foreground">
                     <p>© {new Date().getFullYear()} Swap PDF. All rights reserved.</p>
-                    <p className="mt-2 md:mt-0">100% Client-Side Processing. We value your privacy.</p>
+                    <p className="mt-2 md:mt-0">Enterprise-grade Security. We value your data privacy.</p>
                 </div>
             </div>
         </footer>
