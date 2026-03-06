@@ -209,9 +209,10 @@ function InstantDropContent() {
             const data = JSON.parse(event.data);
             if (data.type === 'peer-connected') {
                 setStatus('connecting');
-                logDebug("Sender: Initiating P2P connection...");
+                logDebug("Sender: Remote peer joined room...");
+            } else if (data.type === 'receiver-ready') {
+                logDebug("Sender: Receiver frontend is ready. Initiating WebRTC...");
 
-                // Add a connection timeout
                 if (connTimeoutRef.current) clearTimeout(connTimeoutRef.current);
                 connTimeoutRef.current = setTimeout(() => {
                     if (peerRef.current?.connectionState !== 'connected') {
@@ -221,9 +222,6 @@ function InstantDropContent() {
                 }, 30000);
 
                 await setupWebRTC(ws, true);
-            } else if (data.type === 'receiver-ready') {
-                logDebug("Sender: Peer is ready. Starting WebRTC Setup...");
-                startP2P();
             } else if (data.type === 'file-ready') {
                 logDebug("Sender: Receiver is ready for files. Starting transmission...");
                 startFileTransfer();
@@ -437,13 +435,6 @@ function InstantDropContent() {
         };
     };
 
-    const startP2P = async () => {
-        if (!peerRef.current) return;
-        logDebug("Sender: Creating offer...");
-        const offer = await peerRef.current.createOffer();
-        await peerRef.current.setLocalDescription(offer);
-        wsRef.current?.send(JSON.stringify({ type: 'offer', sdp: offer }));
-    };
 
     const startFileTransfer = async () => {
         const currentFiles = filesRef.current;
