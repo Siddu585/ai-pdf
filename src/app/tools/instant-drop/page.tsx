@@ -206,6 +206,8 @@ function InstantDropContent() {
 
         ws.onmessage = async (event) => {
             console.log("Sender WS Message:", event.data);
+            if (typeof event.data !== 'string') return;
+            const data = JSON.parse(event.data);
             if (data.type === 'peer-connected') {
                 setStatus('connecting');
                 logDebug("Sender: Remote peer joined room...");
