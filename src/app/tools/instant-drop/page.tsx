@@ -206,21 +206,21 @@ function InstantDropContent() {
 
         ws.onmessage = async (event) => {
             console.log("Sender WS Message:", event.data);
-            const data = JSON.parse(event.data);
             if (data.type === 'peer-connected') {
                 setStatus('connecting');
                 logDebug("Sender: Remote peer joined room...");
-            } else if (data.type === 'receiver-ready') {
-                logDebug("Sender: Receiver frontend is ready. Initiating WebRTC...");
 
+                // Handshake Timeout: If we don't reach 'transferring' within 25 seconds, assume peer dropped.
                 if (connTimeoutRef.current) clearTimeout(connTimeoutRef.current);
                 connTimeoutRef.current = setTimeout(() => {
-                    if (peerRef.current?.connectionState !== 'connected') {
-                        logDebug("Sender: Connection Timeout (30000ms) - Check network...");
+                    if (statusRef.current !== 'transferring' && statusRef.current !== 'done') {
+                        logDebug("Sender: Handshake Timeout (25s) - Receiver dropped or network failed.");
                         setStatus('error');
                     }
-                }, 30000);
+                }, 25000);
 
+            } else if (data.type === 'receiver-ready') {
+                logDebug("Sender: Receiver frontend is ready. Initiating WebRTC...");
                 await setupWebRTC(ws, true);
             } else if (data.type === 'file-ready') {
                 logDebug("Sender: Receiver is ready for files. Starting transmission...");
@@ -375,6 +375,7 @@ function InstantDropContent() {
             logDebug(`Channel ${channelIdx} Open. Mode: ${modeRef.current}`);
             // Only start transfer once index 0 is open
             if (channelIdx === 0) {
+                if (connTimeoutRef.current) { clearTimeout(connTimeoutRef.current); connTimeoutRef.current = null; }
                 setStatus('transferring');
                 // Start speed timer
                 lastBytesRef.current = 0;
@@ -574,6 +575,15 @@ function InstantDropContent() {
         setMode('receive');
         setStatus('connecting');
 
+        // Handshake Timeout: If we don't reach 'transferring' within 25 seconds, assume sender dropped.
+        if (connTimeoutRef.current) clearTimeout(connTimeoutRef.current);
+        connTimeoutRef.current = setTimeout(() => {
+            if (statusRef.current !== 'transferring' && statusRef.current !== 'done') {
+                logDebug("Receiver: Handshake Timeout (25s) - Sender dropped or network failed.");
+                setStatus('error');
+            }
+        }, 25000);
+
         const ws = new WebSocket(`${BACKEND_WS_URL}/ws/drop/${code}/receiver`);
         wsRef.current = ws;
 
@@ -591,14 +601,6 @@ function InstantDropContent() {
             const data = JSON.parse(event.data);
             if (data.type === 'offer') {
                 logDebug("Receiver: Received offer, initiating Gigabit-Handshake...");
-
-                if (connTimeoutRef.current) clearTimeout(connTimeoutRef.current);
-                connTimeoutRef.current = setTimeout(() => {
-                    if (peerRef.current?.connectionState !== 'connected') {
-                        logDebug("Receiver: Connection Timeout (30000ms) - Check network...");
-                        setStatus('error');
-                    }
-                }, 30000);
 
                 // Clear any existing connection
                 if (peerRef.current) peerRef.current.close();

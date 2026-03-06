@@ -8,10 +8,13 @@ import os
 import shutil
 import json
 
-from app.image_agent import run_iterative_image_compression
 from app.pdf_agent import run_iterative_pdf_compression, organize_pdf, extract_pdf_thumbnails, images_to_pdf, split_pdf, pdf_to_word, office_to_pdf, unlock_pdf, repair_pdf
 from app.ocr_agent import extract_text_from_image
 from app.chat_agent import chat_with_pdf
+import functools
+
+# Force unbuffered output globally for Render live logs visibility
+print = functools.partial(print, flush=True)
 
 app = FastAPI(title="PDF Ninja Intelligent Backend")
 
