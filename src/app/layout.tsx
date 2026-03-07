@@ -1,7 +1,7 @@
 import type { Metadata } from "next";
 import { Geist, Geist_Mono } from "next/font/google";
 import Script from "next/script";
-// import { ClerkProvider } from "@clerk/nextjs";
+import { ClerkProvider } from "@clerk/nextjs";
 import "./globals.css";
 
 const geistSans = Geist({
@@ -33,24 +33,35 @@ export default function RootLayout({
 }: Readonly<{
   children: React.ReactNode;
 }>) {
+  const IS_MOBILE = process.env.NEXT_PUBLIC_IS_MOBILE === 'true';
+
+  const layoutContent = (
+    <html lang="en">
+      <head>
+        <meta name="google-adsense-account" content="ca-pub-7932640955334855" />
+        <Script
+          async
+          src="https://pagead2.googlesyndication.com/pagead/js/adsbygoogle.js?client=ca-pub-7932640955334855"
+          crossOrigin="anonymous"
+          strategy="beforeInteractive"
+        />
+      </head>
+      <body
+        className={`${geistSans.variable} ${geistMono.variable} antialiased`}
+      >
+        {children}
+      </body>
+    </html>
+  );
+
+  // Ensure ClerkProvider is returned unless explicitly in mobile build mode
+  if (IS_MOBILE) {
+    return <>{layoutContent}</>;
+  }
+
   return (
-    // <ClerkProvider>
-      <html lang="en">
-        <head>
-          <meta name="google-adsense-account" content="ca-pub-7932640955334855" />
-          <Script
-            async
-            src="https://pagead2.googlesyndication.com/pagead/js/adsbygoogle.js?client=ca-pub-7932640955334855"
-            crossOrigin="anonymous"
-            strategy="beforeInteractive"
-          />
-        </head>
-        <body
-          className={`${geistSans.variable} ${geistMono.variable} antialiased`}
-        >
-          {children}
-        </body>
-      </html>
-    // </ClerkProvider>
+    <ClerkProvider>
+      {layoutContent}
+    </ClerkProvider>
   );
 }

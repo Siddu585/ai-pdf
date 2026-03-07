@@ -7,11 +7,13 @@ const API_BASE = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
 const SESSION_KEY_EMAIL = 'turbo_pro_email';
 const SESSION_KEY_IS_PRO = 'turbo_is_pro';
 
+const IS_MOBILE = process.env.NEXT_PUBLIC_IS_MOBILE === 'true';
+
 export function useUsage() {
-    // const { user, isLoaded, isSignedIn } = useUser();
-    const isLoaded = true;
-    const isSignedIn = false;
-    const user = null;
+    const clerkUser = useUser();
+    const isLoaded = IS_MOBILE ? true : clerkUser.isLoaded;
+    const isSignedIn = IS_MOBILE ? false : clerkUser.isSignedIn;
+    const user = IS_MOBILE ? null : clerkUser.user;
     const [usageCount, setUsageCount] = useState(0);
     const [deviceId, setDeviceId] = useState("");
     const [isPaywallOpen, setIsPaywallOpen] = useState(false);

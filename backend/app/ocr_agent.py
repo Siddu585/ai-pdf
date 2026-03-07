@@ -14,8 +14,10 @@ def extract_text_from_image(image_path: str) -> str:
     """
     api_key = os.getenv("GROQ_API_KEY")
     if not api_key:
+        print("❌ [OCR ERROR] GROQ_API_KEY is missing!")
         return "Error: GROQ_API_KEY not found in backend .env file."
 
+    print(f"🌀 [OCR] Starting Vision Scan for {os.path.basename(image_path)}...")
     try:
         client = Groq(api_key=api_key)
         
@@ -39,10 +41,12 @@ def extract_text_from_image(image_path: str) -> str:
                     {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{encoded_string}"}}
                 ]
             }],
-            model="llama-3.2-90b-vision-preview",
+            model="llama-3.2-11b-vision-preview",
             temperature=0.1
         )
-        return chat_completion.choices[0].message.content
+        text = chat_completion.choices[0].message.content
+        print(f"✅ [OCR] Successfully extracted {len(text)} characters.")
+        return text
         
     except Exception as e:
         print(f"Vision OCR Error: {e}")

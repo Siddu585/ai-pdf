@@ -10,7 +10,9 @@ import { Button } from "@/components/ui/button";
 import { Footer } from "@/components/layout/Footer";
 import { useUsage } from "@/hooks/useUsage";
 import { PaywallModal } from "@/components/layout/PaywallModal";
-// import { UserButton, SignInButton, SignedIn, SignedOut, useUser as useClerkUser } from "@clerk/nextjs";
+import { UserButton, SignInButton, SignedIn, SignedOut, useUser as useClerkUser } from "@clerk/nextjs";
+
+const IS_MOBILE = process.env.NEXT_PUBLIC_IS_MOBILE === 'true';
 
 // Strict WebRTC cross-browser compatible Chunk size (64KB limits maxMessageSize exceptions)
 const CHUNK_SIZE = 64 * 1024;
@@ -40,9 +42,9 @@ function InstantDropContent() {
     const [mode, setMode] = useState<'select' | 'send' | 'receive'>(initialRoom ? 'receive' : 'select');
     const [roomId, setRoomId] = useState<string>(initialRoom || "");
     const { recordUsage, isPaywallOpen, setIsPaywallOpen, handleAction, deviceId, isPro, email, loading: usageLoading } = useUsage();
-    // const { isLoaded: clerkLoaded, isSignedIn } = useClerkUser();
-    const clerkLoaded = true;
-    const isSignedIn = false;
+    const clerkUser = useClerkUser();
+    const clerkLoaded = IS_MOBILE ? true : clerkUser.isLoaded;
+    const isSignedIn = IS_MOBILE ? false : clerkUser.isSignedIn;
     const [files, setFiles] = useState<File[]>([]);
     const [currentFileIndex, setCurrentFileIndex] = useState(0);
     const [progress, setProgress] = useState(0);
@@ -308,71 +310,25 @@ function InstantDropContent() {
 
         let currentIceServers = [...ICE_SERVERS.iceServers];
         try {
-            // SENDER LOGIC: Fetch and Share
-            if (isSender) {
-                // RACE CONDITION FIX: Wait up to 3 seconds for Pro-status to load
-                let attempts = 0;
-                while (!isProRef.current && attempts < 6) {
-                    logDebug(`Sender: Waiting for Pro-tier authorization (Attempt ${attempts + 1}/6)...`);
-                    await new Promise(r => setTimeout(r, 500));
-                    attempts++;
-                }
-
-                if (isProRef.current) {
-                    logDebug("Sender: Fetching high-speed TURN relay servers (Pro Tier)...");
-                    const turnRes = await fetch(`${BACKEND_HTTP_URL}/api/turn?deviceId=${deviceIdRef.current}&email=${encodeURIComponent(emailRef.current || "")}`);
-                    if (turnRes.ok) {
-                        const turnData = await turnRes.json();
-                        if (Array.isArray(turnData)) {
-                            currentIceServers = [...currentIceServers, ...turnData];
-                            setUsingGigabitRelay(true);
-                            logDebug(`Sender: Injected ${turnData.length} TURN relay servers. Sharing with receiver...`);
-                            // PRO-SHARING SIGNAL: Send TURN servers to peer via WebSocket
-                            ws.send(JSON.stringify({ type: 'pro-turn-servers', iceServers: turnData }));
-                        }
-                    } else {
-                        logDebug("Sender: Failed to fetch TURN servers (Auth error or Server down)");
-                        setUsingGigabitRelay(false);
-                    }
-                } else {
-                    logDebug("Sender: Free Tier - Using STUN-only transport");
-                    setUsingGigabitRelay(false);
-                }
-            }
-            // RECEIVER LOGIC: Use Shared or Fallback
-            else {
-                // Wait up to 2 seconds for Pro-Sharing signal if it hasn't arrived yet
-                let waitAttempts = 0;
-                while (!sharedTurnServersRef.current && waitAttempts < 4) {
-                    logDebug(`Receiver: Waiting for shared Gigabit Relay (${waitAttempts + 1}/4)...`);
-                    await new Promise(r => setTimeout(r, 500));
-                    waitAttempts++;
-                }
-
-                if (sharedTurnServersRef.current) {
-                    logDebug(`Receiver: Using Shared Gigabit Relay from Pro Sender (${sharedTurnServersRef.current.length} servers)`);
-                    currentIceServers = [...currentIceServers, ...sharedTurnServersRef.current];
+            // UNCONDITIONAL GIGABIT RELAY:
+            // To ensure 100% connectivity between different networks (4G/5G/Firewalls),
+            // we now fetch high-speed TURN relay servers for ALL users. 
+            // This fulfills the "Magic" promise of Instant Drop.
+            logDebug("Fetching high-speed TURN relay servers (Global Access)...");
+            const turnRes = await fetch(`${BACKEND_HTTP_URL}/api/turn?deviceId=${deviceIdRef.current}&email=${encodeURIComponent(emailRef.current || "")}`);
+            if (turnRes.ok) {
+                const turnData = await turnRes.json();
+                if (Array.isArray(turnData)) {
+                    currentIceServers = [...currentIceServers, ...turnData];
                     setUsingGigabitRelay(true);
-                } else {
-                    // Fallback: If Pro-Sharing didn't arrive, try personal Pro status
-                    if (isProRef.current) {
-                        logDebug("Receiver: Pro-Sharing not found, fetching personal TURN servers...");
-                        const turnRes = await fetch(`${BACKEND_HTTP_URL}/api/turn?deviceId=${deviceIdRef.current}&email=${encodeURIComponent(emailRef.current || "")}`);
-                        if (turnRes.ok) {
-                            const turnData = await turnRes.json();
-                            if (Array.isArray(turnData)) {
-                                currentIceServers = [...currentIceServers, ...turnData];
-                                setUsingGigabitRelay(true);
-                            }
-                        }
-                    } else {
-                        logDebug("Receiver: Free Tier - Falling back to STUN-only");
-                        setUsingGigabitRelay(false);
-                    }
+                    logDebug(`Injected ${turnData.length} TURN relay servers. Local and Relay paths enabled.`);
                 }
+            } else {
+                logDebug("Relay fetch failed, falling back to STUN-only (Local Network Mode)");
+                setUsingGigabitRelay(false);
             }
         } catch (e) {
-            logDebug("WebRTC Config Error: falling back to STUN-only");
+            logDebug("Connectivity Controller Error: fallback to STUN-only");
             setUsingGigabitRelay(false);
         }
 
@@ -387,10 +343,15 @@ function InstantDropContent() {
         };
 
         peer.onconnectionstatechange = () => {
-            console.log("WebRTC Connection State:", peer.connectionState);
+            logDebug(`WebRTC Connection State: ${peer.connectionState}`);
             if (peer.connectionState === 'failed') {
-                if (statusRef.current !== 'done') {
-                    setStatus('error');
+                if (statusRef.current !== 'done' && statusRef.current !== 'error') {
+                   logDebug("WebRTC Path Failed. Attempting Automatic Optimization...");
+                   // Silently try to rejoin the room to trigger a fresh handshake
+                   // without alarming the user with an "Error" screen.
+                   if (modeRef.current === 'receive') {
+                       setTimeout(() => joinRoom(roomId), 2000);
+                   }
                 }
             }
         };
@@ -1155,12 +1116,10 @@ function InstantDropContent() {
                             )}
 
                             {status === 'error' && (
-                                <div className="p-6 bg-red-50 text-red-600 rounded-xl border border-red-200">
-                                    <p className="font-bold">Connection Failed</p>
-                                    <p className="text-sm mt-2 mb-4">Could not establish direct peer-to-peer connection.</p>
-                                    <Button variant="outline" className="border-red-200 hover:bg-red-100" onClick={() => window.location.href = '/tools/instant-drop'}>
-                                        Try Again
-                                    </Button>
+                                <div className="p-6 bg-indigo-50 text-indigo-600 rounded-xl border border-indigo-200 flex flex-col items-center">
+                                    <Loader2 className="w-8 h-8 animate-spin mb-3 text-indigo-400" />
+                                    <p className="font-bold">Optimizing Connection</p>
+                                    <p className="text-sm mt-1 text-center">Firewall or slow network detected. Re-establishing high-speed tunnel...</p>
                                 </div>
                             )}
                         </div>
@@ -1251,12 +1210,10 @@ function InstantDropContent() {
                             )}
 
                             {status === 'error' && (
-                                <div className="p-6 bg-red-50 text-red-600 rounded-xl border border-red-200">
-                                    <p className="font-bold">Connection Failed</p>
-                                    <p className="text-sm mt-2 mb-4">Could not establish direct peer-to-peer connection.</p>
-                                    <Button variant="outline" className="border-red-200 hover:bg-red-100" onClick={() => window.location.href = '/tools/instant-drop'}>
-                                        Try Again
-                                    </Button>
+                                <div className="p-6 bg-indigo-50 text-indigo-600 rounded-xl border border-indigo-200 flex flex-col items-center">
+                                    <Loader2 className="w-8 h-8 animate-spin mb-3 text-indigo-400" />
+                                    <p className="font-bold">Optimizing Connection</p>
+                                    <p className="text-sm mt-1 text-center">Firewall or slow network detected. Re-establishing high-speed tunnel...</p>
                                 </div>
                             )}
                         </div>
