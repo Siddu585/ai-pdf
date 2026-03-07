@@ -304,7 +304,8 @@ function InstantDropContent() {
                     await peerRef.current?.addIceCandidate(new RTCIceCandidate(data.candidate));
                 }
             } else if (data.type === 'peer-disconnected') {
-                logDebug("Sender: Remote peer disconnected. Resetting session...");
+                logDebug("Sender: Remote peer disconnected. Resetting for retry...");
+                senderRtcStarted = false; // Allow fresh attempt when receiver reconnects
                 resetConnection();
                 setStatus('waiting');
             }
@@ -326,12 +327,15 @@ function InstantDropContent() {
                 if (Array.isArray(turnData)) {
                     currentIceServers = [...currentIceServers, ...turnData];
                     setUsingGigabitRelay(true);
-                    logDebug(`Injected ${turnData.length} TURN relay servers.`);
+                    logDebug(`✅ TURN Relay: Injected ${turnData.length} servers from backend.`);
+                    console.log("TURN servers received:", JSON.stringify(turnData));
                 }
             } else {
-                throw new Error("TURN fetch failed");
+                console.warn(`⚠️ TURN fetch HTTP ${turnRes.status} from ${BACKEND_HTTP_URL}/api/turn → using fallback`);
+                throw new Error(`TURN fetch failed: ${turnRes.status}`);
             }
         } catch (e) {
+            console.warn("⚠️ TURN fetch error:", e, "→ using Frontend Fail-Safe Relay");
             logDebug("Connectivity Controller Error: falling back to Frontend Fail-Safe Relay...");
             // FRONTEND FAIL-SAFE:
             // If the backend API fails (404, CORS, etc.), we provide the free 
@@ -908,7 +912,7 @@ function InstantDropContent() {
                             <h1 className="text-lg font-bold tracking-tight text-foreground">
                                 Instant Drop
                             </h1>
-                            <p className="text-[10px] text-muted-foreground font-medium tracking-wider uppercase">v01.2.6 Gigabit Relay</p>
+                            <p className="text-[10px] text-muted-foreground font-medium tracking-wider uppercase">v01.2.7 Gigabit Relay</p>
                         </div>
                     </div>
 
