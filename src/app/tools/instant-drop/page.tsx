@@ -352,7 +352,7 @@ function InstantDropContent() {
                 const dc = peer.createDataChannel(`file-transfer-${i}`, { ordered: true });
                 dataChannelsRef.current.push(dc);
                 setupDataChannel(dc, i);
-                dc.bufferedAmountLowThreshold = 4 * 1024 * 1024; // 4MB — maximize pipeline
+                dc.bufferedAmountLowThreshold = 1024 * 1024; // 1MB — buffer drain threshold for smooth flow
             }
 
             const offer = await peer.createOffer();
