@@ -395,7 +395,8 @@ function InstantDropContent() {
                 const dc = peer.createDataChannel(`file-transfer-${i}`, { ordered: true });
                 dataChannelsRef.current.push(dc);
                 setupDataChannel(dc, i);
-                dc.bufferedAmountLowThreshold = 256 * 1024; // 256KB low-water mark for mobile bufferbloat prevention
+                const isMobile = typeof window !== 'undefined' && /Mobi|Android/i.test(navigator.userAgent);
+                dc.bufferedAmountLowThreshold = isMobile ? 256 * 1024 : 512 * 1024; // Dynamic low-water mark
             }
 
             const offer = await peer.createOffer();
@@ -558,7 +559,8 @@ function InstantDropContent() {
 
                 const workers = dataChannelsRef.current.map(async (dc, chIdx) => {
                     const sectorData = sectorBuffers[chIdx];
-                    const THRESHOLD = 1024 * 1024; // 1MB high-water mark to prevent mobile network bufferbloat
+                    const isMobileUser = typeof window !== 'undefined' && /Mobi|Android/i.test(navigator.userAgent);
+                    const THRESHOLD = isMobileUser ? 1024 * 1024 : 2 * 1024 * 1024; // Dynamic high-water mark
                     let offset = 0;
 
                     while (isActive.current && offset < sectorData.byteLength) {
