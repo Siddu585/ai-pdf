@@ -80,6 +80,49 @@ function InstantDropContent() {
         statusRef.current = status;
     }, [status]);
 
+    // Wake Lock to prevent mobile screen sleep during transfer
+    const wakeLockRef = useRef<any>(null);
+    useEffect(() => {
+        const requestWakeLock = async () => {
+            if ('wakeLock' in navigator) {
+                try {
+                    wakeLockRef.current = await (navigator as any).wakeLock.request('screen');
+                    logDebug("Screen Wake Lock acquired.");
+                } catch (err: any) {
+                    logDebug(`Wake Lock error: ${err.name}, ${err.message}`);
+                }
+            }
+        };
+        const releaseWakeLock = () => {
+            if (wakeLockRef.current !== null) {
+                wakeLockRef.current.release()
+                    .then(() => {
+                        wakeLockRef.current = null;
+                        logDebug("Screen Wake Lock released.");
+                    });
+            }
+        };
+
+        if (status === 'transferring') {
+            requestWakeLock();
+        } else {
+            releaseWakeLock();
+        }
+
+        // Handle page visibility changes (user minimizing the app)
+        const handleVisibilityChange = () => {
+            if (wakeLockRef.current !== null && document.visibilityState === 'visible') {
+                requestWakeLock();
+            }
+        };
+        document.addEventListener('visibilitychange', handleVisibilityChange);
+
+        return () => {
+            releaseWakeLock();
+            document.removeEventListener('visibilitychange', handleVisibilityChange);
+        };
+    }, [status]);
+
     // Speed tracking
     const lastBytesRef = useRef(0);
     const speedTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
