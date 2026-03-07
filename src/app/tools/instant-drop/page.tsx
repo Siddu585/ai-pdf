@@ -10,7 +10,7 @@ import { Button } from "@/components/ui/button";
 import { Footer } from "@/components/layout/Footer";
 import { useUsage } from "@/hooks/useUsage";
 import { PaywallModal } from "@/components/layout/PaywallModal";
-import { UserButton, SignInButton, SignedIn, SignedOut, useUser as useClerkUser } from "@clerk/nextjs";
+// import { UserButton, SignInButton, SignedIn, SignedOut, useUser as useClerkUser } from "@clerk/nextjs";
 
 // Strict WebRTC cross-browser compatible Chunk size (64KB limits maxMessageSize exceptions)
 const CHUNK_SIZE = 64 * 1024;
@@ -20,6 +20,10 @@ const BACKEND_WS_URL = process.env.NEXT_PUBLIC_API_URL
     : typeof window !== "undefined"
         ? `${window.location.protocol === "https:" ? "wss:" : "ws:"}//${window.location.hostname}:8000`
         : "ws://localhost:8000";
+
+const BACKEND_HTTP_URL = process.env.NEXT_PUBLIC_API_URL
+    ? process.env.NEXT_PUBLIC_API_URL.trim().replace(/\/$/, "")
+    : "http://localhost:8000";
 
 const ICE_SERVERS = {
     iceServers: [
@@ -36,7 +40,9 @@ function InstantDropContent() {
     const [mode, setMode] = useState<'select' | 'send' | 'receive'>(initialRoom ? 'receive' : 'select');
     const [roomId, setRoomId] = useState<string>(initialRoom || "");
     const { recordUsage, isPaywallOpen, setIsPaywallOpen, handleAction, deviceId, isPro, email, loading: usageLoading } = useUsage();
-    const { isLoaded: clerkLoaded, isSignedIn } = useClerkUser();
+    // const { isLoaded: clerkLoaded, isSignedIn } = useClerkUser();
+    const clerkLoaded = true;
+    const isSignedIn = false;
     const [files, setFiles] = useState<File[]>([]);
     const [currentFileIndex, setCurrentFileIndex] = useState(0);
     const [progress, setProgress] = useState(0);
@@ -926,14 +932,14 @@ function InstantDropContent() {
 
                     <div className="flex items-center gap-4">
                         <div className="flex items-center gap-2">
-                            <SignedIn>
+                            {/* <SignedIn>
                                 <UserButton afterSignOutUrl="/tools/instant-drop" />
                             </SignedIn>
                             <SignedOut>
                                 <SignInButton mode="modal">
                                     <Button variant="outline" size="sm" className="text-xs h-8">Login</Button>
                                 </SignInButton>
-                            </SignedOut>
+                            </SignedOut> */}
                         </div>
 
                         <Link href="/" className="p-2 hover:bg-muted rounded-full transition-colors group">

@@ -4,7 +4,7 @@ import Link from "next/link";
 import { Button } from "@/components/ui/button";
 import { FileDown, Menu, ShieldCheck } from "lucide-react";
 import { useState } from "react";
-import { SignInButton, SignedIn, SignedOut, UserButton } from "@clerk/nextjs";
+// // import { SignInButton, SignedIn, SignedOut, UserButton } from "@clerk/nextjs";
 import { PaywallModal } from "./PaywallModal";
 import { useUsage } from "@/hooks/useUsage";
 
@@ -35,14 +35,14 @@ export function Navbar() {
         </div>
 
         <div className="flex items-center gap-2 sm:gap-4">
-            <SignedOut>
+            {/* <SignedOut>
               <SignInButton mode="modal">
                 <Button variant="ghost" size="sm" className="text-xs sm:text-sm font-semibold px-2 sm:px-4">Log in</Button>
               </SignInButton>
             </SignedOut>
             <SignedIn>
               <UserButton afterSignOutUrl="/" />
-            </SignedIn>
+            </SignedIn> */}
             {isPro ? (
               <div className="px-3 py-1.5 flex items-center justify-center rounded-full bg-indigo-500/10 border border-indigo-500/20 gap-2 shadow-[0_0_15px_rgba(99,102,241,0.1)]">
                 <div className="w-1.5 h-1.5 rounded-full bg-indigo-500 animate-pulse" />

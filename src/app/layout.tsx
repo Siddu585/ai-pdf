@@ -1,7 +1,7 @@
 import type { Metadata } from "next";
 import { Geist, Geist_Mono } from "next/font/google";
 import Script from "next/script";
-import { ClerkProvider } from "@clerk/nextjs";
+// import { ClerkProvider } from "@clerk/nextjs";
 import "./globals.css";
 
 const geistSans = Geist({
@@ -34,7 +34,7 @@ export default function RootLayout({
   children: React.ReactNode;
 }>) {
   return (
-    <ClerkProvider>
+    // <ClerkProvider>
       <html lang="en">
         <head>
           <meta name="google-adsense-account" content="ca-pub-7932640955334855" />
@@ -51,6 +51,6 @@ export default function RootLayout({
           {children}
         </body>
       </html>
-    </ClerkProvider>
+    // </ClerkProvider>
   );
 }

@@ -8,11 +8,14 @@ const SESSION_KEY_EMAIL = 'turbo_pro_email';
 const SESSION_KEY_IS_PRO = 'turbo_is_pro';
 
 export function useUsage() {
-    const { user, isLoaded, isSignedIn } = useUser();
+    // const { user, isLoaded, isSignedIn } = useUser();
+    const isLoaded = true;
+    const isSignedIn = false;
+    const user = null;
     const [usageCount, setUsageCount] = useState(0);
     const [deviceId, setDeviceId] = useState("");
     const [isPaywallOpen, setIsPaywallOpen] = useState(false);
-    const liveEmail = user?.primaryEmailAddress?.emailAddress?.trim().toLowerCase() || "";
+    const liveEmail = (user as any)?.primaryEmailAddress?.emailAddress?.trim().toLowerCase() || "";
 
     // Use sessionStorage as fallback to preserve email if Clerk background sync fails
     const getEffectiveEmail = () => {
