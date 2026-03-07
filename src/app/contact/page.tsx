@@ -11,8 +11,8 @@ export default function ContactPage() {
                     <p className="text-xl text-muted-foreground">Have a question or need to report a bug?</p>
                     <div className="bg-secondary/20 p-8 rounded-2xl inline-block">
                         <p className="font-semibold text-lg">Email us directly:</p>
-                        <a href="mailto:support@swap-pdf.com" className="text-3xl font-bold text-indigo-600 hover:text-indigo-700 transition-colors mt-4 block">
-                            support@swap-pdf.com
+                        <a href="mailto:siddhant@swap-pdf.com" className="text-3xl font-bold text-indigo-600 hover:text-indigo-700 transition-colors mt-4 block">
+                            siddhant@swap-pdf.com
                         </a>
                     </div>
                 </div>
