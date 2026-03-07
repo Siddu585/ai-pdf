@@ -254,9 +254,9 @@ function InstantDropContent() {
             console.log("Sender WS Message:", event.data);
             if (typeof event.data !== 'string') return;
             const data = JSON.parse(event.data);
-            if (data.type === 'peer-connected') {
+            if (data.type === 'peer-connected' || data.type === 'receiver-ready') {
                 setStatus('connecting');
-                logDebug("Sender: Remote peer joined room...");
+                logDebug("Sender: Remote peer joined room. Initiating WebRTC offer...");
 
                 // Handshake Timeout: If we don't reach 'transferring' within 25 seconds, assume peer dropped.
                 if (connTimeoutRef.current) clearTimeout(connTimeoutRef.current);
@@ -267,9 +267,9 @@ function InstantDropContent() {
                     }
                 }, 25000);
 
-            } else if (data.type === 'receiver-ready') {
-                logDebug("Sender: Receiver frontend is ready. Initiating WebRTC...");
+                // Immediately start the WebRTC offer (don't wait for a separate receiver-ready signal)
                 await setupWebRTC(ws, true);
+
             } else if (data.type === 'file-ready') {
                 logDebug("Sender: Receiver is ready for files. Starting transmission...");
                 startFileTransfer();
@@ -895,7 +895,7 @@ function InstantDropContent() {
                             <h1 className="text-lg font-bold tracking-tight text-foreground">
                                 Instant Drop
                             </h1>
-                            <p className="text-[10px] text-muted-foreground font-medium tracking-wider uppercase">v01.2.4 Gigabit Relay</p>
+                            <p className="text-[10px] text-muted-foreground font-medium tracking-wider uppercase">v01.2.5 Gigabit Relay</p>
                         </div>
                     </div>
 
