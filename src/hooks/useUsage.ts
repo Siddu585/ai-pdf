@@ -3,7 +3,7 @@ import { useUser } from "@clerk/nextjs";
 import { isProEmail } from "@/lib/pro-whitelist";
 
 export const API_BASE = process.env.NEXT_PUBLIC_API_URL 
-    ? process.env.NEXT_PUBLIC_API_URL.trim().replace(/\/$/, "").replace("ai-pdfai-pdf", "ai-pdf")
+    ? process.env.NEXT_PUBLIC_API_URL.trim().replace(/\/$/, "")
     : "http://localhost:8000";
 
 const SESSION_KEY_EMAIL = 'turbo_pro_email';

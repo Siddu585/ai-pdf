@@ -18,13 +18,13 @@ const IS_MOBILE = process.env.NEXT_PUBLIC_IS_MOBILE === 'true';
 const CHUNK_SIZE = 64 * 1024;
 const MAX_IN_FLIGHT = 32;
 const BACKEND_WS_URL = process.env.NEXT_PUBLIC_API_URL
-    ? process.env.NEXT_PUBLIC_API_URL.trim().replace(/\/$/, "").replace("ai-pdfai-pdf", "ai-pdf").replace(/^https:\/\//i, "wss://").replace(/^http:\/\//i, "ws://")
+    ? process.env.NEXT_PUBLIC_API_URL.trim().replace(/\/$/, "").replace(/^https:\/\//i, "wss://").replace(/^http:\/\//i, "ws://")
     : typeof window !== "undefined"
         ? `${window.location.protocol === "https:" ? "wss:" : "ws:"}//${window.location.hostname}:8000`
         : "ws://localhost:8000";
 
 const BACKEND_HTTP_URL = process.env.NEXT_PUBLIC_API_URL
-    ? process.env.NEXT_PUBLIC_API_URL.trim().replace(/\/$/, "").replace("ai-pdfai-pdf", "ai-pdf") // Fix malformed URL hack
+    ? process.env.NEXT_PUBLIC_API_URL.trim().replace(/\/$/, "") // Revert malformed URL hack
     : "http://localhost:8000";
 
 const ICE_SERVERS = {
