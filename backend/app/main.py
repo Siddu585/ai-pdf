@@ -18,21 +18,13 @@ import functools
 import sys
 import os
 
+# ENTERPRISE SCALING HACK — DISABLED
+# WebSocket rooms use in-memory state (manager.rooms).
+# Multiple workers each have ISOLATED memory — sender on worker 1 and receiver on worker 2
+# can NEVER find each other in the rooms dict. This causes 75% of transfers to fail silently.
+# For WebSocket-based room communication, a SINGLE worker is required.
+# To scale, use Redis pub/sub for cross-worker room sharing (future improvement).
 # ==========================================
-# ENTERPRISE SCALING HACK
-# Automatically hijack the Render single-threaded startup
-# and respawn the server utilizing 4 parallel CPU processes
-# without requiring the user to change the dashboard Start Command.
-# ==========================================
-if sys.platform != "win32" and "uvicorn" in os.path.basename(sys.argv[0]):
-    if "--workers" not in sys.argv:
-        print("🚀 [AUTO-SCALE] Single-core startup detected! Scaling up to 4 parallel CPU workers...", flush=True)
-        # Re-execute the exact same python process, but append --workers 4
-        args = [sys.executable]
-        for arg in sys.argv:
-            args.append(arg)
-        args.extend(["--workers", "4"])
-        os.execl(sys.executable, *args)
 
 # Force unbuffered output globally for Render live logs visibility
 print = functools.partial(print, flush=True)
