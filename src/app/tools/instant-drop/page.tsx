@@ -352,7 +352,7 @@ function InstantDropContent() {
                 const dc = peer.createDataChannel(`file-transfer-${i}`, { ordered: true });
                 dataChannelsRef.current.push(dc);
                 setupDataChannel(dc, i);
-                dc.bufferedAmountLowThreshold = 1024 * 1024; // 1MB — buffer drain threshold for smooth flow
+                dc.bufferedAmountLowThreshold = 256 * 1024; // 256KB low-water mark for mobile bufferbloat prevention
             }
 
             const offer = await peer.createOffer();
@@ -383,8 +383,11 @@ function InstantDropContent() {
                 lastBytesRef.current = 0;
                 if (speedTimerRef.current) clearInterval(speedTimerRef.current);
                 speedTimerRef.current = setInterval(() => {
-                    const bytesSinceLast = totalSentBytesRef.current + totalReceivedBytesRef.current - lastBytesRef.current;
-                    lastBytesRef.current = totalSentBytesRef.current + totalReceivedBytesRef.current;
+                    const totalBuffered = dataChannelsRef.current.reduce((acc, c) => acc + (c.readyState === 'open' ? c.bufferedAmount : 0), 0);
+                    const currentSent = Math.max(0, totalSentBytesRef.current - totalBuffered);
+                    const currentTotal = modeRef.current === 'send' ? currentSent : totalReceivedBytesRef.current;
+                    const bytesSinceLast = Math.max(0, currentTotal - lastBytesRef.current);
+                    lastBytesRef.current = currentTotal;
                     setTransferSpeed(parseFloat((bytesSinceLast / 1024 / 1024).toFixed(1)));
                 }, 1000);
                 if (modeRef.current === 'send') {
@@ -512,7 +515,7 @@ function InstantDropContent() {
 
                 const workers = dataChannelsRef.current.map(async (dc, chIdx) => {
                     const sectorData = sectorBuffers[chIdx];
-                    const THRESHOLD = 4 * 1024 * 1024; // 4MB buffer drain threshold
+                    const THRESHOLD = 1024 * 1024; // 1MB high-water mark to prevent mobile network bufferbloat
                     let offset = 0;
 
                     while (isActive.current && offset < sectorData.byteLength) {
@@ -1111,7 +1114,7 @@ function InstantDropContent() {
                                         <div className="flex flex-col items-center justify-center p-6 bg-green-50 dark:bg-green-900/10 border border-green-200 dark:border-green-800 rounded-xl space-y-4">
                                             <CheckCircle className="w-12 h-12 text-green-500" />
                                             <p className="text-lg font-bold text-green-700 dark:text-green-400">All Files Transferred!</p>
-                                            <Button variant="outline" onClick={() => { setMode('select'); setStatus('disconnected'); setFiles([]); }}>
+                                            <Button variant="outline" onClick={() => window.location.href = '/tools/instant-drop'}>
                                                 Send More
                                             </Button>
                                         </div>
@@ -1123,7 +1126,7 @@ function InstantDropContent() {
                                 <div className="p-6 bg-red-50 text-red-600 rounded-xl border border-red-200">
                                     <p className="font-bold">Connection Failed</p>
                                     <p className="text-sm mt-2 mb-4">Could not establish direct peer-to-peer connection.</p>
-                                    <Button variant="outline" className="border-red-200 hover:bg-red-100" onClick={() => { setMode('select'); setStatus('disconnected'); }}>
+                                    <Button variant="outline" className="border-red-200 hover:bg-red-100" onClick={() => window.location.href = '/tools/instant-drop'}>
                                         Try Again
                                     </Button>
                                 </div>
@@ -1209,12 +1212,7 @@ function InstantDropContent() {
                                         ))}
                                     </div>
 
-                                    <Button variant="ghost" className="mt-4" onClick={() => {
-                                        resetConnection();
-                                        setMode('select');
-                                        setStatus('disconnected');
-                                        setReceivedFiles([]);
-                                    }}>
+                                    <Button variant="ghost" className="mt-4" onClick={() => window.location.href = '/tools/instant-drop'}>
                                         Receive More
                                     </Button>
                                 </div>
@@ -1224,11 +1222,7 @@ function InstantDropContent() {
                                 <div className="p-6 bg-red-50 text-red-600 rounded-xl border border-red-200">
                                     <p className="font-bold">Connection Failed</p>
                                     <p className="text-sm mt-2 mb-4">Could not establish direct peer-to-peer connection.</p>
-                                    <Button variant="outline" className="border-red-200 hover:bg-red-100" onClick={() => {
-                                        resetConnection();
-                                        setMode('select');
-                                        setStatus('disconnected');
-                                    }}>
+                                    <Button variant="outline" className="border-red-200 hover:bg-red-100" onClick={() => window.location.href = '/tools/instant-drop'}>
                                         Try Again
                                     </Button>
                                 </div>
