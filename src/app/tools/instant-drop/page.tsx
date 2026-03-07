@@ -8,7 +8,7 @@ import Link from "next/link";
 import JSZip from "jszip";
 import { Button } from "@/components/ui/button";
 import { Footer } from "@/components/layout/Footer";
-import { useUsage } from "@/hooks/useUsage";
+import { useUsage, sanitizeBackendUrl } from "@/hooks/useUsage";
 import { PaywallModal } from "@/components/layout/PaywallModal";
 import { UserButton, SignInButton, SignedIn, SignedOut, useUser as useClerkUser } from "@clerk/nextjs";
 
@@ -17,15 +17,10 @@ const IS_MOBILE = process.env.NEXT_PUBLIC_IS_MOBILE === 'true';
 // Strict WebRTC cross-browser compatible Chunk size (64KB limits maxMessageSize exceptions)
 const CHUNK_SIZE = 64 * 1024;
 const MAX_IN_FLIGHT = 32;
-const BACKEND_WS_URL = process.env.NEXT_PUBLIC_API_URL
-    ? process.env.NEXT_PUBLIC_API_URL.trim().replace(/\/$/, "").replace(/^https:\/\//i, "wss://").replace(/^http:\/\//i, "ws://")
-    : typeof window !== "undefined"
-        ? `${window.location.protocol === "https:" ? "wss:" : "ws:"}//${window.location.hostname}:8000`
-        : "ws://localhost:8000";
+const rawBase = sanitizeBackendUrl(process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000");
 
-const BACKEND_HTTP_URL = process.env.NEXT_PUBLIC_API_URL
-    ? process.env.NEXT_PUBLIC_API_URL.trim().replace(/\/$/, "") // Revert malformed URL hack
-    : "http://localhost:8000";
+const BACKEND_WS_URL = rawBase.replace(/^https:\/\//i, "wss://").replace(/^http:\/\//i, "ws://");
+const BACKEND_HTTP_URL = rawBase;
 
 const ICE_SERVERS = {
     iceServers: [
@@ -893,7 +888,7 @@ function InstantDropContent() {
                             <h1 className="text-lg font-bold tracking-tight text-foreground">
                                 Instant Drop
                             </h1>
-                            <p className="text-[10px] text-muted-foreground font-medium tracking-wider uppercase">v01.2.2 Gigabit Relay</p>
+                            <p className="text-[10px] text-muted-foreground font-medium tracking-wider uppercase">v01.2.3 Gigabit Relay</p>
                         </div>
                     </div>
 
