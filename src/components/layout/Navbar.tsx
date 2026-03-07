@@ -10,7 +10,7 @@ import { useUsage } from "@/hooks/useUsage";
 
 export function Navbar() {
   const [isPaywallOpen, setIsPaywallOpen] = useState(false);
-  const { deviceId } = useUsage();
+  const { deviceId, isPro } = useUsage();
 
   return (
     <nav className="sticky top-0 z-50 w-full border-b border-border/40 bg-background/95 backdrop-blur supports-[backdrop-filter]:bg-background/60">
@@ -43,13 +43,20 @@ export function Navbar() {
             <SignedIn>
               <UserButton afterSignOutUrl="/" />
             </SignedIn>
-            <Button
-              size="sm"
-              className="bg-secondary text-secondary-foreground hover:bg-secondary/90 font-semibold shadow-sm transition-all text-xs sm:text-sm px-3 sm:px-4 h-8 sm:h-9"
-              onClick={() => setIsPaywallOpen(true)}
-            >
-              Go Pro
-            </Button>
+            {isPro ? (
+              <div className="px-3 py-1.5 flex items-center justify-center rounded-full bg-indigo-500/10 border border-indigo-500/20 gap-2 shadow-[0_0_15px_rgba(99,102,241,0.1)]">
+                <div className="w-1.5 h-1.5 rounded-full bg-indigo-500 animate-pulse" />
+                <span className="text-[11px] font-bold text-indigo-600 dark:text-indigo-400 tracking-wide uppercase whitespace-nowrap mt-0.5">⚡ Gigabit Pro</span>
+              </div>
+            ) : (
+              <Button
+                size="sm"
+                className="bg-indigo-600 hover:bg-indigo-700 text-white font-semibold shadow-sm transition-all text-xs sm:text-sm px-3 sm:px-4 h-8 sm:h-9"
+                onClick={() => setIsPaywallOpen(true)}
+              >
+                ⚡ Gigabit Pro
+              </Button>
+            )}
         </div>
       </div>
 

@@ -925,26 +925,7 @@ function InstantDropContent() {
                     </div>
 
                     <div className="flex items-center gap-4">
-                        {/* Gigabit Pro Badge (Session Reactive) */}
-                        {clerkLoaded ? (
-                            <>
-                                {(isPro || usingGigabitRelay) ? (
-                                    <div className="px-3 py-1 rounded-full bg-indigo-500/10 border border-indigo-500/20 flex items-center gap-2 shadow-[0_0_15px_rgba(99,102,241,0.1)]">
-                                        <div className="w-1.5 h-1.5 rounded-full bg-indigo-500 animate-pulse" />
-                                        <span className="text-[11px] font-bold text-indigo-600 dark:text-indigo-400 tracking-wide uppercase">⚡ Gigabit Pro</span>
-                                    </div>
-                                ) : (
-                                    <div className="px-3 py-1 rounded-full bg-muted border border-border flex items-center gap-2">
-                                        <div className="w-1.5 h-1.5 rounded-full bg-muted-foreground/30" />
-                                        <span className="text-[11px] font-medium text-muted-foreground tracking-wide uppercase">Free Tier (STUN Only)</span>
-                                    </div>
-                                )}
-                            </>
-                        ) : (
-                            <div className="w-24 h-6 bg-muted animate-pulse rounded-full" />
-                        )}
-
-                        <div className="flex items-center gap-2 border-l pl-4 border-border ml-2">
+                        <div className="flex items-center gap-2">
                             <SignedIn>
                                 <UserButton afterSignOutUrl="/tools/instant-drop" />
                             </SignedIn>
