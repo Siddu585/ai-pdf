@@ -4,6 +4,7 @@ import { isProEmail } from "@/lib/pro-whitelist";
 
 export const API_BASE = process.env.NEXT_PUBLIC_API_URL 
     ? process.env.NEXT_PUBLIC_API_URL.trim().replace(/\/$/, "")
+        .replace("ai-pdf-backend.onrender.com", "ai-pdfai-pdf-backend.onrender.com")
     : "http://localhost:8000";
 
 const SESSION_KEY_EMAIL = 'turbo_pro_email';
