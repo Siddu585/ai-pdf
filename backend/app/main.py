@@ -159,7 +159,10 @@ class UsageTracker:
 
     def check_and_record(self, key: str, device_id: str = "", email: str = ""):
         # Skip limits for Pro users (Check raw device ID or Email whitelist)
-        if (device_id and device_id in self.pro_users) or (email and email in self.pro_users):
+        email_norm = email.lower().strip() if email else ""
+        if (device_id and device_id in self.pro_users) or \
+           (email_norm and email_norm in self.pro_users) or \
+           (email_norm and email_norm in self.HARDCODED_PRO):
             return True, 0
             
         today = datetime.now().strftime("%Y-%m-%d")
@@ -167,6 +170,11 @@ class UsageTracker:
             self.data[today] = {}
         
         count = self.data[today].get(key, 0)
+        limit = 5
+        
+        if count >= limit:
+            return False, count
+            
         self.data[today][key] = count + 1
         self._save(self.usage_file, self.data)
         return True, count + 1
@@ -330,7 +338,7 @@ async def ocr_scan(
     deviceId: str = Form("")
 ):
     key = tracker.get_key(request, deviceId)
-    allowed, count = tracker.check_and_record(key)
+    allowed, count = tracker.check_and_record(key, deviceId)
     if not allowed:
         raise HTTPException(status_code=402, detail="Daily limit reached. Upgrade to Pro for unlimited use!")
     try:
@@ -352,7 +360,7 @@ async def chat_pdf(
     deviceId: str = Form("")
 ):
     key = tracker.get_key(request, deviceId)
-    allowed, count = tracker.check_and_record(key)
+    allowed, count = tracker.check_and_record(key, deviceId)
     if not allowed:
         raise HTTPException(status_code=402, detail="Daily limit reached. Upgrade to Pro for unlimited use!")
     try:
@@ -374,7 +382,7 @@ async def organize_pdf_endpoint(
     deviceId: str = Form("")
 ):
     key = tracker.get_key(request, deviceId)
-    allowed, count = tracker.check_and_record(key)
+    allowed, count = tracker.check_and_record(key, deviceId)
     if not allowed:
         raise HTTPException(status_code=402, detail="Daily limit reached. Upgrade to Pro for unlimited use!")
     try:
@@ -400,7 +408,7 @@ async def extract_thumbnails_endpoint(
     deviceId: str = Form("")
 ):
     key = tracker.get_key(request, deviceId)
-    allowed, count = tracker.check_and_record(key)
+    allowed, count = tracker.check_and_record(key, deviceId)
     if not allowed:
         raise HTTPException(status_code=402, detail="Daily limit reached. Upgrade to Pro for unlimited use!")
     try:
@@ -421,7 +429,7 @@ async def image_to_pdf_endpoint(
     deviceId: str = Form("")
 ):
     key = tracker.get_key(request, deviceId)
-    allowed, count = tracker.check_and_record(key)
+    allowed, count = tracker.check_and_record(key, deviceId)
     if not allowed:
         raise HTTPException(status_code=402, detail="Daily limit reached. Upgrade to Pro for unlimited use!")
     try:
@@ -450,7 +458,7 @@ async def split_pdf_endpoint(
     deviceId: str = Form("")
 ):
     key = tracker.get_key(request, deviceId)
-    allowed, count = tracker.check_and_record(key)
+    allowed, count = tracker.check_and_record(key, deviceId)
     if not allowed:
         raise HTTPException(status_code=402, detail="Daily limit reached. Upgrade to Pro for unlimited use!")
     try:
@@ -482,7 +490,7 @@ async def pdf_to_word_endpoint(
     deviceId: str = Form("")
 ):
     key = tracker.get_key(request, deviceId)
-    allowed, count = tracker.check_and_record(key)
+    allowed, count = tracker.check_and_record(key, deviceId)
     if not allowed:
         raise HTTPException(status_code=402, detail="Daily limit reached. Upgrade to Pro for unlimited use!")
     try:
@@ -508,7 +516,7 @@ async def office_to_pdf_endpoint(
     deviceId: str = Form("")
 ):
     key = tracker.get_key(request, deviceId)
-    allowed, count = tracker.check_and_record(key)
+    allowed, count = tracker.check_and_record(key, deviceId)
     if not allowed:
         raise HTTPException(status_code=402, detail="Daily limit reached. Upgrade to Pro for unlimited use!")
     try:
@@ -535,7 +543,7 @@ async def unlock_pdf_endpoint(
     deviceId: str = Form("")
 ):
     key = tracker.get_key(request, deviceId)
-    allowed, count = tracker.check_and_record(key)
+    allowed, count = tracker.check_and_record(key, deviceId)
     if not allowed:
         raise HTTPException(status_code=402, detail="Daily limit reached. Upgrade to Pro for unlimited use!")
     try:
@@ -561,7 +569,7 @@ async def repair_pdf_endpoint(
     deviceId: str = Form("")
 ):
     key = tracker.get_key(request, deviceId)
-    allowed, count = tracker.check_and_record(key)
+    allowed, count = tracker.check_and_record(key, deviceId)
     if not allowed:
         raise HTTPException(status_code=402, detail="Daily limit reached. Upgrade to Pro for unlimited use!")
     try:

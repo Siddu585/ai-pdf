@@ -54,16 +54,6 @@ export default function ToolPage({ params }: { params: Promise<{ toolId: string 
 
                     <p className="mt-8 text-sm text-muted-foreground italic">Powered by WebAssembly</p>
                 </div>
-
-                {/* Fake Ad Placeholders */}
-                <div className="w-full text-center mt-12 space-y-4">
-                    <p className="text-xs text-muted-foreground uppercase tracking-widest font-semibold flex items-center justify-center gap-4">
-                        <span className="h-px bg-border flex-1"></span> Sponsors <span className="h-px bg-border flex-1"></span>
-                    </p>
-                    <div className="inline-block w-full max-w-[728px] h-[90px] bg-muted/50 border border-dashed border-border flex items-center justify-center text-muted-foreground text-xs rounded-md">
-                        [AdSense 728x90 Leaderboard]
-                    </div>
-                </div>
             </main>
 
             <Footer />

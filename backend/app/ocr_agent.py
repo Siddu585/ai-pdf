@@ -9,7 +9,7 @@ load_dotenv()
 
 def extract_text_from_image(image_path: str) -> str:
     """
-    OCR Agent: Extracts text from an image using Groq Vision AI (Llama 3.2 11b Vision).
+    OCR Agent: Extracts text from an image using Groq Vision AI (Llama 3.2 90B Vision).
     This bypasses the need for local Tesseract binaries.
     """
     api_key = os.getenv("GROQ_API_KEY")
