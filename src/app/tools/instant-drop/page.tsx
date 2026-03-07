@@ -314,7 +314,7 @@ function InstantDropContent() {
 
                 if (isProRef.current) {
                     logDebug("Sender: Fetching high-speed TURN relay servers (Pro Tier)...");
-                    const turnRes = await fetch(`/api/turn?deviceId=${deviceIdRef.current}&email=${encodeURIComponent(emailRef.current || "")}`);
+                    const turnRes = await fetch(`${BACKEND_HTTP_URL}/api/turn?deviceId=${deviceIdRef.current}&email=${encodeURIComponent(emailRef.current || "")}`);
                     if (turnRes.ok) {
                         const turnData = await turnRes.json();
                         if (Array.isArray(turnData)) {
@@ -351,7 +351,7 @@ function InstantDropContent() {
                     // Fallback: If Pro-Sharing didn't arrive, try personal Pro status
                     if (isProRef.current) {
                         logDebug("Receiver: Pro-Sharing not found, fetching personal TURN servers...");
-                        const turnRes = await fetch(`/api/turn?deviceId=${deviceIdRef.current}&email=${encodeURIComponent(emailRef.current || "")}`);
+                        const turnRes = await fetch(`${BACKEND_HTTP_URL}/api/turn?deviceId=${deviceIdRef.current}&email=${encodeURIComponent(emailRef.current || "")}`);
                         if (turnRes.ok) {
                             const turnData = await turnRes.json();
                             if (Array.isArray(turnData)) {
