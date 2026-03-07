@@ -18,13 +18,13 @@ const IS_MOBILE = process.env.NEXT_PUBLIC_IS_MOBILE === 'true';
 const CHUNK_SIZE = 64 * 1024;
 const MAX_IN_FLIGHT = 32;
 const BACKEND_WS_URL = process.env.NEXT_PUBLIC_API_URL
-    ? process.env.NEXT_PUBLIC_API_URL.trim().replace(/\/$/, "").replace(/^https:\/\//i, "wss://").replace(/^http:\/\//i, "ws://")
+    ? process.env.NEXT_PUBLIC_API_URL.trim().replace(/\/$/, "").replace("ai-pdfai-pdf", "ai-pdf").replace(/^https:\/\//i, "wss://").replace(/^http:\/\//i, "ws://")
     : typeof window !== "undefined"
         ? `${window.location.protocol === "https:" ? "wss:" : "ws:"}//${window.location.hostname}:8000`
         : "ws://localhost:8000";
 
 const BACKEND_HTTP_URL = process.env.NEXT_PUBLIC_API_URL
-    ? process.env.NEXT_PUBLIC_API_URL.trim().replace(/\/$/, "")
+    ? process.env.NEXT_PUBLIC_API_URL.trim().replace(/\/$/, "").replace("ai-pdfai-pdf", "ai-pdf") // Fix malformed URL hack
     : "http://localhost:8000";
 
 const ICE_SERVERS = {
@@ -310,26 +310,32 @@ function InstantDropContent() {
 
         let currentIceServers = [...ICE_SERVERS.iceServers];
         try {
-            // UNCONDITIONAL GIGABIT RELAY:
-            // To ensure 100% connectivity between different networks (4G/5G/Firewalls),
-            // we now fetch high-speed TURN relay servers for ALL users. 
-            // This fulfills the "Magic" promise of Instant Drop.
-            logDebug("Fetching high-speed TURN relay servers (Global Access)...");
+            logDebug("Fetching high-speed TURN relay servers...");
             const turnRes = await fetch(`${BACKEND_HTTP_URL}/api/turn?deviceId=${deviceIdRef.current}&email=${encodeURIComponent(emailRef.current || "")}`);
+            
             if (turnRes.ok) {
                 const turnData = await turnRes.json();
                 if (Array.isArray(turnData)) {
                     currentIceServers = [...currentIceServers, ...turnData];
                     setUsingGigabitRelay(true);
-                    logDebug(`Injected ${turnData.length} TURN relay servers. Local and Relay paths enabled.`);
+                    logDebug(`Injected ${turnData.length} TURN relay servers.`);
                 }
             } else {
-                logDebug("Relay fetch failed, falling back to STUN-only (Local Network Mode)");
-                setUsingGigabitRelay(false);
+                throw new Error("TURN fetch failed");
             }
         } catch (e) {
-            logDebug("Connectivity Controller Error: fallback to STUN-only");
-            setUsingGigabitRelay(false);
+            logDebug("Connectivity Controller Error: falling back to Frontend Fail-Safe Relay...");
+            // FRONTEND FAIL-SAFE:
+            // If the backend API fails (404, CORS, etc.), we provide the free 
+            // Metered Relay servers directly from the frontend to guarantee 
+            // the user can still transfer files across networks.
+            const failSafeRelay = [
+                { urls: "turn:openrelay.metered.ca:80", username: "openrelayproject", credential: "openrelayproject" },
+                { urls: "turn:openrelay.metered.ca:443", username: "openrelayproject", credential: "openrelayproject" },
+                { urls: "turn:openrelay.metered.ca:443?transport=tcp", username: "openrelayproject", credential: "openrelayproject" }
+            ];
+            currentIceServers = [...currentIceServers, ...failSafeRelay];
+            setUsingGigabitRelay(true);
         }
 
         const peer = new RTCPeerConnection({ iceServers: currentIceServers });
@@ -887,7 +893,7 @@ function InstantDropContent() {
                             <h1 className="text-lg font-bold tracking-tight text-foreground">
                                 Instant Drop
                             </h1>
-                            <p className="text-[10px] text-muted-foreground font-medium tracking-wider uppercase">v0009 Gigabit Relay</p>
+                            <p className="text-[10px] text-muted-foreground font-medium tracking-wider uppercase">v01.2.0 Gigabit Relay</p>
                         </div>
                     </div>
 
