@@ -72,8 +72,13 @@ class ConnectionManager:
             if self.is_connected(ws):
                 try:
                     await asyncio.wait_for(ws.send_json(message), timeout=2.0)
-                except Exception:
-                    pass
+                    print(f"✅ Sent {message.get('type')} to {to_client} in room {room_id}")
+                except Exception as e:
+                    print(f"⚠️ send_message FAILED ({message.get('type')} → {to_client} in {room_id}): {e}")
+            else:
+                print(f"⚠️ send_message SKIPPED: {to_client} in {room_id} is not CONNECTED (state={ws.client_state})")
+        else:
+            print(f"⚠️ send_message SKIPPED: {to_client} not in room {room_id} (rooms={list(self.rooms.keys())})")
 
 manager = ConnectionManager()
 

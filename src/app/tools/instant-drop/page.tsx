@@ -250,13 +250,20 @@ function InstantDropContent() {
             ws.onclose = () => clearInterval(heartbeat);
         };
 
+        let senderRtcStarted = false; // dedup guard: only call setupWebRTC once
+
         ws.onmessage = async (event) => {
             console.log("Sender WS Message:", event.data);
             if (typeof event.data !== 'string') return;
             const data = JSON.parse(event.data);
             if (data.type === 'peer-connected' || data.type === 'receiver-ready') {
+                if (senderRtcStarted) {
+                    logDebug(`Sender: Ignoring duplicate ${data.type} - WebRTC already starting`);
+                    return;
+                }
+                senderRtcStarted = true;
                 setStatus('connecting');
-                logDebug("Sender: Remote peer joined room. Initiating WebRTC offer...");
+                logDebug(`Sender: Remote peer joined (${data.type}). Initiating WebRTC offer...`);
 
                 // Handshake Timeout: If we don't reach 'transferring' within 25 seconds, assume peer dropped.
                 if (connTimeoutRef.current) clearTimeout(connTimeoutRef.current);
@@ -267,8 +274,14 @@ function InstantDropContent() {
                     }
                 }, 25000);
 
-                // Immediately start the WebRTC offer (don't wait for a separate receiver-ready signal)
-                await setupWebRTC(ws, true);
+                // Start the WebRTC offer with explicit error logging
+                try {
+                    await setupWebRTC(ws, true);
+                } catch (err) {
+                    console.error("Sender: setupWebRTC FAILED:", err);
+                    logDebug(`Sender: WebRTC Setup Error: ${err}`);
+                    setStatus('error');
+                }
 
             } else if (data.type === 'file-ready') {
                 logDebug("Sender: Receiver is ready for files. Starting transmission...");
@@ -895,7 +908,7 @@ function InstantDropContent() {
                             <h1 className="text-lg font-bold tracking-tight text-foreground">
                                 Instant Drop
                             </h1>
-                            <p className="text-[10px] text-muted-foreground font-medium tracking-wider uppercase">v01.2.5 Gigabit Relay</p>
+                            <p className="text-[10px] text-muted-foreground font-medium tracking-wider uppercase">v01.2.6 Gigabit Relay</p>
                         </div>
                     </div>
 
