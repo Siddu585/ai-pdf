@@ -5,7 +5,7 @@ import { UploadCloud, FileImage, Download, Loader2, ArrowRight } from "lucide-re
 import { Button } from "@/components/ui/button";
 import { Slider } from "@/components/ui/slider";
 import imageCompression from "browser-image-compression";
-import { useUsage } from "@/hooks/useUsage";
+import { useUsage, API_BASE } from "@/hooks/useUsage";
 import { PaywallModal } from "@/components/layout/PaywallModal";
 
 export function ImageCompressor() {
@@ -59,13 +59,10 @@ export function ImageCompressor() {
             formData.append("target_kb", targetSizeKB.toString());
             formData.append("deviceId", deviceId);
 
-            const baseUrl = (process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000").trim().replace(/\/$/, "");
-            const targetUrl = baseUrl + "/api/compress-image";
-
             const controller = new AbortController();
             const timeoutId = setTimeout(() => controller.abort(), 90000); // 90 seconds timeout
 
-            const response = await fetch(targetUrl, {
+            const response = await fetch(`${API_BASE}/api/compress-image`, {
                 method: "POST",
                 body: formData,
                 mode: "cors",

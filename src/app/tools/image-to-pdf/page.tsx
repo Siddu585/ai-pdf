@@ -5,7 +5,7 @@ import { UploadCloud, Image as ImageIcon, Loader2, Download, Trash2, ArrowLeft, 
 import { Button } from "@/components/ui/button";
 import { Navbar } from "@/components/layout/Navbar";
 import { Footer } from "@/components/layout/Footer";
-import { useUsage } from "@/hooks/useUsage";
+import { useUsage, API_BASE } from "@/hooks/useUsage";
 import { PaywallModal } from "@/components/layout/PaywallModal";
 
 interface ImageFile {
@@ -68,7 +68,7 @@ export default function ImageToPDF() {
                 formData.append("files", img.file);
             });
 
-            const response = await fetch((process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000") + "/api/image-to-pdf", {
+            const response = await fetch(`${API_BASE}/api/image-to-pdf`, {
                 method: "POST",
                 body: formData,
             });

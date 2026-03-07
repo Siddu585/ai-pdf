@@ -5,7 +5,7 @@ import { UploadCloud, FileText, Loader2, Download, ArrowRight } from "lucide-rea
 import { Button } from "@/components/ui/button";
 import { Navbar } from "@/components/layout/Navbar";
 import { Footer } from "@/components/layout/Footer";
-import { useUsage } from "@/hooks/useUsage";
+import { useUsage, API_BASE } from "@/hooks/useUsage";
 import { PaywallModal } from "@/components/layout/PaywallModal";
 
 export default function PDFToWord() {
@@ -33,13 +33,10 @@ export default function PDFToWord() {
             const formData = new FormData();
             formData.append("file", file);
 
-            const baseUrl = (process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000").trim().replace(/\/$/, "");
-            const targetUrl = baseUrl + "/api/pdf-to-word";
-
             const controller = new AbortController();
             const timeoutId = setTimeout(() => controller.abort(), 90000); // 90 seconds timeout
 
-            const response = await fetch(targetUrl, {
+            const response = await fetch(`${API_BASE}/api/pdf-to-word`, {
                 method: "POST",
                 body: formData,
                 mode: "cors",

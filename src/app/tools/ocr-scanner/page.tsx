@@ -5,7 +5,7 @@ import { UploadCloud, ScanText, Loader2, Copy, Check } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Navbar } from "@/components/layout/Navbar";
 import { Footer } from "@/components/layout/Footer";
-import { useUsage } from "@/hooks/useUsage";
+import { useUsage, API_BASE } from "@/hooks/useUsage";
 import { PaywallModal } from "@/components/layout/PaywallModal";
 
 export default function OCRScannerPage() {
@@ -37,7 +37,7 @@ export default function OCRScannerPage() {
             formData.append("file", file);
             formData.append("deviceId", deviceId);
 
-            const response = await fetch((process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000") + "/api/ocr", {
+            const response = await fetch(`${API_BASE}/api/ocr`, {
                 method: "POST",
                 body: formData,
             });

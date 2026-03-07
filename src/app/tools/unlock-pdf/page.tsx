@@ -5,7 +5,7 @@ import { UploadCloud, Unlock, Loader2, Download, ArrowRight } from "lucide-react
 import { Button } from "@/components/ui/button";
 import { Navbar } from "@/components/layout/Navbar";
 import { Footer } from "@/components/layout/Footer";
-import { useUsage } from "@/hooks/useUsage";
+import { useUsage, API_BASE } from "@/hooks/useUsage";
 import { PaywallModal } from "@/components/layout/PaywallModal";
 
 export default function UnlockPDF() {
@@ -35,7 +35,7 @@ export default function UnlockPDF() {
             formData.append("file", file);
             formData.append("password", password);
 
-            const response = await fetch((process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000") + "/api/unlock-pdf", {
+            const response = await fetch(`${API_BASE}/api/unlock-pdf`, {
                 method: "POST",
                 body: formData,
             });

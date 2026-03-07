@@ -3,7 +3,7 @@
 import { useState, useRef } from "react";
 import { UploadCloud, ScanText, Loader2, Copy, Check } from "lucide-react";
 import { Button } from "@/components/ui/button";
-import { useUsage } from "@/hooks/useUsage";
+import { useUsage, API_BASE } from "@/hooks/useUsage";
 import { PaywallModal } from "@/components/layout/PaywallModal";
 
 export function OCRScanner() {
@@ -35,7 +35,7 @@ export function OCRScanner() {
             formData.append("file", file);
             formData.append("deviceId", deviceId);
 
-            const response = await fetch((process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000") + "/api/ocr", {
+            const response = await fetch(`${API_BASE}/api/ocr`, {
                 method: "POST",
                 body: formData,
             });

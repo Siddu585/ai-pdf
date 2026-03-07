@@ -5,7 +5,7 @@ import { UploadCloud, Settings2, Loader2, Download, Trash2, ArrowLeft, ArrowRigh
 import { Button } from "@/components/ui/button";
 import { Navbar } from "@/components/layout/Navbar";
 import { Footer } from "@/components/layout/Footer";
-import { useUsage } from "@/hooks/useUsage";
+import { useUsage, API_BASE } from "@/hooks/useUsage";
 import { PaywallModal } from "@/components/layout/PaywallModal";
 import {
     DndContext,
@@ -119,8 +119,7 @@ export default function OrganizePages() {
                 const formData = new FormData();
                 formData.append("file", selected);
 
-                const baseUrl = (process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000").trim().replace(/\/$/, "");
-                const response = await fetch(baseUrl + "/api/extract-thumbnails", {
+                const response = await fetch(`${API_BASE}/api/extract-thumbnails`, {
                     method: "POST",
                     body: formData,
                     mode: "cors",
@@ -194,8 +193,7 @@ export default function OrganizePages() {
             const orderIndexString = pages.map(p => p.originalIndex).join(",");
             formData.append("order", orderIndexString);
 
-            const baseUrl = (process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000").trim().replace(/\/$/, "");
-            const response = await fetch(baseUrl + "/api/organize-pdf", {
+            const response = await fetch(`${API_BASE}/api/organize-pdf`, {
                 method: "POST",
                 body: formData,
                 mode: "cors",

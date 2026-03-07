@@ -3,7 +3,7 @@
 import { useState, useRef, useEffect } from "react";
 import { UploadCloud, MessageSquare, Loader2, Send } from "lucide-react";
 import { Button } from "@/components/ui/button";
-import { useUsage } from "@/hooks/useUsage";
+import { useUsage, API_BASE } from "@/hooks/useUsage";
 import { PaywallModal } from "@/components/layout/PaywallModal";
 
 export function AIChat() {
@@ -47,7 +47,7 @@ export function AIChat() {
             formData.append("query", userMsg);
             formData.append("deviceId", deviceId);
 
-            const response = await fetch((process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000") + "/api/chat-pdf", {
+            const response = await fetch(`${API_BASE}/api/chat-pdf`, {
                 method: "POST",
                 body: formData,
             });

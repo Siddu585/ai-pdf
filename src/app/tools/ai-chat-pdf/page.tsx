@@ -5,7 +5,7 @@ import { UploadCloud, MessageSquare, Loader2, Send } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Navbar } from "@/components/layout/Navbar";
 import { Footer } from "@/components/layout/Footer";
-import { useUsage } from "@/hooks/useUsage";
+import { useUsage, API_BASE } from "@/hooks/useUsage";
 import { PaywallModal } from "@/components/layout/PaywallModal";
 
 export default function AIChatPage() {
@@ -42,7 +42,7 @@ export default function AIChatPage() {
             formData.append("query", userMsg);
             formData.append("deviceId", deviceId);
 
-            const response = await fetch((process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000") + "/api/chat-pdf", {
+            const response = await fetch(`${API_BASE}/api/chat-pdf`, {
                 method: "POST",
                 body: formData,
             });

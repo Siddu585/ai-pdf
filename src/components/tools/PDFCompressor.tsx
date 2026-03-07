@@ -4,7 +4,7 @@ import { useState, useRef } from "react";
 import { UploadCloud, FileText, Download, Loader2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Slider } from "@/components/ui/slider";
-import { useUsage } from "@/hooks/useUsage";
+import { useUsage, API_BASE } from "@/hooks/useUsage";
 import { PaywallModal } from "@/components/layout/PaywallModal";
 
 export function PDFCompressor() {
@@ -63,7 +63,7 @@ export function PDFCompressor() {
             formData.append("quality", quality.toString());
             formData.append("deviceId", deviceId);
 
-            const response = await fetch((process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000") + "/api/compress-pdf", {
+            const response = await fetch(`${API_BASE}/api/compress-pdf`, {
                 method: "POST",
                 body: formData,
             });

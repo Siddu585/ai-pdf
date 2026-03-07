@@ -2,7 +2,9 @@ import { useState, useEffect } from "react";
 import { useUser } from "@clerk/nextjs";
 import { isProEmail } from "@/lib/pro-whitelist";
 
-const API_BASE = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
+export const API_BASE = process.env.NEXT_PUBLIC_API_URL 
+    ? process.env.NEXT_PUBLIC_API_URL.trim().replace(/\/$/, "").replace("ai-pdfai-pdf", "ai-pdf")
+    : "http://localhost:8000";
 
 const SESSION_KEY_EMAIL = 'turbo_pro_email';
 const SESSION_KEY_IS_PRO = 'turbo_is_pro';

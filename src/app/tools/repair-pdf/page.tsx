@@ -5,7 +5,7 @@ import { UploadCloud, Wrench, Loader2, Download, ArrowRight } from "lucide-react
 import { Button } from "@/components/ui/button";
 import { Navbar } from "@/components/layout/Navbar";
 import { Footer } from "@/components/layout/Footer";
-import { useUsage } from "@/hooks/useUsage";
+import { useUsage, API_BASE } from "@/hooks/useUsage";
 import { PaywallModal } from "@/components/layout/PaywallModal";
 
 export default function RepairPDF() {
@@ -33,7 +33,7 @@ export default function RepairPDF() {
             const formData = new FormData();
             formData.append("file", file);
 
-            const response = await fetch((process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000") + "/api/repair-pdf", {
+            const response = await fetch(`${API_BASE}/api/repair-pdf`, {
                 method: "POST",
                 body: formData,
             });

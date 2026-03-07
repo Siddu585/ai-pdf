@@ -5,7 +5,7 @@ import { UploadCloud, Scissors, Loader2, Download, ArrowRight } from "lucide-rea
 import { Button } from "@/components/ui/button";
 import { Navbar } from "@/components/layout/Navbar";
 import { Footer } from "@/components/layout/Footer";
-import { useUsage } from "@/hooks/useUsage";
+import { useUsage, API_BASE } from "@/hooks/useUsage";
 import { PaywallModal } from "@/components/layout/PaywallModal";
 
 export default function SplitPDF() {
@@ -35,7 +35,7 @@ export default function SplitPDF() {
             formData.append("file", file);
             formData.append("ranges", ranges);
 
-            const response = await fetch((process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000") + "/api/split-pdf", {
+            const response = await fetch(`${API_BASE}/api/split-pdf`, {
                 method: "POST",
                 body: formData,
             });
