@@ -12,6 +12,7 @@ import asyncio
 from app.pdf_agent import run_iterative_pdf_compression, organize_pdf, extract_pdf_thumbnails, images_to_pdf, split_pdf, pdf_to_word, office_to_pdf, unlock_pdf, repair_pdf
 from app.ocr_agent import extract_text_from_image
 from app.chat_agent import chat_with_pdf
+from app.image_agent import run_iterative_image_compression
 import functools
 
 # Force unbuffered output globally for Render live logs visibility
@@ -171,8 +172,9 @@ async def get_usage_status(request: Request, deviceId: str = "", email: str = ""
     key = tracker.get_key(request, deviceId)
     today = datetime.now().strftime("%Y-%m-%d")
     count = tracker.data.get(today, {}).get(key, 0)
-    # Always return high remaining for testing
-    return {"count": count, "limit": 999, "remaining": 999, "is_pro": False}
+    limit = 5
+    remaining = max(0, limit - count)
+    return {"count": count, "limit": limit, "remaining": remaining, "is_pro": False}
 
 @app.post("/api/usage/record")
 async def record_usage_endpoint(request: Request, data: dict):
@@ -180,7 +182,9 @@ async def record_usage_endpoint(request: Request, data: dict):
     email = data.get("email", "")
     key = tracker.get_key(request, deviceId)
     allowed, count = tracker.check_and_record(key, deviceId, email)
-    return {"allowed": True, "count": count, "remaining": 999}
+    limit = 5
+    remaining = max(0, limit - count)
+    return {"allowed": count <= limit, "count": count, "remaining": remaining}
 
 # -------------------------------
 
@@ -243,7 +247,7 @@ async def compress_image(
     deviceId: str = Form("")
 ):
     key = tracker.get_key(request, deviceId)
-    allowed, count = tracker.check_and_record(key)
+    allowed, count = tracker.check_and_record(key, deviceId)
     if not allowed:
         raise HTTPException(status_code=402, detail="Daily limit reached. Upgrade to Pro for unlimited use!")
     
@@ -252,6 +256,8 @@ async def compress_image(
         await file.seek(0)
         content = await file.read()
         ext = os.path.splitext(file.filename)[1] or ".png"
+        
+        is_pro = deviceId in tracker.pro_users
         
         # If not Pro, we could enforce a 5MB limit here
         if not is_pro and len(content) > 5 * 1024 * 1024:
@@ -280,7 +286,7 @@ async def compress_pdf(
     deviceId: str = Form("")
 ):
     key = tracker.get_key(request, deviceId)
-    allowed, count = tracker.check_and_record(key)
+    allowed, count = tracker.check_and_record(key, deviceId)
     if not allowed:
         raise HTTPException(status_code=402, detail="Daily limit reached. Upgrade to Pro for unlimited use!")
     try:

@@ -133,7 +133,7 @@ export function useUsage() {
         email, // Return the email for TURN API usage
         isPro,
         canUse,
-        remainingUses: 999, // Math.max(0, 5 - usageCount),
+        remainingUses: Math.max(0, 5 - usageCount),
         recordUsage,
         isPaywallOpen,
         setIsPaywallOpen,

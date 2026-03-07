@@ -12,6 +12,7 @@ import { Testimonials } from "@/components/sections/Testimonials";
 import { AIChat } from "@/components/tools/AIChat";
 import { OCRScanner } from "@/components/tools/OCRScanner";
 import { PDFCompressor } from "@/components/tools/PDFCompressor";
+import AdUnit from "@/components/ads/AdUnit";
 
 export default function Home() {
   return (
@@ -22,6 +23,11 @@ export default function Home() {
         {/* --- HERO: INSTANT CROSS-DEVICE TRANSFER --- */}
         <div className="w-full mt-4">
           <InstantDrop />
+        </div>
+        
+        {/* --- GOOGLE ADSENSE BANNER --- */}
+        <div className="w-full max-w-4xl mx-auto px-4">
+            <AdUnit slot="7244908076" format="auto" responsive="true" />
         </div>
 
         {/* --- MAIN INTERACTIVE TOOLS SECTION --- */}

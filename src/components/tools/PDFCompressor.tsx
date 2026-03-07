@@ -215,9 +215,6 @@ export function PDFCompressor() {
                     </div>
 
                     <div className="w-full text-center mt-6">
-                        <div className="inline-block w-[320px] h-[50px] bg-muted/50 border border-dashed border-border flex items-center justify-center text-muted-foreground text-xs rounded-md">
-                            [AdSense 320x50 Mobile Leaderboard]
-                        </div>
                     </div>
                 </div>
             )}

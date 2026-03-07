@@ -228,10 +228,6 @@ export function ImageCompressor() {
                     </div>
 
                     <div className="w-full text-center">
-                        {/* Fake Ad Placement for passive income layout */}
-                        <div className="inline-block w-[300px] h-[250px] bg-muted/50 border border-dashed border-border flex items-center justify-center text-muted-foreground text-xs rounded-md">
-                            [AdSense 300x250 Placeholder]
-                        </div>
                     </div>
 
                 </div>
