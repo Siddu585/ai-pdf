@@ -13,6 +13,7 @@ from app.pdf_agent import run_iterative_pdf_compression, organize_pdf, extract_p
 from app.ocr_agent import extract_text_from_image
 from app.chat_agent import chat_with_pdf
 from app.image_agent import run_iterative_image_compression
+from fastapi.concurrency import run_in_threadpool
 import functools
 
 # Force unbuffered output globally for Render live logs visibility
@@ -267,8 +268,8 @@ async def compress_image(
             tmp.write(content)
             tmp_path = tmp.name
 
-        # Agentic iterative compression loop
-        optimized_path = run_iterative_image_compression(tmp_path, target_kb)
+        # Agentic iterative compression loop (offload to prevent blocking asyncio)
+        optimized_path = await run_in_threadpool(run_iterative_image_compression, tmp_path, target_kb)
         
         return FileResponse(
             optimized_path, 
@@ -297,7 +298,8 @@ async def compress_pdf(
             tmp.write(content)
             tmp_path = tmp.name
 
-        optimized_path = run_iterative_pdf_compression(tmp_path, quality)
+        # Offload sync PDF processing to threadpool
+        optimized_path = await run_in_threadpool(run_iterative_pdf_compression, tmp_path, quality)
         
         return FileResponse(
             optimized_path, 
@@ -325,7 +327,7 @@ async def ocr_scan(
             tmp.write(content)
             tmp_path = tmp.name
 
-        text = extract_text_from_image(tmp_path)
+        text = await run_in_threadpool(extract_text_from_image, tmp_path)
         return {"filename": file.filename, "extracted_text": text}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
@@ -350,7 +352,7 @@ async def chat_pdf(
             tmp.write(content)
             tmp_path = tmp.name
 
-        response = chat_with_pdf(tmp_path, query)
+        response = await run_in_threadpool(chat_with_pdf, tmp_path, query)
         return {"filename": file.filename, "query": query, "response": response}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
@@ -374,7 +376,7 @@ async def organize_pdf_endpoint(
             tmp.write(content)
             tmp_path = tmp.name
 
-        optimized_path = organize_pdf(tmp_path, order)
+        optimized_path = await run_in_threadpool(organize_pdf, tmp_path, order)
         
         return FileResponse(
             optimized_path, 
@@ -402,7 +404,7 @@ async def extract_thumbnails_endpoint(
             tmp.write(content)
             tmp_path = tmp.name
 
-        thumbnails = extract_pdf_thumbnails(tmp_path)
+        thumbnails = await run_in_threadpool(extract_pdf_thumbnails, tmp_path)
         return {"thumbnails": thumbnails}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
@@ -427,7 +429,7 @@ async def image_to_pdf_endpoint(
                 tmp.write(content)
                 temp_paths.append(tmp.name)
                 
-        compiled_pdf_path = images_to_pdf(temp_paths)
+        compiled_pdf_path = await run_in_threadpool(images_to_pdf, temp_paths)
         
         return FileResponse(
             compiled_pdf_path, 
@@ -456,7 +458,7 @@ async def split_pdf_endpoint(
             tmp.write(content)
             tmp_path = tmp.name
             
-        output_path = split_pdf(tmp_path, ranges)
+        output_path = await run_in_threadpool(split_pdf, tmp_path, ranges)
         
         is_zip = output_path.endswith('.zip')
         media_type = "application/zip" if is_zip else "application/pdf"
@@ -490,7 +492,7 @@ async def pdf_to_word_endpoint(
             tmp.write(content)
             tmp_path = tmp.name
             
-        output_path = pdf_to_word(tmp_path)
+        output_path = await run_in_threadpool(pdf_to_word, tmp_path)
         
         return FileResponse(
             output_path, 
@@ -518,7 +520,7 @@ async def office_to_pdf_endpoint(
             tmp.write(content)
             tmp_path = tmp.name
             
-        output_path = office_to_pdf(tmp_path)
+        output_path = await run_in_threadpool(office_to_pdf, tmp_path)
         
         return FileResponse(
             output_path, 
@@ -547,7 +549,7 @@ async def unlock_pdf_endpoint(
             tmp.write(content)
             tmp_path = tmp.name
             
-        output_path = unlock_pdf(tmp_path, password)
+        output_path = await run_in_threadpool(unlock_pdf, tmp_path, password)
         
         return FileResponse(
             output_path, 
@@ -575,7 +577,7 @@ async def repair_pdf_endpoint(
             tmp.write(content)
             tmp_path = tmp.name
             
-        output_path = repair_pdf(tmp_path)
+        output_path = await run_in_threadpool(repair_pdf, tmp_path)
         
         return FileResponse(
             output_path, 
