@@ -54,7 +54,7 @@ export function Navbar() {
                 className="bg-indigo-600 hover:bg-indigo-700 text-white font-semibold shadow-sm transition-all text-xs sm:text-sm px-3 sm:px-4 h-8 sm:h-9"
                 onClick={() => setIsPaywallOpen(true)}
               >
-                ⚡ Gigabit Pro
+                Go Pro
               </Button>
             )}
         </div>
