@@ -8,7 +8,7 @@ const SESSION_KEY_EMAIL = 'turbo_pro_email';
 const SESSION_KEY_IS_PRO = 'turbo_is_pro';
 
 export function useUsage() {
-    const { user } = useUser();
+    const { user, isLoaded, isSignedIn } = useUser();
     const [usageCount, setUsageCount] = useState(0);
     const [deviceId, setDeviceId] = useState("");
     const [isPaywallOpen, setIsPaywallOpen] = useState(false);
@@ -38,6 +38,17 @@ export function useUsage() {
 
     const [isPro, setIsPro] = useState(getInitialPro());
     const [loading, setLoading] = useState(true);
+
+    // Wipe cached session storage when a user explicitly logs out or is unauthenticated
+    useEffect(() => {
+        if (isLoaded && !isSignedIn) {
+            if (typeof window !== 'undefined') {
+                sessionStorage.removeItem(SESSION_KEY_EMAIL);
+                sessionStorage.removeItem(SESSION_KEY_IS_PRO);
+            }
+            setIsPro(false);
+        }
+    }, [isLoaded, isSignedIn]);
 
     const setStickyPro = (val: boolean) => {
         if (val && typeof window !== 'undefined') {
