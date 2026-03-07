@@ -324,10 +324,17 @@ function InstantDropContent() {
             // If the backend API fails (404, CORS, etc.), we provide the free 
             // Metered Relay servers directly from the frontend to guarantee 
             // the user can still transfer files across networks.
+            // Expanded fail-safe relay list for maximum cross-network compatibility
             const failSafeRelay = [
+                // Metered OpenRelay (free TURN)
                 { urls: "turn:openrelay.metered.ca:80", username: "openrelayproject", credential: "openrelayproject" },
                 { urls: "turn:openrelay.metered.ca:443", username: "openrelayproject", credential: "openrelayproject" },
-                { urls: "turn:openrelay.metered.ca:443?transport=tcp", username: "openrelayproject", credential: "openrelayproject" }
+                { urls: "turn:openrelay.metered.ca:443?transport=tcp", username: "openrelayproject", credential: "openrelayproject" },
+                { urls: "turn:openrelay.metered.ca:3478", username: "openrelayproject", credential: "openrelayproject" },
+                // Backup STUN servers for ICE gathering
+                { urls: "stun:stun3.l.google.com:19302" },
+                { urls: "stun:stun4.l.google.com:19302" },
+                { urls: "stun:stun.cloudflare.com:3478" },
             ];
             currentIceServers = [...currentIceServers, ...failSafeRelay];
             setUsingGigabitRelay(true);
@@ -888,7 +895,7 @@ function InstantDropContent() {
                             <h1 className="text-lg font-bold tracking-tight text-foreground">
                                 Instant Drop
                             </h1>
-                            <p className="text-[10px] text-muted-foreground font-medium tracking-wider uppercase">v01.2.3 Gigabit Relay</p>
+                            <p className="text-[10px] text-muted-foreground font-medium tracking-wider uppercase">v01.2.4 Gigabit Relay</p>
                         </div>
                     </div>
 

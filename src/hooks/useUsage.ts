@@ -2,22 +2,14 @@ import { useState, useEffect } from "react";
 import { useUser } from "@clerk/nextjs";
 import { isProEmail } from "@/lib/pro-whitelist";
 
-const rawApi = (process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000")
+export const API_BASE = (process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000")
     .trim()
     .replace(/\/$/, "");
 
-// Explicit non-recursive fix for the known Render naming mismatch
-export const API_BASE = rawApi === "https://ai-pdf-backend.onrender.com"
-    ? "https://ai-pdfai-pdf-backend.onrender.com"
-    : rawApi;
-
 export function sanitizeBackendUrl(url: string) {
-    const trimmed = url.trim().replace(/\/$/, "");
-    if (trimmed === "https://ai-pdf-backend.onrender.com") {
-        return "https://ai-pdfai-pdf-backend.onrender.com";
-    }
-    return trimmed;
+    return (url || "http://localhost:8000").trim().replace(/\/$/, "");
 }
+
 
 const SESSION_KEY_EMAIL = 'turbo_pro_email';
 const SESSION_KEY_IS_PRO = 'turbo_is_pro';
