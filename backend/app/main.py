@@ -254,18 +254,16 @@ async def compress_image(
     
     try:
         # Save uploaded file to a temporary location with the CORRECT extension
-        await file.seek(0)
-        content = await file.read()
         ext = os.path.splitext(file.filename)[1] or ".png"
         
         is_pro = deviceId in tracker.pro_users
         
         # If not Pro, we could enforce a 5MB limit here
-        if not is_pro and len(content) > 5 * 1024 * 1024:
+        if not is_pro and getattr(file, 'size', 0) > 5 * 1024 * 1024:
              raise HTTPException(status_code=402, detail="File too large for free tier. Upgrade to Pro!")
 
         with tempfile.NamedTemporaryFile(delete=False, suffix=ext) as tmp:
-            tmp.write(content)
+            shutil.copyfileobj(file.file, tmp)
             tmp_path = tmp.name
 
         # Agentic iterative compression loop (offload to prevent blocking asyncio)
@@ -291,11 +289,9 @@ async def compress_pdf(
     if not allowed:
         raise HTTPException(status_code=402, detail="Daily limit reached. Upgrade to Pro for unlimited use!")
     try:
-        await file.seek(0)
-        content = await file.read()
         ext = os.path.splitext(file.filename)[1] or ".pdf"
         with tempfile.NamedTemporaryFile(delete=False, suffix=ext) as tmp:
-            tmp.write(content)
+            shutil.copyfileobj(file.file, tmp)
             tmp_path = tmp.name
 
         # Offload sync PDF processing to threadpool
@@ -320,11 +316,9 @@ async def ocr_scan(
     if not allowed:
         raise HTTPException(status_code=402, detail="Daily limit reached. Upgrade to Pro for unlimited use!")
     try:
-        await file.seek(0)
-        content = await file.read()
         ext = os.path.splitext(file.filename)[1] or ".png"
         with tempfile.NamedTemporaryFile(delete=False, suffix=ext) as tmp:
-            tmp.write(content)
+            shutil.copyfileobj(file.file, tmp)
             tmp_path = tmp.name
 
         text = await run_in_threadpool(extract_text_from_image, tmp_path)
@@ -344,12 +338,9 @@ async def chat_pdf(
     if not allowed:
         raise HTTPException(status_code=402, detail="Daily limit reached. Upgrade to Pro for unlimited use!")
     try:
-        await file.seek(0)
-        content = await file.read()
-        print(f"[DEBUG] Organize PDF ingested {len(content)} bytes")
         ext = os.path.splitext(file.filename)[1] or ".pdf"
         with tempfile.NamedTemporaryFile(delete=False, suffix=ext) as tmp:
-            tmp.write(content)
+            shutil.copyfileobj(file.file, tmp)
             tmp_path = tmp.name
 
         response = await run_in_threadpool(chat_with_pdf, tmp_path, query)
@@ -369,11 +360,9 @@ async def organize_pdf_endpoint(
     if not allowed:
         raise HTTPException(status_code=402, detail="Daily limit reached. Upgrade to Pro for unlimited use!")
     try:
-        await file.seek(0)
-        content = await file.read()
         ext = os.path.splitext(file.filename)[1] or ".pdf"
         with tempfile.NamedTemporaryFile(delete=False, suffix=ext) as tmp:
-            tmp.write(content)
+            shutil.copyfileobj(file.file, tmp)
             tmp_path = tmp.name
 
         optimized_path = await run_in_threadpool(organize_pdf, tmp_path, order)
@@ -397,11 +386,9 @@ async def extract_thumbnails_endpoint(
     if not allowed:
         raise HTTPException(status_code=402, detail="Daily limit reached. Upgrade to Pro for unlimited use!")
     try:
-        await file.seek(0)
-        content = await file.read()
         ext = os.path.splitext(file.filename)[1] or ".pdf"
         with tempfile.NamedTemporaryFile(delete=False, suffix=ext) as tmp:
-            tmp.write(content)
+            shutil.copyfileobj(file.file, tmp)
             tmp_path = tmp.name
 
         thumbnails = await run_in_threadpool(extract_pdf_thumbnails, tmp_path)
@@ -422,11 +409,9 @@ async def image_to_pdf_endpoint(
     try:
         temp_paths = []
         for file in files:
-            await file.seek(0)
-            content = await file.read()
             ext = os.path.splitext(file.filename)[1] or ".png"
             with tempfile.NamedTemporaryFile(delete=False, suffix=ext) as tmp:
-                tmp.write(content)
+                shutil.copyfileobj(file.file, tmp)
                 temp_paths.append(tmp.name)
                 
         compiled_pdf_path = await run_in_threadpool(images_to_pdf, temp_paths)
@@ -451,11 +436,9 @@ async def split_pdf_endpoint(
     if not allowed:
         raise HTTPException(status_code=402, detail="Daily limit reached. Upgrade to Pro for unlimited use!")
     try:
-        await file.seek(0)
-        content = await file.read()
         ext = os.path.splitext(file.filename)[1] or ".pdf"
         with tempfile.NamedTemporaryFile(delete=False, suffix=ext) as tmp:
-            tmp.write(content)
+            shutil.copyfileobj(file.file, tmp)
             tmp_path = tmp.name
             
         output_path = await run_in_threadpool(split_pdf, tmp_path, ranges)
@@ -485,11 +468,9 @@ async def pdf_to_word_endpoint(
     if not allowed:
         raise HTTPException(status_code=402, detail="Daily limit reached. Upgrade to Pro for unlimited use!")
     try:
-        await file.seek(0)
-        content = await file.read()
         ext = os.path.splitext(file.filename)[1] or ".pdf"
         with tempfile.NamedTemporaryFile(delete=False, suffix=ext) as tmp:
-            tmp.write(content)
+            shutil.copyfileobj(file.file, tmp)
             tmp_path = tmp.name
             
         output_path = await run_in_threadpool(pdf_to_word, tmp_path)
@@ -513,11 +494,9 @@ async def office_to_pdf_endpoint(
     if not allowed:
         raise HTTPException(status_code=402, detail="Daily limit reached. Upgrade to Pro for unlimited use!")
     try:
-        await file.seek(0)
-        content = await file.read()
         ext = os.path.splitext(file.filename)[1].lower() or ".docx"
         with tempfile.NamedTemporaryFile(delete=False, suffix=ext) as tmp:
-            tmp.write(content)
+            shutil.copyfileobj(file.file, tmp)
             tmp_path = tmp.name
             
         output_path = await run_in_threadpool(office_to_pdf, tmp_path)
@@ -542,11 +521,9 @@ async def unlock_pdf_endpoint(
     if not allowed:
         raise HTTPException(status_code=402, detail="Daily limit reached. Upgrade to Pro for unlimited use!")
     try:
-        await file.seek(0)
-        content = await file.read()
         ext = os.path.splitext(file.filename)[1] or ".pdf"
         with tempfile.NamedTemporaryFile(delete=False, suffix=ext) as tmp:
-            tmp.write(content)
+            shutil.copyfileobj(file.file, tmp)
             tmp_path = tmp.name
             
         output_path = await run_in_threadpool(unlock_pdf, tmp_path, password)
@@ -570,11 +547,9 @@ async def repair_pdf_endpoint(
     if not allowed:
         raise HTTPException(status_code=402, detail="Daily limit reached. Upgrade to Pro for unlimited use!")
     try:
-        await file.seek(0)
-        content = await file.read()
         ext = os.path.splitext(file.filename)[1] or ".pdf"
         with tempfile.NamedTemporaryFile(delete=False, suffix=ext) as tmp:
-            tmp.write(content)
+            shutil.copyfileobj(file.file, tmp)
             tmp_path = tmp.name
             
         output_path = await run_in_threadpool(repair_pdf, tmp_path)
