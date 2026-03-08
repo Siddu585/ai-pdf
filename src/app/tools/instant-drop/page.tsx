@@ -453,8 +453,8 @@ function InstantDropContent() {
                 // v01.5.0: PACED ADAPTIVE STREAM
                 logDebug(`Sender: v01.5.0 Paced Stream Start. (Channels: ${numChannels})`);
 
-                const HIGH_WATER_MARK = 4 * 1024 * 1024; // 4MB per channel (32MB total)
-                const LOW_WATER_MARK = 1 * 1024 * 1024;  // 1MB per channel
+                const HIGH_WATER_MARK = 8 * 1024 * 1024; // 8MB per channel
+                const LOW_WATER_MARK = 2 * 1024 * 1024;  // 2MB per channel
                 const sectorSize = Math.ceil(file.size / numChannels);
                 
                 const workers = [];
@@ -624,12 +624,24 @@ function InstantDropContent() {
                         }
                         receiveBuffers.current.delete(i);
                     }
-                    const blob = new Blob(allChunks, { type: receiveMeta.current.fileType });
+                    
+                    const fileName = receiveMeta.current.name;
+                    const fileType = receiveMeta.current.fileType;
+                    const expectedSize = receiveMeta.current.size;
+                    const blob = new Blob(allChunks, { type: fileType });
                     allChunks.length = 0;
-                    setReceivedFiles(prev => [...prev, { blob, name: receiveMeta.current!.name }]);
-                    setStatus('done-waiting');
-                    logDebug(`Receiver: Reassembly complete for ${receiveMeta.current.name}. Sending OOBS ACK.`);
-                    sendControlMsg({ type: 'file-ack', name: receiveMeta.current.name });
+                    
+                    if (blob.size > 0 || expectedSize === 0) {
+                        setReceivedFiles(prev => [...prev, { blob, name: fileName }]);
+                        setStatus('done-waiting');
+                        logDebug(`Receiver: Reassembly complete for ${fileName} (${blob.size} bytes). Sending OOBS ACK.`);
+                        sendControlMsg({ type: 'file-ack', name: fileName });
+                    } else {
+                        logDebug(`Receiver: CRITICAL ERROR - Reassembled 0 bytes for ${fileName} (expected ${expectedSize}). Check DataChannels.`);
+                        // Don't crash, but inform user
+                        setStatus('error');
+                    }
+                    
                     receivedEofs.current.clear();
                     receiveMeta.current = null;
                 }
@@ -830,7 +842,7 @@ function InstantDropContent() {
                         <Smartphone className="w-12 h-12 text-indigo-500" />
                     </div>
                     <h1 className="text-4xl md:text-5xl font-bold text-foreground mb-4">Turbo Drop</h1>
-                    <p className="text-xs text-muted-foreground font-medium tracking-widest uppercase mb-2">v01.5.0 Superfast Stream</p>
+                    <p className="text-xs text-muted-foreground font-medium tracking-widest uppercase mb-2">v01.5.1 Reliable Superfast Stream</p>
                     <p className="text-lg text-muted-foreground max-w-2xl mx-auto">
                         The ultimate high-speed file sharing app. Transfer photos and large files (up to 200MB) from desktop to mobile or mobile to mobile instantly.
                     </p>
