@@ -307,13 +307,13 @@ function InstantDropContent() {
         };
 
         if (isSender) {
-            const chLimit = isProRef.current ? 8 : 4; // v01.5.8: Reverted to 8 channels for v01.5.1 efficiency
+            const chLimit = 8; // v02.0.3: Standardized to 8 for consistent Parallel Metadata
             logDebug(`Creating ${chLimit} Parallel DataChannels (Sender)`);
             for (let i = 0; i < chLimit; i++) {
                 const dc = peer.createDataChannel(`file-transfer-${i}`, { ordered: true });
                 dataChannelsRef.current.push(dc);
                 setupDataChannel(dc, i);
-                dc.bufferedAmountLowThreshold = 1024 * 1024; // 1MB threshold
+                dc.bufferedAmountLowThreshold = 64 * 1024; // v02.0.3: 64KB threshold (Stability Gold)
             }
 
             const offer = await peer.createOffer();
@@ -494,7 +494,7 @@ function InstantDropContent() {
                     currentIdx: index,
                     totalFiles: total,
                     isParallel: true,
-                    parallelChannels: dataChannelsRef.current.length
+                    parallelChannels: 8 // v02.0.3: Explicitly 8 channels
                 });
             };
 
@@ -531,9 +531,9 @@ function InstantDropContent() {
                 } catch (e) { }
 
                 // v01.5.0: PACED ADAPTIVE STREAM
-                logDebug(`Sender: v01.5.0 Paced Stream Start. (Channels: ${numChannels})`);
+                logDebug(`Sender: v01.5.0 Paced Stream Start. (Channels: ${numChannels}, isRelay: ${isRelay})`);
 
-                const HIGH_WATER_MARK = 256 * 1024; // 256KB per channel (2MB total) - v02.0.3 Turbo-Safe (Mobile Hyper-Stable)
+                const HIGH_WATER_MARK = isRelay ? 128 * 1024 : 256 * 1024; // v02.0.3: Adaptive HWM
                 const LOW_WATER_MARK = 64 * 1024;   // 64KB per channel
                 const sectorSize = Math.ceil(file.size / numChannels);
                 
