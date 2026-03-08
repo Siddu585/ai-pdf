@@ -168,6 +168,23 @@ function InstantDropContent() {
     const receivedBytes = useRef(0);
 
     const fileInputRef = useRef<HTMLInputElement>(null);
+    const roomRef = useRef<string | null>(null);
+
+    // --- SIGNALING HELPER (v01.5.0 Out-of-Band) ---
+    const sendControlMsg = (payload: any) => {
+        const msgStr = JSON.stringify(payload);
+        // Priority 1: WebSocket (Bypasses DataChannel congestion)
+        if (wsRef.current?.readyState === WebSocket.OPEN) {
+            wsRef.current.send(msgStr);
+            return true;
+        }
+        // Fallback: DataChannel (If WS is down)
+        if (dataChannelsRef.current[0]?.readyState === 'open') {
+            dataChannelsRef.current[0].send(msgStr);
+            return true;
+        }
+        return false;
+    };
 
     // --- SENDER LOGIC (Turbo Drop 2.0) ---
     const startSending = (selectedFiles: FileList | File[]) => {
@@ -179,6 +196,7 @@ function InstantDropContent() {
 
         const newRoomId = Math.floor(100000 + Math.random() * 900000).toString();
         setRoomId(newRoomId);
+        roomRef.current = newRoomId;
 
         const ws = new WebSocket(`${BACKEND_WS_URL}/ws/drop/${newRoomId}/sender`);
         wsRef.current = ws;
@@ -209,14 +227,9 @@ function InstantDropContent() {
                     await peerRef.current?.addIceCandidate(new RTCIceCandidate(candidate));
                 }
                 iceBuffer.current = [];
-            } else if (data.type === 'ice-candidate') {
-                if (!remoteDescriptionSet.current) {
-                    console.log("Buffering remote ICE candidate");
-                    iceBuffer.current.push(data.candidate);
-                } else {
-                    console.log("Adding remote ICE candidate");
-                    await peerRef.current?.addIceCandidate(new RTCIceCandidate(data.candidate));
-                }
+            } else if (data.type === 'metadata' || data.type === 'ready' || data.type === 'file-ack' || data.type === 'sector-eof') {
+                // v01.5.0: Process Out-of-Band Control Messages
+                window.dispatchEvent(new CustomEvent('webrtc-sender-msg', { detail: data }));
             }
         };
     };
@@ -331,18 +344,17 @@ function InstantDropContent() {
                             console.log("Receiver requested metadata, resending...");
                             const file = filesRef.current[currentFileIndex];
                             if (file) {
-                                dc.send(JSON.stringify({
+                                sendControlMsg({
                                     type: 'metadata',
                                     name: file.name,
                                     size: file.size,
                                     fileType: file.type,
                                     currentIdx: currentFileIndex,
                                     totalFiles: filesRef.current.length
-                                }));
+                                });
                             }
                         } else {
                             // Route all other sender messages (ready, file-ack) through standard DOM events
-                            // to bypass iOS Safari bugs with RTCDataChannel.addEventListener
                             window.dispatchEvent(new CustomEvent('webrtc-sender-msg', { detail: msg }));
                         }
                     }
@@ -377,7 +389,7 @@ function InstantDropContent() {
                 await new Promise(r => setTimeout(r, 300));
             }
         }
-        dataChannelsRef.current[0]?.send(JSON.stringify({ type: 'batch-eof' }));
+        sendControlMsg({ type: 'batch-eof' });
         setStatus('done');
         isActive.current = false;
     };
@@ -392,20 +404,9 @@ function InstantDropContent() {
             const sendMeta = async () => {
                 if (isResolved) return;
                 
-                // v01.4.4: ZERO-BUFFER SYNC
-                // Await absolute silence on the line before sending metadata for the next file.
-                logDebug(`Sender: Awaiting Zero-Buffer sync before ${file.name}...`);
-                const syncStart = Date.now();
-                while (isActive.current && (Date.now() - syncStart < 10000) && dataChannelsRef.current.some(dc => dc.bufferedAmount > 0)) {
-                    await new Promise(r => setTimeout(r, 50));
-                }
-                if (Date.now() - syncStart >= 10000) {
-                    logDebug(`Sender: Zero-Buffer timeout for ${file.name} - Proceeding anyway to avoid hang.`);
-                }
-                
                 if (dataChannelsRef.current[0]?.readyState !== 'open') return;
-                logDebug(`Sender: Sending Parallel Metadata for ${file.name}`);
-                dataChannelsRef.current[0].send(JSON.stringify({
+                logDebug(`Sender: Sending Parallel Metadata (OOBS) for ${file.name}`);
+                sendControlMsg({
                     type: 'metadata',
                     name: file.name,
                     size: file.size,
@@ -414,19 +415,19 @@ function InstantDropContent() {
                     totalFiles: total,
                     isParallel: true,
                     parallelChannels: dataChannelsRef.current.length
-                }));
+                });
             };
 
             sendMeta();
-            handshakeInterval = setInterval(sendMeta, 2000);
+            handshakeInterval = setInterval(sendMeta, 3000);
 
             const checkReady = (e: any) => {
                 if (isResolved) return;
                 try {
                     const msg = e.detail;
                     if (msg.type === 'ready') {
-                        logDebug(`Sender: Received JSON Ready: ${JSON.stringify(msg)}`);
-                        logDebug(`Sender: Launching 4-Sector Burst for ${file.name}`);
+                        logDebug(`Sender: Received OOBS Ready for ${file.name}`);
+                        logDebug(`Sender: Launching Paced Stream for ${file.name}`);
                         clearInterval(handshakeInterval);
                         window.removeEventListener('webrtc-sender-msg', checkReady);
                         startParallelBurst();
@@ -435,78 +436,81 @@ function InstantDropContent() {
             };
             window.addEventListener('webrtc-sender-msg', checkReady);
 
-                const startParallelBurst = async () => {
-                    const numChannels = dataChannelsRef.current.length;
-                    
-                    // Sensing: Check if we are on a Relay connection
-                    let isRelay = false;
-                    try {
-                        const stats = await peerRef.current?.getStats();
-                        stats?.forEach(report => {
-                            if (report.type === 'remote-candidate' || report.type === 'local-candidate') {
-                                if (report.candidateType === 'relay') isRelay = true;
+            const startParallelBurst = async () => {
+                const numChannels = dataChannelsRef.current.length;
+                
+                // Sensing: Check if we are on a Relay connection
+                let isRelay = false;
+                try {
+                    const stats = await peerRef.current?.getStats();
+                    stats?.forEach(report => {
+                        if (report.type === 'remote-candidate' || report.type === 'local-candidate') {
+                            if (report.candidateType === 'relay') isRelay = true;
+                        }
+                    });
+                } catch (e) { }
+
+                // v01.5.0: PACED ADAPTIVE STREAM
+                logDebug(`Sender: v01.5.0 Paced Stream Start. (Channels: ${numChannels})`);
+
+                const HIGH_WATER_MARK = 4 * 1024 * 1024; // 4MB per channel (32MB total)
+                const LOW_WATER_MARK = 1 * 1024 * 1024;  // 1MB per channel
+                const sectorSize = Math.ceil(file.size / numChannels);
+                
+                const workers = [];
+                for (let chIdx = 0; chIdx < numChannels; chIdx++) {
+                    workers.push((async () => {
+                        const dc = dataChannelsRef.current[chIdx];
+                        if (!dc) return;
+                        dc.bufferedAmountLowThreshold = LOW_WATER_MARK;
+                        
+                        const start = chIdx * sectorSize;
+                        const end = Math.min(start + sectorSize, file.size);
+                        let offset = start;
+
+                        while (isActive.current && offset < end) {
+                            // Pacer: Only send if we are below High Water Mark
+                            if (dc.bufferedAmount > HIGH_WATER_MARK) {
+                                await new Promise<void>(res => {
+                                    dc.onbufferedamountlow = () => { dc.onbufferedamountlow = null; res(); };
+                                    // Safety timeout for mobile browsers
+                                    setTimeout(res, 100);
+                                });
                             }
-                        });
-                    } catch (e) { }
 
-                    // v01.4.7: REVERT TO 1.3.9 "BUFFERED BURST" CORE
-                    logDebug(`Sender: Reverting to v01.3.9 Burst Core for Diagnostics. (Channels: ${numChannels})`);
+                            const chunkLen = Math.min(CHUNK_SIZE, end - offset);
+                            const chunk = await file.slice(offset, offset + chunkLen).arrayBuffer();
 
-                    const FIXED_THRESHOLD = 2 * 1024 * 1024; // 2MB Fixed (1.3.9 style)
-                    const sectorSize = Math.ceil(file.size / numChannels);
-                    
-                    const workers = [];
-                    for (let chIdx = 0; chIdx < numChannels; chIdx++) {
-                        workers.push((async () => {
-                            const dc = dataChannelsRef.current[chIdx];
-                            if (!dc) return;
-                            dc.bufferedAmountLowThreshold = FIXED_THRESHOLD;
-                            
-                            const start = chIdx * sectorSize;
-                            const end = Math.min(start + sectorSize, file.size);
-                            let offset = start;
-
-                            while (isActive.current && offset < end) {
-                                // 1.3.9 Style: Just wait for window space and blast.
-                                if (dc.bufferedAmount > FIXED_THRESHOLD * 2) {
-                                    await new Promise<void>(res => {
-                                        dc.onbufferedamountlow = () => { dc.onbufferedamountlow = null; res(); };
-                                    });
-                                }
-
-                                const chunkLen = Math.min(CHUNK_SIZE, end - offset);
-                                const chunk = await file.slice(offset, offset + chunkLen).arrayBuffer();
-
-                                if (dc.readyState === 'open') {
-                                    dc.send(chunk);
-                                    offset += chunkLen;
-                                    totalSentBytesRef.current += chunkLen;
-                                    
-                                    // Periodic Bitrate/Progress
-                                    if (offset % (1024 * 1024) === 0) {
-                                         const totalBuffered = dataChannelsRef.current.reduce(
-                                            (acc, c) => acc + (c.readyState === 'open' ? c.bufferedAmount : 0), 0
-                                        );
-                                        const trueSent = Math.max(0, totalSentBytesRef.current - totalBuffered);
-                                        setProgress(Math.round((trueSent / file.size) * 100));
-                                    }
-                                } else break;
-                            }
-                            
                             if (dc.readyState === 'open') {
-                                dc.send(JSON.stringify({ 
-                                     type: 'sector-eof', 
-                                     channel: chIdx,
-                                     parallelChannels: numChannels 
-                                }));
-                            }
-                        })());
-                    }
+                                dc.send(chunk);
+                                offset += chunkLen;
+                                totalSentBytesRef.current += chunkLen;
+                                
+                                // Periodic Bitrate/Progress
+                                if (offset % (1024 * 1024) === 0) {
+                                        const totalBuffered = dataChannelsRef.current.reduce(
+                                        (acc, c) => acc + (c.readyState === 'open' ? c.bufferedAmount : 0), 0
+                                    );
+                                    const trueSent = Math.max(0, totalSentBytesRef.current - totalBuffered);
+                                    setProgress(Math.round((trueSent / file.size) * 100));
+                                }
+                            } else break;
+                        }
+                        
+                        if (dc.readyState === 'open') {
+                            sendControlMsg({ 
+                                    type: 'sector-eof', 
+                                    channel: chIdx,
+                                    parallelChannels: numChannels 
+                            });
+                        }
+                    })());
+                }
 
-                    await Promise.all(workers);
-                    logDebug(`Sender: 1.3.9 Burst Complete for ${file.name}`);
+                await Promise.all(workers);
+                logDebug(`Sender: Stream Complete for ${file.name}`);
 
-                logDebug(`Sender: All Sectors Sent. Waiting for Receiver ACK for ${file.name}`);
+                logDebug(`Sender: Awaiting OOBS ACK for ${file.name}`);
                 await new Promise<void>((resolveAck) => {
                     const ackTimeout = setTimeout(() => {
                         logDebug(`Sender: ACK Timeout for ${file.name} - Moving to next file.`);
@@ -576,92 +580,76 @@ function InstantDropContent() {
                 iceBuffer.current = [];
             } else if (data.type === 'ice-candidate') {
                 if (!remoteDescriptionSet.current) {
-                    console.log("Buffering remote ICE candidate (Receiver)");
                     iceBuffer.current.push(data.candidate);
                 } else {
-                    console.log("Adding remote ICE candidate (Receiver)");
                     await peerRef.current?.addIceCandidate(new RTCIceCandidate(data.candidate));
                 }
+            } else if (data.type === 'metadata' || data.type === 'sector-eof' || data.type === 'batch-eof') {
+                // v01.5.0: Process Out-of-Band signals
+                handleIncomingData(data, 0);
             }
         };
     };
 
     const handleIncomingData = (data: any, channelIdx: number) => {
+        const processJsonMsg = (msg: any) => {
+            if (msg.type === 'metadata') {
+                if (receiveMeta.current?.name === msg.name && statusRef.current === 'transferring') {
+                    logDebug(`Receiver: Redundant Metadata for ${msg.name} - Ignoring reset`);
+                } else {
+                    logDebug(`Receiver: Received Metadata JSON: ${JSON.stringify(msg)}`);
+                    logDebug(`Receiver: Starting File Receipt for ${msg.name} (Parallel: ${msg.isParallel})`);
+                    receiveMeta.current = msg;
+                    setIncomingMeta(msg);
+                    receiveBuffers.current = new Map();
+                    receivedEofs.current.clear();
+                    totalReceivedBytesRef.current = 0;
+                    setCurrentFileIndex(msg.currentIdx || 0);
+                    setStatus('transferring');
+                }
+                sendControlMsg({ type: 'ready' });
+                logDebug("Receiver: Sent OOBS READY");
+            } else if (msg.type === 'sector-eof') {
+                receivedEofs.current.add(msg.channel);
+                logDebug(`Receiver: Received Sector EOF on channel ${msg.channel}. Total: ${receivedEofs.current.size}`);
+
+                if (receiveMeta.current && receivedEofs.current.size >= (msg.parallelChannels || dataChannelsRef.current.length)) {
+                    logDebug(`Receiver: All sectors received for ${receiveMeta.current.name}. Reassembling...`);
+                    const allChunks: ArrayBuffer[] = [];
+                    const channelsToReassemble = msg.parallelChannels || dataChannelsRef.current.length;
+                    for (let i = 0; i < channelsToReassemble; i++) {
+                        const sector = receiveBuffers.current.get(i) || [];
+                        for (let j = 0; j < sector.length; j++) {
+                            allChunks.push(sector[j]);
+                        }
+                        receiveBuffers.current.delete(i);
+                    }
+                    const blob = new Blob(allChunks, { type: receiveMeta.current.fileType });
+                    allChunks.length = 0;
+                    setReceivedFiles(prev => [...prev, { blob, name: receiveMeta.current!.name }]);
+                    setStatus('done-waiting');
+                    logDebug(`Receiver: Reassembly complete for ${receiveMeta.current.name}. Sending OOBS ACK.`);
+                    sendControlMsg({ type: 'file-ack', name: receiveMeta.current.name });
+                    receivedEofs.current.clear();
+                    receiveMeta.current = null;
+                }
+            } else if (msg.type === 'batch-eof') {
+                logDebug("Receiver: Transfer Complete");
+                setStatus('done');
+                statusRef.current = 'done';
+                disconnectEverything();
+            }
+        };
+
         if (typeof data === 'string') {
             try {
                 const msg = JSON.parse(data);
-                if (msg.type === 'metadata') {
-                    // Idempotent check: don't reset if we're already receiving this file
-                    if (receiveMeta.current?.name === msg.name && statusRef.current === 'transferring') {
-                        logDebug(`Receiver: Redundant Metadata for ${msg.name} - Ignoring reset`);
-                    } else {
-                        logDebug(`Receiver: Received Metadata JSON: ${JSON.stringify(msg)}`);
-                        logDebug(`Receiver: Starting File Receipt for ${msg.name} (Parallel: ${msg.isParallel})`);
-                        receiveMeta.current = msg;
-                        setIncomingMeta(msg); // Link to reactive UI labels
-
-                        // Critical fixes for batching: completely reset buffers for new file
-                        receiveBuffers.current = new Map();
-                        receivedEofs.current.clear();
-                        totalReceivedBytesRef.current = 0;
-                        setCurrentFileIndex(msg.currentIdx || 0);
-                        setStatus('transferring');
-
-                        // Optional: Clear out any pending data in channels
-                    }
-
-                    // Always broadcast READY on all open channels to be safe
-                    dataChannelsRef.current.forEach(dc => {
-                        if (dc.readyState === 'open') {
-                            dc.send(JSON.stringify({ type: 'ready' }));
-                        }
-                    });
-                    logDebug("Receiver: Broadcast READY to all channels");
-                } else if (msg.type === 'sector-eof') {
-                    receivedEofs.current.add(msg.channel);
-                    logDebug(`Receiver: Received Sector EOF on channel ${msg.channel}. Total: ${receivedEofs.current.size}`);
-
-                    if (receiveMeta.current && receivedEofs.current.size >= (msg.parallelChannels || dataChannelsRef.current.length)) {
-                        logDebug(`Receiver: All sectors received for ${receiveMeta.current.name}. Reassembling...`);
-                        
-                        // EFFICIENT REASSEMBLY: Avoid concat copies and stack overflows
-                        const allChunks: ArrayBuffer[] = [];
-                        const channelsToReassemble = msg.parallelChannels || dataChannelsRef.current.length;
-                        for (let i = 0; i < channelsToReassemble; i++) {
-                            const sector = receiveBuffers.current.get(i) || [];
-                            for (let j = 0; j < sector.length; j++) {
-                                allChunks.push(sector[j]);
-                            }
-                            receiveBuffers.current.delete(i); // Instant Memory Relief
-                        }
-
-                        const blob = new Blob(allChunks, { type: receiveMeta.current.fileType });
-                        allChunks.length = 0; // Clear references for GC
-                        
-                        setReceivedFiles(prev => [...prev, { blob, name: receiveMeta.current!.name }]);
-                        setStatus('done-waiting'); // Transition state to avoid redundant ready triggers
-
-                        // SYNC-LOCK: Send ACK ONLY after Blob is memory-resident
-                        if (dataChannelsRef.current[0]?.readyState === 'open') {
-                             logDebug(`Receiver: Reassembly complete for ${receiveMeta.current.name}. Sending Sync-Ack.`);
-                             dataChannelsRef.current[0].send(JSON.stringify({ 
-                                 type: 'file-ack', 
-                                 name: receiveMeta.current.name 
-                             }));
-                        }
-                        
-                        receivedEofs.current.clear();
-                        receiveMeta.current = null;
-                    }
-                } else if (msg.type === 'batch-eof') {
-                    logDebug("Receiver: Transfer Complete");
-                    setStatus('done');
-                    statusRef.current = 'done'; // Synchronous update to prevent dc.onclose race condition
-                    disconnectEverything();
-                }
+                processJsonMsg(msg);
             } catch (err) {
                 logDebug(`Receiver Parse Error: ${err}`);
             }
+        } else if (typeof data === 'object' && data !== null && data.type) {
+            processJsonMsg(data);
         } else {
             // Binary sector chunk
             const sector = receiveBuffers.current.get(channelIdx) || [];
@@ -842,7 +830,7 @@ function InstantDropContent() {
                         <Smartphone className="w-12 h-12 text-indigo-500" />
                     </div>
                     <h1 className="text-4xl md:text-5xl font-bold text-foreground mb-4">Turbo Drop</h1>
-                    <p className="text-xs text-muted-foreground font-medium tracking-widest uppercase mb-2">v01.4.7 Diagnostic (1.3.9 Core)</p>
+                    <p className="text-xs text-muted-foreground font-medium tracking-widest uppercase mb-2">v01.5.0 Superfast Stream</p>
                     <p className="text-lg text-muted-foreground max-w-2xl mx-auto">
                         The ultimate high-speed file sharing app. Transfer photos and large files (up to 200MB) from desktop to mobile or mobile to mobile instantly.
                     </p>
@@ -959,7 +947,7 @@ function InstantDropContent() {
                                             </p>
                                             <p className="text-xs text-muted-foreground flex items-center mt-1">
                                                 <span className="bg-indigo-100 text-indigo-700 dark:bg-indigo-900/40 dark:text-indigo-300 px-2 py-0.5 rounded-full font-bold inline-flex items-center gap-1 mr-2">
-                                                    ΓÜí 4x Sector Speed
+                                                    ΓÜí OOBS Engine
                                                 </span>
                                                 Batch size: {mode === 'send'
                                                     ? (files.reduce((acc, f) => acc + f.size, 0) / 1024 / 1024).toFixed(2)
