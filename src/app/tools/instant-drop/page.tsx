@@ -240,7 +240,7 @@ function InstantDropContent() {
     };
 
     const setupWebRTC = async (ws: WebSocket, isSender: boolean) => {
-        logDebug(`Setting up RTCPeerConnection (v01.5.9 Full-Open), isSender: ${isSender}`);
+        logDebug(`Setting up RTCPeerConnection (v02.0.1 Turbo-Stable), isSender: ${isSender}`);
         
         // CRITICAL: Reset signaling state for new session
         remoteDescriptionSet.current = false;
@@ -552,8 +552,11 @@ function InstantDropContent() {
                             // Pacer: Only send if we are below High Water Mark
                             if (dc.bufferedAmount > HIGH_WATER_MARK) {
                                 await new Promise<void>(res => {
-                                    dc.onbufferedamountlow = () => { dc.onbufferedamountlow = null; res(); };
-                                    // Removed 100ms artificial wait for v01.5.9 Full-Open MAOP Speed
+                                    dc.onbufferedamountlow = () => { 
+                                        dc.onbufferedamountlow = null; 
+                                        // v02.0.1: Micro-Pacer (20ms) to prevent SCTP Flooding
+                                        setTimeout(res, 20); 
+                                    };
                                 });
                             }
 
@@ -925,7 +928,7 @@ function InstantDropContent() {
                         <Smartphone className="w-12 h-12 text-indigo-500" />
                     </div>
                     <h1 className="text-4xl md:text-5xl font-bold text-foreground mb-4">Turbo Drop</h1>
-                    <p className="text-xs text-muted-foreground font-medium tracking-widest uppercase mb-2">v02.0.0 Turbo-Logic</p>
+                    <p className="text-xs text-muted-foreground font-medium tracking-widest uppercase mb-2">v02.0.1 Turbo-Stable (Pipelined)</p>
                     <p className="text-lg text-muted-foreground max-w-2xl mx-auto">
                         The ultimate high-speed file sharing app. Transfer photos and large files (up to 200MB) from desktop to mobile or mobile to mobile instantly.
                     </p>
