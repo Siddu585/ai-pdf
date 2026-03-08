@@ -164,11 +164,13 @@ function InstantDropContent() {
 
     // For receiving
     const receiveBuffer = useRef<ArrayBuffer[]>([]);
-    const receiveMeta = useRef<{ name: string, size: number, type: string, fileType?: string, totalFiles?: number, currentIdx?: number } | null>(null);
+    const receiveMeta = useRef<{ name: string, size: number, type: string, fileType?: string, totalFiles?: number, currentIdx?: number, isParallel?: boolean, parallelChannels?: number } | null>(null);
+    const pendingMeta = useRef<any>(null); // v02.0.0: Pipelined Metadata Queue
     const receivedBytes = useRef(0);
 
     const fileInputRef = useRef<HTMLInputElement>(null);
     const roomRef = useRef<string | null>(null);
+    const heartbeatIntervalRef = useRef<any>(null); // v02.0.0: NAT Heartbeat
 
     // --- SIGNALING HELPER (v01.5.0 Out-of-Band) ---
     const sendControlMsg = (payload: any) => {
@@ -227,6 +229,9 @@ function InstantDropContent() {
                     await peerRef.current?.addIceCandidate(new RTCIceCandidate(candidate));
                 }
                 iceBuffer.current = [];
+            } else if (data.type === 'heartbeat') {
+                // v02.0.0: Ignore heartbeat, purely for NAT keep-alive
+                return;
             } else if (data.type === 'metadata' || data.type === 'ready' || data.type === 'file-ack' || data.type === 'sector-eof') {
                 // v01.5.0: Process Out-of-Band Control Messages
                 window.dispatchEvent(new CustomEvent('webrtc-sender-msg', { detail: data }));
@@ -245,6 +250,22 @@ function InstantDropContent() {
         // Initialize Peer SYNCHRONOUSLY with default STUN/TURN to avoid signaling race conditions
         const peer = new RTCPeerConnection(ICE_SERVERS);
         peerRef.current = peer;
+
+        peer.oniceconnectionstatechange = () => {
+            logDebug(`ICE Connection State: ${peer.iceConnectionState}`);
+            if (peer.iceConnectionState === 'disconnected' || peer.iceConnectionState === 'failed') {
+                logDebug("v02.0.0: Aggressive ICE Restart triggered due to connection stall...");
+                try { peer.restartIce(); } catch (e) { logDebug("ICE Restart failed: " + e); }
+            }
+        };
+
+        // v02.0.0: NAT Keep-Alive Heartbeat (every 5s)
+        if (heartbeatIntervalRef.current) clearInterval(heartbeatIntervalRef.current);
+        heartbeatIntervalRef.current = setInterval(() => {
+            if (peerRef.current?.iceConnectionState === 'connected' || peerRef.current?.iceConnectionState === 'completed') {
+                sendControlMsg({ type: 'heartbeat', ts: Date.now() });
+            }
+        }, 5000);
 
         // Asynchronously fetch additional relay servers and update configuration
         const fetchRelays = async () => {
@@ -307,6 +328,68 @@ function InstantDropContent() {
                 dataChannelsRef.current[index] = e.channel;
                 setupDataChannel(e.channel, index);
             };
+        }
+    };
+
+    const processJsonMsg = (msg: any) => {
+        if (msg.type === 'metadata') {
+            // v02.0.0: Metadata Pipelining Support
+            if (receiveMeta.current && receiveMeta.current.name !== msg.name) {
+                logDebug(`Receiver: Pipelined Metadata received for ${msg.name}. Queuing...`);
+                pendingMeta.current = msg;
+                return;
+            }
+
+            receiveMeta.current = msg;
+            setStatus('transferring');
+            totalReceivedBytesRef.current = 0;
+            receiveBuffers.current.clear();
+            receivedEofs.current.clear();
+            logDebug(`Receiver: Starting File Receipt for ${msg.name} (Parallel: ${msg.isParallel})`);
+            
+            // v01.5.0: Send READY signal Out-of-Band
+            sendControlMsg({ type: 'ready', name: msg.name });
+        } else if (msg.type === 'sector-eof') {
+            const fileName = receiveMeta.current?.name;
+            const expectedSize = receiveMeta.current?.size || 0;
+            const numChannels = receiveMeta.current?.parallelChannels || 1;
+            
+            receivedEofs.current.add(msg.channel);
+            if (receivedEofs.current.size === numChannels) {
+                logDebug(`Receiver: All sectors received for ${fileName}. Reassembling...`);
+                const allChunks: ArrayBuffer[] = [];
+                for (let i = 0; i < numChannels; i++) {
+                    const sector = receiveBuffers.current.get(i) || [];
+                    allChunks.push(...sector);
+                }
+                const blob = new Blob(allChunks, { type: receiveMeta.current?.fileType || 'application/octet-stream' });
+                allChunks.length = 0;
+                
+                if (blob.size > 0 || expectedSize === 0) {
+                    setReceivedFiles(prev => [...prev, { blob, name: fileName! }]);
+                    logDebug(`Receiver: Reassembly complete for ${fileName} (${blob.size} bytes). Sending OOBS ACK.`);
+                    sendControlMsg({ type: 'file-ack', name: fileName });
+                } else {
+                    logDebug(`Receiver: CRITICAL ERROR - Reassembled 0 bytes for ${fileName} (expected ${expectedSize}). Check DataChannels.`);
+                    setStatus('error');
+                }
+                
+                receivedEofs.current.clear();
+                receiveMeta.current = null;
+                
+                // v02.0.0: Process Queued Pipelined Metadata
+                if (pendingMeta.current) {
+                    const next = pendingMeta.current;
+                    pendingMeta.current = null;
+                    logDebug(`Receiver: Processing Queued Metadata for ${next.name}`);
+                    setTimeout(() => processJsonMsg(next), 10);
+                }
+            }
+        } else if (msg.type === 'batch-eof') {
+            logDebug("Receiver: Transfer Complete");
+            setStatus('done');
+            statusRef.current = 'done';
+            disconnectEverything();
         }
     };
 
@@ -530,13 +613,15 @@ function InstantDropContent() {
                 window.addEventListener('webrtc-sender-msg', ackListener);
 
                 await Promise.all(workers);
-                logDebug(`Sender: Stream Complete for ${file.name}`);
-
-                logDebug(`Sender: Awaiting OOBS ACK for ${file.name}`);
-                await ackWaitPromise;
-
+                logDebug(`Sender: Data pushed for ${file.name}. Pipelining next file...`);
+                
+                // v02.0.0: Resolve NOW so next file starts its Metadata Sync immediately
                 isResolved = true;
                 resolve();
+
+                // Background: Wait for final ACK to ensure reliability
+                await ackWaitPromise;
+                logDebug(`Sender: Background ACK received for ${file.name}`);
             };
         });
     };
@@ -840,7 +925,7 @@ function InstantDropContent() {
                         <Smartphone className="w-12 h-12 text-indigo-500" />
                     </div>
                     <h1 className="text-4xl md:text-5xl font-bold text-foreground mb-4">Turbo Drop</h1>
-                    <p className="text-xs text-muted-foreground font-medium tracking-widest uppercase mb-2">v01.5.9 Full-Open</p>
+                    <p className="text-xs text-muted-foreground font-medium tracking-widest uppercase mb-2">v02.0.0 Turbo-Logic</p>
                     <p className="text-lg text-muted-foreground max-w-2xl mx-auto">
                         The ultimate high-speed file sharing app. Transfer photos and large files (up to 200MB) from desktop to mobile or mobile to mobile instantly.
                     </p>
@@ -982,6 +1067,22 @@ function InstantDropContent() {
                                             </div>
                                         </div>
                                     )}
+
+                                    {/* v02.0.0: Live Performance Insights Dashboard */}
+                                    <div className="mt-4 flex flex-wrap justify-center gap-3">
+                                        <div className="bg-muted/50 backdrop-blur-sm rounded-lg px-3 py-1.5 border border-border/50 flex flex-col items-center min-w-[100px]">
+                                            <span className="text-[10px] text-muted-foreground uppercase tracking-widest font-bold">Pistons</span>
+                                            <span className="text-sm font-black text-indigo-600 dark:text-indigo-400">8 Channels</span>
+                                        </div>
+                                        <div className="bg-muted/50 backdrop-blur-sm rounded-lg px-3 py-1.5 border border-border/50 flex flex-col items-center min-w-[100px]">
+                                            <span className="text-[10px] text-muted-foreground uppercase tracking-widest font-bold">Shield</span>
+                                            <span className="text-sm font-black text-emerald-600 dark:text-emerald-400">400s Timeout</span>
+                                        </div>
+                                        <div className="bg-muted/50 backdrop-blur-sm rounded-lg px-3 py-1.5 border border-border/50 flex flex-col items-center min-w-[100px]">
+                                            <span className="text-[10px] text-muted-foreground uppercase tracking-widest font-bold">Logic</span>
+                                            <span className="text-sm font-black text-amber-600 dark:text-amber-500 text-center">TURBO PIPELINED</span>
+                                        </div>
+                                    </div>
 
                                     {status === 'connecting' && mode === 'send' && (
                                         <div className="flex items-center justify-center text-muted-foreground bg-secondary/10 p-4 rounded-xl">
