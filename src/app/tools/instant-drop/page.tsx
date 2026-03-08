@@ -235,7 +235,7 @@ function InstantDropContent() {
     };
 
     const setupWebRTC = async (ws: WebSocket, isSender: boolean) => {
-        logDebug(`Setting up RTCPeerConnection (v01.5.5 Optimum Stream), isSender: ${isSender}`);
+        logDebug(`Setting up RTCPeerConnection (v01.5.6 Max-Velocity), isSender: ${isSender}`);
         
         // CRITICAL: Reset signaling state for new session
         remoteDescriptionSet.current = false;
@@ -453,8 +453,8 @@ function InstantDropContent() {
                 // v01.5.0: PACED ADAPTIVE STREAM
                 logDebug(`Sender: v01.5.0 Paced Stream Start. (Channels: ${numChannels})`);
 
-                const HIGH_WATER_MARK = 1024 * 1024; // 1MB per channel (8MB total)
-                const LOW_WATER_MARK = 256 * 1024;   // 256KB per channel
+                const HIGH_WATER_MARK = 8 * 1024 * 1024; // 8MB per channel (64MB total) - Max Velocity
+                const LOW_WATER_MARK = 2 * 1024 * 1024;  // 2MB per channel
                 const sectorSize = Math.ceil(file.size / numChannels);
                 
                 const workers = [];
@@ -518,7 +518,7 @@ function InstantDropContent() {
                     logDebug(`Sender: ACK Timeout for ${file.name} - Moving to next file.`);
                     window.removeEventListener('webrtc-sender-msg', ackListener);
                     ackResolver();
-                }, 120000); // v01.5.5: 120s grace to handle 0.05MB/s links with 8MB buffer
+                }, 300000); // v01.5.6: 300s (5min) grace to allow 64MB buffer to drain on slow links.
 
                 const ackListener = (e: any) => {
                     try {
@@ -844,7 +844,7 @@ function InstantDropContent() {
                         <Smartphone className="w-12 h-12 text-indigo-500" />
                     </div>
                     <h1 className="text-4xl md:text-5xl font-bold text-foreground mb-4">Turbo Drop</h1>
-                    <p className="text-xs text-muted-foreground font-medium tracking-widest uppercase mb-2">v01.5.5 Optimum Stream</p>
+                    <p className="text-xs text-muted-foreground font-medium tracking-widest uppercase mb-2">v01.5.6 Max-Velocity</p>
                     <p className="text-lg text-muted-foreground max-w-2xl mx-auto">
                         The ultimate high-speed file sharing app. Transfer photos and large files (up to 200MB) from desktop to mobile or mobile to mobile instantly.
                     </p>
