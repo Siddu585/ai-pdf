@@ -398,7 +398,6 @@ function InstantDropContent() {
 
                 const startParallelBurst = async () => {
                     const numChannels = dataChannelsRef.current.length;
-                    const sectorSize = Math.ceil(file.size / numChannels);
                     
                     // Sensing: Check if we are on a Relay connection
                     let isRelay = false;
@@ -412,63 +411,69 @@ function InstantDropContent() {
                         logDebug(`Sender: Adaptive Sensing - Relay Detected: ${isRelay}`);
                     } catch (e) { }
 
-                    // Adaptive Thresholds: 1MB for Relay (better saturation), 2MB for P2P
+                    // HYPERDRIVE TUNING: 
+                    // 1. Channel Concentration: Relays work better with 4 channels (less SCTP overhead)
+                    // 2. High-Speed Threshold: 1MB for Relays, 2MB for P2P
+                    const activeChannelCount = isRelay ? 4 : numChannels;
                     const ADAPTIVE_THRESHOLD = isRelay ? 1024 * 1024 : 2 * 1024 * 1024;
-                    logDebug(`Sender: Starting burst with ${isRelay ? 'Balanced-Relay' : 'High-Speed'} logic (${ADAPTIVE_THRESHOLD / 1024}KB window).`);
+                    
+                    logDebug(`Sender: Starting Hyperdrive ${isRelay ? 'Relay' : 'P2P'} Burst (${activeChannelCount} channels, ${ADAPTIVE_THRESHOLD / 1024}KB window)`);
 
-                    const workers = dataChannelsRef.current.map(async (dc, chIdx) => {
-                        const startOffset = chIdx * sectorSize;
-                        const endOffset = Math.min(startOffset + sectorSize, file.size);
-                        let sectorOffset = startOffset;
-                        let chunkCounter = 0;
+                    let fileOffset = 0;
+                    const BLOCK_SIZE = 2 * 1024 * 1024; // 2MB Sequential Blocks
 
-                        const READ_BUFFER_SIZE = 1024 * 1024; // 1MB reading buffer
+                    while (isActive.current && fileOffset < file.size) {
+                        // SEQUENTIAL DISK READ: One read at a time to prevent mobile I/O stutter
+                        const readLen = Math.min(BLOCK_SIZE, file.size - fileOffset);
+                        const blockBuffer = await file.slice(fileOffset, fileOffset + readLen).arrayBuffer();
+                        
+                        // Parallel Burst from Memory Block
+                        const workers = [];
+                        const subSectorSize = Math.ceil(blockBuffer.byteLength / activeChannelCount);
 
-                        while (isActive.current && sectorOffset < endOffset) {
-                            // Read 1MB from sector into memory
-                            const readLen = Math.min(READ_BUFFER_SIZE, endOffset - sectorOffset);
-                            const segmentBuffer = await file.slice(sectorOffset, sectorOffset + readLen).arrayBuffer();
-                            let segmentOffset = 0;
+                        for (let chIdx = 0; chIdx < activeChannelCount; chIdx++) {
+                            workers.push((async () => {
+                                const dc = dataChannelsRef.current[chIdx];
+                                const start = chIdx * subSectorSize;
+                                const end = Math.min(start + subSectorSize, blockBuffer.byteLength);
+                                let offset = start;
 
-                            while (isActive.current && segmentOffset < segmentBuffer.byteLength) {
-                                if (dc.bufferedAmount > ADAPTIVE_THRESHOLD) {
-                                    await new Promise<void>(res => {
-                                        dc.onbufferedamountlow = () => { dc.onbufferedamountlow = null; res(); };
-                                    });
-                                }
-
-                                const chunkLen = Math.min(CHUNK_SIZE, segmentBuffer.byteLength - segmentOffset);
-                                // Slice from memory buffer (Zero-latency)
-                                const chunk = segmentBuffer.slice(segmentOffset, segmentOffset + chunkLen);
-
-                                if (dc.readyState === 'open') {
-                                    try {
-                                        dc.send(chunk);
-                                        segmentOffset += chunkLen;
-                                        sectorOffset += chunkLen;
-                                        totalSentBytesRef.current += chunkLen;
-                                        chunkCounter++;
-
-                                        // UI Performance: Only update progress every 100 chunks to save CPU
-                                        if (chunkCounter % 100 === 0 || sectorOffset >= endOffset) {
-                                            const totalBuffered = dataChannelsRef.current.reduce(
-                                                (acc, c) => acc + (c.readyState === 'open' ? c.bufferedAmount : 0), 0
-                                            );
-                                            const trueSent = Math.max(0, totalSentBytesRef.current - totalBuffered);
-                                            setProgress(Math.round((trueSent / file.size) * 100));
-                                        }
-                                    } catch (err) {
-                                        await new Promise(res => setTimeout(res, 100));
+                                while (isActive.current && offset < end) {
+                                    if (dc.bufferedAmount > ADAPTIVE_THRESHOLD) {
+                                        await new Promise<void>(res => {
+                                            dc.onbufferedamountlow = () => { dc.onbufferedamountlow = null; res(); };
+                                        });
                                     }
-                                } else break;
-                            }
-                        }
-                        if (isActive.current && dc.readyState === 'open') {
-                             dc.send(JSON.stringify({ type: 'sector-eof', channel: chIdx }));
-                        }
-                    });
 
-                    await Promise.all(workers);
+                                    const chunkLen = Math.min(CHUNK_SIZE, end - offset);
+                                    const chunk = blockBuffer.slice(offset, offset + chunkLen);
+
+                                    if (dc.readyState === 'open') {
+                                        dc.send(chunk);
+                                        offset += chunkLen;
+                                        totalSentBytesRef.current += chunkLen;
+                                    } else break;
+                                }
+                            })());
+                        }
+
+                        await Promise.all(workers);
+                        fileOffset += readLen;
+
+                        // UI Progress update after each 2MB block
+                        const totalBuffered = dataChannelsRef.current.reduce(
+                            (acc, c) => acc + (c.readyState === 'open' ? c.bufferedAmount : 0), 0
+                        );
+                        const trueSent = Math.max(0, totalSentBytesRef.current - totalBuffered);
+                        setProgress(Math.round((trueSent / file.size) * 100));
+                    }
+
+                    // Send Sector EOF on all used channels
+                    for (let i = 0; i < activeChannelCount; i++) {
+                        if (dataChannelsRef.current[i].readyState === 'open') {
+                            dataChannelsRef.current[i].send(JSON.stringify({ type: 'sector-eof', channel: i }));
+                        }
+                    }
 
                 logDebug(`Sender: All Sectors Sent. Waiting for Receiver ACK for ${file.name}`);
                 await new Promise<void>((resolveAck) => {
@@ -572,11 +577,12 @@ function InstantDropContent() {
                     receivedEofs.current.add(msg.channel);
                     logDebug(`Receiver: Received Sector EOF on channel ${msg.channel}. Total: ${receivedEofs.current.size}`);
 
-                    if (receiveMeta.current && receivedEofs.current.size >= dataChannelsRef.current.length) {
+                    if (receiveMeta.current && receivedEofs.current.size >= (msg.parallelChannels || dataChannelsRef.current.length)) {
                         logDebug(`Receiver: All sectors received for ${receiveMeta.current.name}`);
                         // Reassemble from parallel buffers efficiently (no ...spread to avoid stack overflow)
                         let fullChunks: ArrayBuffer[] = [];
-                        for (let i = 0; i < dataChannelsRef.current.length; i++) {
+                        const channelsToReassemble = msg.parallelChannels || dataChannelsRef.current.length;
+                        for (let i = 0; i < channelsToReassemble; i++) {
                             const sector = receiveBuffers.current.get(i) || [];
                             fullChunks = fullChunks.concat(sector);
                         }
@@ -765,7 +771,7 @@ function InstantDropContent() {
                         <Smartphone className="w-12 h-12 text-indigo-500" />
                     </div>
                     <h1 className="text-4xl md:text-5xl font-bold text-foreground mb-4">Turbo Drop</h1>
-                    <p className="text-xs text-muted-foreground font-medium tracking-widest uppercase mb-2">v01.3.9 Buffered Burst</p>
+                    <p className="text-xs text-muted-foreground font-medium tracking-widest uppercase mb-2">v01.4.0 Hyperdrive</p>
                     <p className="text-lg text-muted-foreground max-w-2xl mx-auto">
                         The ultimate high-speed file sharing app. Transfer photos and large files (up to 200MB) from desktop to mobile or mobile to mobile instantly.
                     </p>
