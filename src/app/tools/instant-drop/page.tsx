@@ -240,7 +240,7 @@ function InstantDropContent() {
     };
 
     const setupWebRTC = async (ws: WebSocket, isSender: boolean) => {
-        logDebug(`Setting up RTCPeerConnection (v02.0.1 Turbo-Stable), isSender: ${isSender}`);
+        logDebug(`Setting up RTCPeerConnection (v02.0.2 Turbo-Flow), isSender: ${isSender}`);
         
         // CRITICAL: Reset signaling state for new session
         remoteDescriptionSet.current = false;
@@ -533,8 +533,8 @@ function InstantDropContent() {
                 // v01.5.0: PACED ADAPTIVE STREAM
                 logDebug(`Sender: v01.5.0 Paced Stream Start. (Channels: ${numChannels})`);
 
-                const HIGH_WATER_MARK = 4 * 1024 * 1024; // 4MB per channel (32MB total) - v01.5.8 Legacy-Refined
-                const LOW_WATER_MARK = 1024 * 1024;   // 1MB per channel
+                const HIGH_WATER_MARK = 1024 * 1024; // 1MB per channel (8MB total) - v02.0.2 Turbo-Flow (Mobile Stable)
+                const LOW_WATER_MARK = 256 * 1024;   // 256KB per channel
                 const sectorSize = Math.ceil(file.size / numChannels);
                 
                 const workers = [];
@@ -554,8 +554,8 @@ function InstantDropContent() {
                                 await new Promise<void>(res => {
                                     dc.onbufferedamountlow = () => { 
                                         dc.onbufferedamountlow = null; 
-                                        // v02.0.1: Micro-Pacer (20ms) to prevent SCTP Flooding
-                                        setTimeout(res, 20); 
+                                        // v02.0.2: Increased Recovery Breath (50ms) to clear physical network queues
+                                        setTimeout(res, 50); 
                                     };
                                 });
                             }
@@ -567,6 +567,11 @@ function InstantDropContent() {
                                 dc.send(chunk);
                                 offset += chunkLen;
                                 totalSentBytesRef.current += chunkLen;
+
+                                // v02.0.2: Forced Yielding - Pauses every 16 chunks (1MB) to allow Network Thread to breathe
+                                if (offset % (CHUNK_SIZE * 16) === 0) {
+                                    await new Promise(res => setTimeout(res, 0));
+                                }
                                 
                                 // Periodic Bitrate/Progress
                                 if (offset % (1024 * 1024) === 0) {
@@ -620,7 +625,10 @@ function InstantDropContent() {
                 
                 // v02.0.0: Resolve NOW so next file starts its Metadata Sync immediately
                 isResolved = true;
-                resolve();
+                
+                // v02.0.2: Pipelining Guard - 50ms pause before starting the next file metadata
+                // This prevents the "Accumulation of Pressure" where metadata sync fights with the last bits of data.
+                setTimeout(() => resolve(), 50);
 
                 // Background: Wait for final ACK to ensure reliability
                 await ackWaitPromise;
@@ -928,7 +936,7 @@ function InstantDropContent() {
                         <Smartphone className="w-12 h-12 text-indigo-500" />
                     </div>
                     <h1 className="text-4xl md:text-5xl font-bold text-foreground mb-4">Turbo Drop</h1>
-                    <p className="text-xs text-muted-foreground font-medium tracking-widest uppercase mb-2">v02.0.1 Turbo-Stable (Pipelined)</p>
+                    <p className="text-xs text-muted-foreground font-medium tracking-widest uppercase mb-2">v02.0.2 Turbo-Flow (Congestion Control)</p>
                     <p className="text-lg text-muted-foreground max-w-2xl mx-auto">
                         The ultimate high-speed file sharing app. Transfer photos and large files (up to 200MB) from desktop to mobile or mobile to mobile instantly.
                     </p>
