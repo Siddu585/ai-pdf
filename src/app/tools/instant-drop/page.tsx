@@ -398,8 +398,10 @@ function InstantDropContent() {
 
         dc.onopen = () => {
             logDebug(`✅ DataChannel ${channelIdx} OPEN (Mode: ${modeRef.current})`);
-            // Only start transfer once index 0 is open
-            if (channelIdx === 0) {
+            // v02.0.3: Start transfer ONLY when all intended channels are OPEN
+            const openCount = dataChannelsRef.current.filter(c => c.readyState === 'open').length;
+            if (openCount === 8 && modeRef.current === 'send' && !isActive.current) {
+                logDebug("All 8 DataChannels OPEN - Starting Gold Standard transfer...");
                 setStatus('transferring');
                 // Start speed timer
                 lastBytesRef.current = 0;
@@ -409,12 +411,7 @@ function InstantDropContent() {
                     lastBytesRef.current = totalSentBytesRef.current + totalReceivedBytesRef.current;
                     setTransferSpeed(parseFloat((bytesSinceLast / 1024 / 1024).toFixed(1)));
                 }, 1000);
-                if (modeRef.current === 'send') {
-                    setTimeout(() => {
-                        logDebug("Starting parallel file transfer...");
-                        startFileTransfer();
-                    }, 500);
-                }
+                startFileTransfer();
             }
         };
         dc.onmessage = (e) => {
@@ -519,21 +516,10 @@ function InstantDropContent() {
             const startParallelBurst = async () => {
                 const numChannels = dataChannelsRef.current.length;
                 
-                // Sensing: Check if we are on a Relay connection
-                let isRelay = false;
-                try {
-                    const stats = await peerRef.current?.getStats();
-                    stats?.forEach(report => {
-                        if (report.type === 'remote-candidate' || report.type === 'local-candidate') {
-                            if (report.candidateType === 'relay') isRelay = true;
-                        }
-                    });
-                } catch (e) { }
-
                 // v01.5.0: PACED ADAPTIVE STREAM
-                logDebug(`Sender: v01.5.0 Paced Stream Start. (Channels: ${numChannels}, isRelay: ${isRelay})`);
+                logDebug(`Sender: v02.0.3 Paced Stream Start (Bone-Stock Gold Standard)`);
 
-                const HIGH_WATER_MARK = isRelay ? 128 * 1024 : 256 * 1024; // v02.0.3: Adaptive HWM
+                const HIGH_WATER_MARK = 256 * 1024; // 256KB per channel (2MB total)
                 const LOW_WATER_MARK = 64 * 1024;   // 64KB per channel
                 const sectorSize = Math.ceil(file.size / numChannels);
                 
