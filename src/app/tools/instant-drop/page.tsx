@@ -235,7 +235,7 @@ function InstantDropContent() {
     };
 
     const setupWebRTC = async (ws: WebSocket, isSender: boolean) => {
-        logDebug(`Setting up RTCPeerConnection (v01.5.8 Legacy-Refined), isSender: ${isSender}`);
+        logDebug(`Setting up RTCPeerConnection (v01.5.9 Full-Open), isSender: ${isSender}`);
         
         // CRITICAL: Reset signaling state for new session
         remoteDescriptionSet.current = false;
@@ -470,8 +470,7 @@ function InstantDropContent() {
                             if (dc.bufferedAmount > HIGH_WATER_MARK) {
                                 await new Promise<void>(res => {
                                     dc.onbufferedamountlow = () => { dc.onbufferedamountlow = null; res(); };
-                                    // Safety timeout for mobile browsers
-                                    setTimeout(res, 100);
+                                    // Removed 100ms artificial wait for v01.5.9 Full-Open MAOP Speed
                                 });
                             }
 
@@ -515,7 +514,7 @@ function InstantDropContent() {
                     logDebug(`Sender: ACK Timeout for ${file.name} - Moving to next file.`);
                     window.removeEventListener('webrtc-sender-msg', ackListener);
                     ackResolver();
-                }, 70000); // v01.5.8: 70s Enhanced Safety Timeout (Reverted from 300s)
+                }, 400000); // v01.5.9: 400s Safety Shield for 32MB Buffer (MAOP Speed Priority)
 
                 const ackListener = (e: any) => {
                     try {
@@ -841,7 +840,7 @@ function InstantDropContent() {
                         <Smartphone className="w-12 h-12 text-indigo-500" />
                     </div>
                     <h1 className="text-4xl md:text-5xl font-bold text-foreground mb-4">Turbo Drop</h1>
-                    <p className="text-xs text-muted-foreground font-medium tracking-widest uppercase mb-2">v01.5.8 Legacy-Refined</p>
+                    <p className="text-xs text-muted-foreground font-medium tracking-widest uppercase mb-2">v01.5.9 Full-Open</p>
                     <p className="text-lg text-muted-foreground max-w-2xl mx-auto">
                         The ultimate high-speed file sharing app. Transfer photos and large files (up to 200MB) from desktop to mobile or mobile to mobile instantly.
                     </p>
