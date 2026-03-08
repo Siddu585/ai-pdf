@@ -245,12 +245,12 @@ function InstantDropContent() {
         };
 
         if (isSender) {
-            logDebug("Creating 4 Parallel DataChannels (Sender)");
-            for (let i = 0; i < 4; i++) {
+            logDebug("Creating 8 Parallel DataChannels (Sender)");
+            for (let i = 0; i < 8; i++) {
                 const dc = peer.createDataChannel(`file-transfer-${i}`, { ordered: true });
                 dataChannelsRef.current.push(dc);
                 setupDataChannel(dc, i);
-                dc.bufferedAmountLowThreshold = 4 * 1024 * 1024; // 4MB ΓÇö maximize pipeline
+                dc.bufferedAmountLowThreshold = 1024 * 1024; // 1MB threshold
             }
 
             const offer = await peer.createOffer();
@@ -408,7 +408,7 @@ function InstantDropContent() {
 
                 const workers = dataChannelsRef.current.map(async (dc, chIdx) => {
                     const sectorData = sectorBuffers[chIdx];
-                    const THRESHOLD = 4 * 1024 * 1024; // 4MB buffer drain threshold
+                    const THRESHOLD = 2 * 1024 * 1024; // 2MB trigger
                     let offset = 0;
 
                     while (isActive.current && offset < sectorData.byteLength) {
@@ -550,13 +550,13 @@ function InstantDropContent() {
 
                     if (receiveMeta.current && receivedEofs.current.size >= dataChannelsRef.current.length) {
                         logDebug(`Receiver: All sectors received for ${receiveMeta.current.name}`);
-                        // Reassemble from parallel buffers
-                        const fullBuffer: ArrayBuffer[] = [];
+                        // Reassemble from parallel buffers efficiently (no ...spread to avoid stack overflow)
+                        let fullChunks: ArrayBuffer[] = [];
                         for (let i = 0; i < dataChannelsRef.current.length; i++) {
                             const sector = receiveBuffers.current.get(i) || [];
-                            fullBuffer.push(...sector);
+                            fullChunks = fullChunks.concat(sector);
                         }
-                        const blob = new Blob(fullBuffer, { type: receiveMeta.current.fileType });
+                        const blob = new Blob(fullChunks, { type: receiveMeta.current.fileType });
                         setReceivedFiles(prev => [...prev, { blob, name: receiveMeta.current!.name }]);
 
                         // Send ACK back to sender
@@ -741,7 +741,7 @@ function InstantDropContent() {
                         <Smartphone className="w-12 h-12 text-indigo-500" />
                     </div>
                     <h1 className="text-4xl md:text-5xl font-bold text-foreground mb-4">Turbo Drop</h1>
-                    <p className="text-xs text-muted-foreground font-medium tracking-widest uppercase mb-2">v01.3.3 Gigabit Relay</p>
+                    <p className="text-xs text-muted-foreground font-medium tracking-widest uppercase mb-2">v01.3.4 Gigabit Relay</p>
                     <p className="text-lg text-muted-foreground max-w-2xl mx-auto">
                         The ultimate high-speed file sharing app. Transfer photos and large files (up to 200MB) from desktop to mobile or mobile to mobile instantly.
                     </p>
