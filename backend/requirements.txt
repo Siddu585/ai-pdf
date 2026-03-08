@@ -12,3 +12,4 @@ groq
 langchain-groq
 websockets
 stripe
+httpx

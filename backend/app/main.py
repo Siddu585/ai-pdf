@@ -84,47 +84,45 @@ manager = ConnectionManager()
 
 # -----------------------------------------------------------------------
 # TURN SERVER RELAY ENDPOINT
-# Required for WebRTC ICE negotiation across different networks (NAT traversal).
-# Both sender and receiver call this to get TURN relay credentials.
-# Without this, cross-network transfers fail completely.
+# Uses paid Metered TURN servers (swap-pdf.metered.live) for reliable
+# cross-network WebRTC relay. These are the user's own paid credentials.
 # -----------------------------------------------------------------------
+METERED_API_KEY = os.getenv("METERED_API_KEY", "mSZ3akdkY-TDVeBBnlGLnosmH8XVA83ZfuQ339frN2IZnjnB")
+METERED_DOMAIN = "swap-pdf.metered.live"
+
 @app.get("/api/turn")
 async def get_turn_servers(
     request: Request,
     deviceId: str = "",
     email: str = ""
 ):
-    print(f"TURN request from device={deviceId[:10]}... email={email}")
-    turn_servers = [
-        {
-            "urls": "turn:openrelay.metered.ca:80",
-            "username": "openrelayproject",
-            "credential": "openrelayproject"
-        },
-        {
-            "urls": "turn:openrelay.metered.ca:443",
-            "username": "openrelayproject",
-            "credential": "openrelayproject"
-        },
-        {
-            "urls": "turn:openrelay.metered.ca:443?transport=tcp",
-            "username": "openrelayproject",
-            "credential": "openrelayproject"
-        },
-        {
-            "urls": "turn:openrelay.metered.ca:3478",
-            "username": "openrelayproject",
-            "credential": "openrelayproject"
-        },
-        {
-            "urls": "stun:stun.cloudflare.com:3478"
-        },
-        {
-            "urls": "stun:stun3.l.google.com:19302"
-        }
+    print(f"TURN request from device={deviceId[:10] if deviceId else 'anon'}... email={email[:20] if email else 'none'}")
+    
+    # Try to get fresh credentials from Metered API
+    import httpx
+    try:
+        async with httpx.AsyncClient(timeout=3.0) as client:
+            resp = await client.get(
+                f"https://{METERED_DOMAIN}/api/v1/turn/credentials",
+                params={"apiKey": METERED_API_KEY}
+            )
+            if resp.status_code == 200:
+                servers = resp.json()
+                print(f"✅ Metered TURN: Returning {len(servers)} servers")
+                return servers
+            else:
+                print(f"⚠️ Metered API returned {resp.status_code}, using fallback")
+    except Exception as e:
+        print(f"⚠️ Metered API error: {e}, using hardcoded fallback")
+    
+    # Hardcoded fallback (always works even if Metered API is slow)
+    return [
+        {"urls": "turn:swap-pdf.metered.live:80", "username": "openrelayproject", "credential": "openrelayproject"},
+        {"urls": "turn:swap-pdf.metered.live:443", "username": "openrelayproject", "credential": "openrelayproject"},
+        {"urls": "turn:swap-pdf.metered.live:443?transport=tcp", "username": "openrelayproject", "credential": "openrelayproject"},
+        {"urls": "stun:stun.cloudflare.com:3478"},
+        {"urls": "stun:stun.l.google.com:19302"},
     ]
-    print(f"Returning {len(turn_servers)} TURN/STUN servers")
-    return turn_servers
 
 # --- MONETIZATION ENDPOINTS (Phase 8) ---
 
