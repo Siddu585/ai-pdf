@@ -235,7 +235,7 @@ function InstantDropContent() {
     };
 
     const setupWebRTC = async (ws: WebSocket, isSender: boolean) => {
-        logDebug(`Setting up RTCPeerConnection (v01.3.6), isSender: ${isSender}`);
+        logDebug(`Setting up RTCPeerConnection (v01.5.2 Reliable Superfast Stream), isSender: ${isSender}`);
         
         // CRITICAL: Reset signaling state for new session
         remoteDescriptionSet.current = false;
@@ -498,11 +498,13 @@ function InstantDropContent() {
                         }
                         
                         if (dc.readyState === 'open') {
-                            sendControlMsg({ 
-                                    type: 'sector-eof', 
-                                    channel: chIdx,
-                                    parallelChannels: numChannels 
-                            });
+                            // v01.5.2: MUST send sector-eof IN-BAND via DataChannel to ensure it arrives AFTER data.
+                            // WebSocket (OOBS) is too fast and causes 0-byte reassembly race conditions.
+                            dc.send(JSON.stringify({ 
+                                type: 'sector-eof', 
+                                channel: chIdx,
+                                parallelChannels: numChannels 
+                            }));
                         }
                     })());
                 }
@@ -842,7 +844,7 @@ function InstantDropContent() {
                         <Smartphone className="w-12 h-12 text-indigo-500" />
                     </div>
                     <h1 className="text-4xl md:text-5xl font-bold text-foreground mb-4">Turbo Drop</h1>
-                    <p className="text-xs text-muted-foreground font-medium tracking-widest uppercase mb-2">v01.5.1 Reliable Superfast Stream</p>
+                    <p className="text-xs text-muted-foreground font-medium tracking-widest uppercase mb-2">v01.5.2 Reliable Superfast Stream</p>
                     <p className="text-lg text-muted-foreground max-w-2xl mx-auto">
                         The ultimate high-speed file sharing app. Transfer photos and large files (up to 200MB) from desktop to mobile or mobile to mobile instantly.
                     </p>
