@@ -14,37 +14,33 @@ import { PaywallModal } from "@/components/layout/PaywallModal";
 // Strict WebRTC cross-browser compatible Chunk size (64KB limits maxMessageSize exceptions)
 const CHUNK_SIZE = 64 * 1024;
 const MAX_IN_FLIGHT = 32;
-const BACKEND_WS_URL = (process.env.NEXT_PUBLIC_API_URL || "")
-    .trim()
-    .replace(/\/$/, "")
-    .replace("ai-pdfai-pdf", "ai-pdf") // Fix recursive Render naming prefix
-    .replace(/^https:\/\//i, "wss://")
-    .replace(/^http:\/\//i, "ws://") || (typeof window !== "undefined"
-        ? `${window.location.protocol === "https:" ? "wss:" : "ws:"}//${window.location.hostname}:8000`
-        : "ws://localhost:8000");
+const getBackendUrls = () => {
+    let rawUrl = (process.env.NEXT_PUBLIC_API_URL || "").trim().replace(/\/$/, "");
+    
+    // Sense if we are on the recursive 'ai-pdfai-pdf' domain from the browser bar
+    if (typeof window !== "undefined" && window.location.hostname.includes("ai-pdfai-pdf")) {
+        rawUrl = rawUrl.replace("ai-pdf-backend", "ai-pdfai-pdf-backend");
+    }
 
-const BACKEND_HTTP_URL = (process.env.NEXT_PUBLIC_API_URL || "")
-    .trim()
-    .replace(/\/$/, "")
-    .replace("ai-pdfai-pdf", "ai-pdf")
-    .replace(/^wss:\/\//i, "https://")
-    .replace(/^ws:\/\//i, "http://") || (typeof window !== "undefined"
-        ? `${window.location.protocol}//${window.location.hostname}:8000`
-        : "http://localhost:8000");
+    const http = rawUrl || (typeof window !== "undefined" ? `${window.location.protocol}//${window.location.hostname}:8000` : "http://localhost:8000");
+    const ws = http.replace(/^https:\/\//i, "wss://").replace(/^http:\/\//i, "ws://");
+    
+    return { http, ws };
+};
+
+const { http: BACKEND_HTTP_URL, ws: BACKEND_WS_URL } = getBackendUrls();
 
 const ICE_SERVERS = {
     iceServers: [
         { urls: "stun:stun.l.google.com:19302" },
         { urls: "stun:stun1.l.google.com:19302" },
         { urls: "stun:stun.cloudflare.com:3478" },
-        // HARDCODED FAIL-SAFE RELAY (swap-pdf.metered.live)
-        // These are your paid TURN servers. Hardcoding them here ensures
-        // that if the backend fetch fails, the transfer still works.
+        // GUARANTEED PUBLIC RELAY (openrelay.metered.ca)
         {
             urls: [
-                "turn:swap-pdf.metered.live:80",
-                "turn:swap-pdf.metered.live:443",
-                "turn:swap-pdf.metered.live:443?transport=tcp"
+                "turn:openrelay.metered.ca:80",
+                "turn:openrelay.metered.ca:443",
+                "turn:openrelay.metered.ca:443?transport=tcp"
             ],
             username: "openrelayproject",
             credential: "openrelayproject"
@@ -176,7 +172,9 @@ function InstantDropContent() {
             console.log("Sender WS Message:", event.data);
             const data = JSON.parse(event.data);
             if (data.type === 'peer-connected') {
-                console.log("Peer connected, starting WebRTC setup");
+                logDebug("Peer joined, waiting for receiver-ready signal...");
+            } else if (data.type === 'receiver-ready') {
+                logDebug("Receiver is READY. Initializing WebRTC Offer...");
                 setupWebRTC(ws, true);
             } else if (data.type === 'answer') {
                 console.log("Received answer, setting remote description");
@@ -479,7 +477,8 @@ function InstantDropContent() {
         wsRef.current = ws;
 
         ws.onopen = () => {
-            console.log("Receiver WS Opened");
+            logDebug("Receiver WS Opened - Signaling READY");
+            ws.send(JSON.stringify({ type: 'receiver-ready' }));
             const heartbeat = setInterval(() => {
                 if (ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify({ type: 'ping' }));
             }, 10000);
@@ -742,7 +741,7 @@ function InstantDropContent() {
                         <Smartphone className="w-12 h-12 text-indigo-500" />
                     </div>
                     <h1 className="text-4xl md:text-5xl font-bold text-foreground mb-4">Turbo Drop</h1>
-                    <p className="text-xs text-muted-foreground font-medium tracking-widest uppercase mb-2">v01.3.2 Gigabit Relay</p>
+                    <p className="text-xs text-muted-foreground font-medium tracking-widest uppercase mb-2">v01.3.3 Gigabit Relay</p>
                     <p className="text-lg text-muted-foreground max-w-2xl mx-auto">
                         The ultimate high-speed file sharing app. Transfer photos and large files (up to 200MB) from desktop to mobile or mobile to mobile instantly.
                     </p>

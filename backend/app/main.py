@@ -115,13 +115,29 @@ async def get_turn_servers(
     except Exception as e:
         print(f"⚠️ Metered API error: {e}, using hardcoded fallback")
     
-    # Hardcoded fallback (always works even if Metered API is slow)
+    # Guaranteed fallback to PUBLIC Metered OpenRelay (Proven to work)
     return [
-        {"urls": "turn:swap-pdf.metered.live:80", "username": "openrelayproject", "credential": "openrelayproject"},
-        {"urls": "turn:swap-pdf.metered.live:443", "username": "openrelayproject", "credential": "openrelayproject"},
-        {"urls": "turn:swap-pdf.metered.live:443?transport=tcp", "username": "openrelayproject", "credential": "openrelayproject"},
-        {"urls": "stun:stun.cloudflare.com:3478"},
-        {"urls": "stun:stun.l.google.com:19302"},
+        {
+            "urls": "turn:openrelay.metered.ca:80",
+            "username": "openrelayproject",
+            "credential": "openrelayproject"
+        },
+        {
+            "urls": "turn:openrelay.metered.ca:443",
+            "username": "openrelayproject",
+            "credential": "openrelayproject"
+        },
+        {
+            "urls": "turn:openrelay.metered.ca:443?transport=tcp",
+            "username": "openrelayproject",
+            "credential": "openrelayproject"
+        },
+        {
+            "urls": "stun:stun.l.google.com:19302"
+        },
+        {
+            "urls": "stun:stun.cloudflare.com:3478"
+        }
     ]
 
 # --- MONETIZATION ENDPOINTS (Phase 8) ---
