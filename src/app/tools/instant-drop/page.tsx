@@ -416,7 +416,7 @@ function InstantDropContent() {
                     const ADAPTIVE_THRESHOLD = isRelay ? 256 * 1024 : 2 * 1024 * 1024;
                     logDebug(`Sender: Starting burst with ${isRelay ? 'Safe-Relay' : 'High-Speed'} logic (${ADAPTIVE_THRESHOLD / 1024}KB window).`);
 
-                    dataChannelsRef.current.map(async (dc, chIdx) => {
+                    const workers = dataChannelsRef.current.map(async (dc, chIdx) => {
                         const startOffset = chIdx * sectorSize;
                         const endOffset = Math.min(startOffset + sectorSize, file.size);
                         let offset = startOffset;
@@ -453,12 +453,12 @@ function InstantDropContent() {
                                 }
                             } else break;
                         }
-                    if (isActive.current && dc.readyState === 'open') {
-                        dc.send(JSON.stringify({ type: 'sector-eof', channel: chIdx }));
-                    }
-                });
+                        if (isActive.current && dc.readyState === 'open') {
+                             dc.send(JSON.stringify({ type: 'sector-eof', channel: chIdx }));
+                        }
+                    });
 
-                await Promise.all(workers);
+                    await Promise.all(workers);
 
                 logDebug(`Sender: All Sectors Sent. Waiting for Receiver ACK for ${file.name}`);
                 await new Promise<void>((resolveAck) => {
@@ -755,7 +755,7 @@ function InstantDropContent() {
                         <Smartphone className="w-12 h-12 text-indigo-500" />
                     </div>
                     <h1 className="text-4xl md:text-5xl font-bold text-foreground mb-4">Turbo Drop</h1>
-                    <p className="text-xs text-muted-foreground font-medium tracking-widest uppercase mb-2">v01.3.7 Adaptive</p>
+                    <p className="text-xs text-muted-foreground font-medium tracking-widest uppercase mb-2">v01.3.8 Adaptive</p>
                     <p className="text-lg text-muted-foreground max-w-2xl mx-auto">
                         The ultimate high-speed file sharing app. Transfer photos and large files (up to 200MB) from desktop to mobile or mobile to mobile instantly.
                     </p>
