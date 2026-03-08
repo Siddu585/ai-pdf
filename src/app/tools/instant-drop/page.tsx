@@ -375,8 +375,12 @@ function InstantDropContent() {
                 // v01.4.4: ZERO-BUFFER SYNC
                 // Await absolute silence on the line before sending metadata for the next file.
                 logDebug(`Sender: Awaiting Zero-Buffer sync before ${file.name}...`);
-                while (isActive.current && dataChannelsRef.current.some(dc => dc.bufferedAmount > 0)) {
+                const syncStart = Date.now();
+                while (isActive.current && (Date.now() - syncStart < 10000) && dataChannelsRef.current.some(dc => dc.bufferedAmount > 0)) {
                     await new Promise(r => setTimeout(r, 50));
+                }
+                if (Date.now() - syncStart >= 10000) {
+                    logDebug(`Sender: Zero-Buffer timeout for ${file.name} - Proceeding anyway to avoid hang.`);
                 }
                 
                 if (dataChannelsRef.current[0]?.readyState !== 'open') return;
@@ -426,12 +430,11 @@ function InstantDropContent() {
 
                     // HYPERDRIVE 4.0 - PULSE CONTROL:
                     // Start with a safe 256KB window and probe upwards. 
-                    // This prevents the relay from ever getting "Bloated".
                     let pulseWindow = 256 * 1024; 
-                    const MAX_WINDOW = 4 * 1024 * 1024;
+                    const MAX_WINDOW = 8 * 1024 * 1024; // Pushing for 2.0MB/s+
                     const MIN_WINDOW = 64 * 1024;
 
-                    logDebug(`Sender: Starting Pulse Control ${isRelay ? 'Relay' : 'P2P'} Burst.`);
+                    logDebug(`Sender: Starting Pulse Guard ${isRelay ? 'Relay' : 'P2P'} Burst.`);
 
                     let fileOffset = 0;
                     const BLOCK_SIZE = 1024 * 1024; // 1MB Dynamic Blocks
@@ -505,13 +508,16 @@ function InstantDropContent() {
                         await Promise.all(workers);
                         
                         // DYNAMIC PULSE ADJUSTMENT:
-                        // Monitor how long it took the network to swallow this 1MB block across all channels.
+                        // Monitor how long it took the network to swallow this 1MB block.
                         const blockDuration = Date.now() - blockStartTime;
                         if (blockDuration < 300) { 
-                            // Network is fast, expand window
-                            pulseWindow = Math.min(MAX_WINDOW, pulseWindow + (128 * 1024));
+                            // Network is fast, expand window aggressively
+                            pulseWindow = Math.min(MAX_WINDOW, pulseWindow + (256 * 1024));
+                        } else if (blockDuration > 1500) {
+                            // Network is choking, Reset to MIN immediately to clear pipe
+                            logDebug(`Sender: Network STALL (${blockDuration}ms). Resetting Window.`);
+                            pulseWindow = MIN_WINDOW;
                         } else if (blockDuration > 800) {
-                            // Network is choking, contract window immediately
                             pulseWindow = Math.max(MIN_WINDOW, pulseWindow / 2);
                         }
 
@@ -535,11 +541,23 @@ function InstantDropContent() {
 
                 logDebug(`Sender: All Sectors Sent. Waiting for Receiver ACK for ${file.name}`);
                 await new Promise<void>((resolveAck) => {
-                    if (dataChannelsRef.current.length === 0 || !isActive.current) return resolveAck();
+                    const ackTimeout = setTimeout(() => {
+                        logDebug(`Sender: ACK Timeout for ${file.name} - Moving to next file.`);
+                        window.removeEventListener('webrtc-sender-msg', ackListener);
+                        resolveAck();
+                    }, 20000);
+
+                    if (dataChannelsRef.current.length === 0 || !isActive.current) {
+                        clearTimeout(ackTimeout);
+                        return resolveAck();
+                    }
+                    
                     const ackListener = (e: any) => {
                         try {
                             const msg = e.detail;
                             if (msg.type === 'file-ack' && msg.name === file.name) {
+                                logDebug(`Sender: Received ACK for ${file.name}.`);
+                                clearTimeout(ackTimeout);
                                 window.removeEventListener('webrtc-sender-msg', ackListener);
                                 resolveAck();
                             }
@@ -843,7 +861,7 @@ function InstantDropContent() {
                         <Smartphone className="w-12 h-12 text-indigo-500" />
                     </div>
                     <h1 className="text-4xl md:text-5xl font-bold text-foreground mb-4">Turbo Drop</h1>
-                    <p className="text-xs text-muted-foreground font-medium tracking-widest uppercase mb-2">v01.4.4 Pulse Control</p>
+                    <p className="text-xs text-muted-foreground font-medium tracking-widest uppercase mb-2">v01.4.5 Pulse Guard</p>
                     <p className="text-lg text-muted-foreground max-w-2xl mx-auto">
                         The ultimate high-speed file sharing app. Transfer photos and large files (up to 200MB) from desktop to mobile or mobile to mobile instantly.
                     </p>
