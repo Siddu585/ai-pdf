@@ -449,118 +449,62 @@ function InstantDropContent() {
                         });
                     } catch (e) { }
 
-                    // HYPERDRIVE 4.0 - PULSE CONTROL:
-                    // Start with a safe 256KB window and probe upwards. 
-                    let pulseWindow = 256 * 1024; 
-                    const MAX_WINDOW = 8 * 1024 * 1024; // Pushing for 2.0MB/s+
-                    const MIN_WINDOW = 64 * 1024;
+                    // v01.4.7: REVERT TO 1.3.9 "BUFFERED BURST" CORE
+                    logDebug(`Sender: Reverting to v01.3.9 Burst Core for Diagnostics. (Channels: ${numChannels})`);
 
-                    logDebug(`Sender: Starting Pulse Guard ${isRelay ? 'Relay' : 'P2P'} Burst.`);
+                    const FIXED_THRESHOLD = 2 * 1024 * 1024; // 2MB Fixed (1.3.9 style)
+                    const sectorSize = Math.ceil(file.size / numChannels);
+                    
+                    const workers = [];
+                    for (let chIdx = 0; chIdx < numChannels; chIdx++) {
+                        workers.push((async () => {
+                            const dc = dataChannelsRef.current[chIdx];
+                            if (!dc) return;
+                            dc.bufferedAmountLowThreshold = FIXED_THRESHOLD;
+                            
+                            const start = chIdx * sectorSize;
+                            const end = Math.min(start + sectorSize, file.size);
+                            let offset = start;
 
-                    let fileOffset = 0;
-                    const BLOCK_SIZE = 1024 * 1024; // 1MB Dynamic Blocks
-                    let lastProgressTime = Date.now();
-                    let lastSentBytes = 0;
-
-                    const bitrateInterval = setInterval(() => {
-                        const now = Date.now();
-                        const deltaSec = Math.max(0.1, (now - lastProgressTime) / 1000);
-                        const deltaBytes = totalSentBytesRef.current - lastSentBytes;
-                        const mbps = (deltaBytes / 1024 / 1024) / deltaSec;
-                        logDebug(`Sender: Bitrate: ${mbps.toFixed(2)} MB/s | Window: ${Math.round(pulseWindow/1024)}KB/ch`);
-                        logDebug(`INTERNAL_STATS: {"mbps": ${mbps}, "window": ${pulseWindow}, "sent": ${totalSentBytesRef.current}}`);
-                        lastProgressTime = now;
-                        lastSentBytes = totalSentBytesRef.current;
-                    }, 1000);
-
-                    // PIPELINED READ-AHEAD
-                    let nextBlockPromise = (async () => {
-                        const readLen = Math.min(BLOCK_SIZE, file.size - fileOffset);
-                        const buf = await file.slice(fileOffset, fileOffset + readLen).arrayBuffer();
-                        return { buffer: buf, offset: fileOffset };
-                    })();
-
-                    while (isActive.current && fileOffset < file.size) {
-                        const blockStartTime = Date.now();
-                        const { buffer: blockBuffer } = await nextBlockPromise;
-                        const currentBlockLen = blockBuffer.byteLength;
-                        fileOffset += currentBlockLen;
-
-                        if (fileOffset < file.size) {
-                            const nextReadLen = Math.min(BLOCK_SIZE, file.size - fileOffset);
-                            const nextOff = fileOffset;
-                            nextBlockPromise = (async () => {
-                                const buf = await file.slice(nextOff, nextOff + nextReadLen).arrayBuffer();
-                                return { buffer: buf, offset: nextOff };
-                            })();
-                        }
-                        
-                        const workers = [];
-                        const subSectorSize = Math.ceil(blockBuffer.byteLength / numChannels);
-
-                        for (let chIdx = 0; chIdx < numChannels; chIdx++) {
-                            workers.push((async () => {
-                                const dc = dataChannelsRef.current[chIdx];
-                                if (!dc) return;
-                                dc.bufferedAmountLowThreshold = pulseWindow / 2;
-                                
-                                const start = chIdx * subSectorSize;
-                                const end = Math.min(start + subSectorSize, blockBuffer.byteLength);
-                                let offset = start;
-
-                                while (isActive.current && offset < end) {
-                                    if (dc.bufferedAmount > pulseWindow) {
-                                        await new Promise<void>(res => {
-                                            dc.onbufferedamountlow = () => { dc.onbufferedamountlow = null; res(); };
-                                        });
-                                    }
-
-                                    const chunkLen = Math.min(CHUNK_SIZE, end - offset);
-                                    const chunk = blockBuffer.slice(offset, offset + chunkLen);
-
-                                    if (dc.readyState === 'open') {
-                                        dc.send(chunk);
-                                        offset += chunkLen;
-                                        totalSentBytesRef.current += chunkLen;
-                                    } else break;
+                            while (isActive.current && offset < end) {
+                                // 1.3.9 Style: Just wait for window space and blast.
+                                if (dc.bufferedAmount > FIXED_THRESHOLD * 2) {
+                                    await new Promise<void>(res => {
+                                        dc.onbufferedamountlow = () => { dc.onbufferedamountlow = null; res(); };
+                                    });
                                 }
-                            })());
-                        }
 
-                        await Promise.all(workers);
-                        
-                        // DYNAMIC PULSE ADJUSTMENT:
-                        // Monitor how long it took the network to swallow this 1MB block.
-                        const blockDuration = Date.now() - blockStartTime;
-                        logDebug(`BLOCK_PERF: {"duration": ${blockDuration}, "window": ${pulseWindow}}`);
-                        if (blockDuration < 300) { 
-                            // Network is fast, expand window aggressively
-                            pulseWindow = Math.min(MAX_WINDOW, pulseWindow + (256 * 1024));
-                        } else if (blockDuration > 1500) {
-                            // Network is choking, Reset to MIN immediately to clear pipe
-                            logDebug(`Sender: Network STALL (${blockDuration}ms). Resetting Window.`);
-                            pulseWindow = MIN_WINDOW;
-                        } else if (blockDuration > 800) {
-                            pulseWindow = Math.max(MIN_WINDOW, pulseWindow / 2);
-                        }
+                                const chunkLen = Math.min(CHUNK_SIZE, end - offset);
+                                const chunk = await file.slice(offset, offset + chunkLen).arrayBuffer();
 
-                        const totalBuffered = dataChannelsRef.current.reduce(
-                            (acc, c) => acc + (c.readyState === 'open' ? c.bufferedAmount : 0), 0
-                        );
-                        const trueSent = Math.max(0, totalSentBytesRef.current - totalBuffered);
-                        setProgress(Math.round((trueSent / file.size) * 100));
+                                if (dc.readyState === 'open') {
+                                    dc.send(chunk);
+                                    offset += chunkLen;
+                                    totalSentBytesRef.current += chunkLen;
+                                    
+                                    // Periodic Bitrate/Progress
+                                    if (offset % (1024 * 1024) === 0) {
+                                         const totalBuffered = dataChannelsRef.current.reduce(
+                                            (acc, c) => acc + (c.readyState === 'open' ? c.bufferedAmount : 0), 0
+                                        );
+                                        const trueSent = Math.max(0, totalSentBytesRef.current - totalBuffered);
+                                        setProgress(Math.round((trueSent / file.size) * 100));
+                                    }
+                                } else break;
+                            }
+                            
+                            if (dc.readyState === 'open') {
+                                dc.send(JSON.stringify({ 
+                                     type: 'sector-eof', 
+                                     channel: chIdx,
+                                     parallelChannels: numChannels 
+                                }));
+                            }
+                        })());
                     }
 
-                    clearInterval(bitrateInterval);
-                    for (let i = 0; i < numChannels; i++) {
-                        if (dataChannelsRef.current[i]?.readyState === 'open') {
-                             dataChannelsRef.current[i].send(JSON.stringify({ 
-                                 type: 'sector-eof', 
-                                 channel: i,
-                                 parallelChannels: numChannels 
-                             }));
-                        }
-                    }
+                    await Promise.all(workers);
+                    logDebug(`Sender: 1.3.9 Burst Complete for ${file.name}`);
 
                 logDebug(`Sender: All Sectors Sent. Waiting for Receiver ACK for ${file.name}`);
                 await new Promise<void>((resolveAck) => {
@@ -898,7 +842,7 @@ function InstantDropContent() {
                         <Smartphone className="w-12 h-12 text-indigo-500" />
                     </div>
                     <h1 className="text-4xl md:text-5xl font-bold text-foreground mb-4">Turbo Drop</h1>
-                    <p className="text-xs text-muted-foreground font-medium tracking-widest uppercase mb-2">v01.4.6 Meta Analyzer</p>
+                    <p className="text-xs text-muted-foreground font-medium tracking-widest uppercase mb-2">v01.4.7 Diagnostic (1.3.9 Core)</p>
                     <p className="text-lg text-muted-foreground max-w-2xl mx-auto">
                         The ultimate high-speed file sharing app. Transfer photos and large files (up to 200MB) from desktop to mobile or mobile to mobile instantly.
                     </p>
