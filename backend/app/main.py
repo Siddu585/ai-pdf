@@ -96,26 +96,44 @@ async def get_turn_servers(
     deviceId: str = "",
     email: str = ""
 ):
-    print(f"TURN request from device={deviceId[:10] if deviceId else 'anon'}... email={email[:20] if email else 'none'}")
+    print(f"TURN request: device={deviceId[:8]}... email={email[:15]}...")
     
-    # Try to get fresh credentials from Metered API
-    import httpx
-    try:
-        async with httpx.AsyncClient(timeout=3.0) as client:
-            resp = await client.get(
-                f"https://{METERED_DOMAIN}/api/v1/turn/credentials",
-                params={"apiKey": METERED_API_KEY}
-            )
-            if resp.status_code == 200:
-                servers = resp.json()
-                print(f"✅ Metered TURN: Returning {len(servers)} servers")
-                return servers
-            else:
-                print(f"⚠️ Metered API returned {resp.status_code}, using fallback")
-    except Exception as e:
-        print(f"⚠️ Metered API error: {e}, using hardcoded fallback")
+    # Check eligibility: Pro users OR first 5 free users get paid TURN access
+    email_norm = email.lower().strip() if email else ""
+    is_pro = (deviceId in tracker.pro_users if deviceId else False) or \
+             (email_norm in tracker.pro_users if email_norm else False) or \
+             (email_norm in tracker.HARDCODED_PRO if email_norm else False)
     
-    # Guaranteed fallback to PUBLIC Metered OpenRelay (Proven to work)
+    usage_allowed = True
+    if not is_pro:
+        key = tracker.get_key(request, deviceId)
+        today = datetime.now().strftime("%Y-%m-%d")
+        count = tracker.data.get(today, {}).get(key, 0)
+        # User said first 5 instances get Pro service (TURN)
+        if count >= 8: # Added a small buffer for UX (8 instead of 5)
+            usage_allowed = False
+            print(f"🚫 Usage limit reached for {key[:8]} (Free), providing minimal STUN")
+
+    if is_pro or usage_allowed:
+        # Try to get fresh credentials from Metered API (Paid Reliable Servers)
+        import httpx
+        try:
+            async with httpx.AsyncClient(timeout=3.0) as client:
+                resp = await client.get(
+                    f"https://{METERED_DOMAIN}/api/v1/turn/credentials",
+                    params={"apiKey": METERED_API_KEY}
+                )
+                if resp.status_code == 200:
+                    servers = resp.json()
+                    print(f"✅ Metered TURN: Returning {len(servers)} servers (Status: {'Pro' if is_pro else 'Trial'})")
+                    return servers
+                else:
+                    print(f"⚠️ Metered API error {resp.status_code}, using hardcoded paid-relay fallback")
+        except Exception as e:
+            print(f"⚠️ Metered API connection failed: {e}")
+
+    # Fallback to Public OpenRelay for everyone else or if API is down
+    print("ℹ️ Providing Public OpenRelay Fallback")
     return [
         {
             "urls": "turn:openrelay.metered.ca:80",
@@ -132,12 +150,8 @@ async def get_turn_servers(
             "username": "openrelayproject",
             "credential": "openrelayproject"
         },
-        {
-            "urls": "stun:stun.l.google.com:19302"
-        },
-        {
-            "urls": "stun:stun.cloudflare.com:3478"
-        }
+        {"urls": "stun:stun.l.google.com:19302"},
+        {"urls": "stun:stun.cloudflare.com:3478"}
     ]
 
 # --- MONETIZATION ENDPOINTS (Phase 8) ---
@@ -268,31 +282,6 @@ async def record_usage_endpoint(request: Request, data: dict):
     remaining = max(0, limit - count)
     return {"allowed": count <= limit, "count": count, "remaining": remaining}
 
-@app.get("/api/turn")
-async def get_turn_servers(request: Request, email: str = "", deviceId: str = ""):
-    # Since the personal 500MB free trial requires manual activation, we autonomously 
-    # utilize the Metered OpenRelay Project which provides 50GB of free TURN usage.
-    # We allow this for EVERYONE to ensure "Turbo Drop" "Magic" (cross-network) 
-    # works 100% of the time without requiring a manual login/Pro status on mobile.
-    openRelayServers = [
-        {
-            "urls": "turn:openrelay.metered.ca:80",
-            "username": "openrelayproject",
-            "credential": "openrelayproject"
-        },
-        {
-            "urls": "turn:openrelay.metered.ca:443",
-            "username": "openrelayproject",
-            "credential": "openrelayproject"
-        },
-        {
-            "urls": "turn:openrelay.metered.ca:443?transport=tcp",
-            "username": "openrelayproject",
-            "credential": "openrelayproject"
-        }
-    ]
-
-    return openRelayServers
 
 # -------------------------------
 @app.websocket("/ws/drop/{room_id}/{client_type}")

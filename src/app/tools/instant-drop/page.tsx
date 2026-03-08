@@ -17,9 +17,13 @@ const MAX_IN_FLIGHT = 32;
 const getBackendUrls = () => {
     let rawUrl = (process.env.NEXT_PUBLIC_API_URL || "").trim().replace(/\/$/, "");
     
-    // Sense if we are on the recursive 'ai-pdfai-pdf' domain from the browser bar
-    if (typeof window !== "undefined" && window.location.hostname.includes("ai-pdfai-pdf")) {
-        rawUrl = rawUrl.replace("ai-pdf-backend", "ai-pdfai-pdf-backend");
+    // Sense and Fix recursive Render naming prefix (ai-pdfai-pdf)
+    // This happens when Render's auto-generation stacks names.
+    // If the base URL or the current window has it, we ensure the backend URL also has it.
+    if (rawUrl.includes("ai-pdfai-pdf") || (typeof window !== "undefined" && window.location.hostname.includes("ai-pdfai-pdf"))) {
+        if (!rawUrl.includes("ai-pdfai-pdf-backend")) {
+            rawUrl = rawUrl.replace("ai-pdf-backend", "ai-pdfai-pdf-backend");
+        }
     }
 
     const http = rawUrl || (typeof window !== "undefined" ? `${window.location.protocol}//${window.location.hostname}:8000` : "http://localhost:8000");
@@ -741,7 +745,7 @@ function InstantDropContent() {
                         <Smartphone className="w-12 h-12 text-indigo-500" />
                     </div>
                     <h1 className="text-4xl md:text-5xl font-bold text-foreground mb-4">Turbo Drop</h1>
-                    <p className="text-xs text-muted-foreground font-medium tracking-widest uppercase mb-2">v01.3.4 Gigabit Relay</p>
+                    <p className="text-xs text-muted-foreground font-medium tracking-widest uppercase mb-2">v01.3.5 Gigabit Relay</p>
                     <p className="text-lg text-muted-foreground max-w-2xl mx-auto">
                         The ultimate high-speed file sharing app. Transfer photos and large files (up to 200MB) from desktop to mobile or mobile to mobile instantly.
                     </p>
