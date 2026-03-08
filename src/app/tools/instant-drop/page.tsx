@@ -71,9 +71,13 @@ function InstantDropContent() {
     const [transferSpeed, setTransferSpeed] = useState<number | null>(null); // MB/s
 
     const wsRef = useRef<WebSocket | null>(null);
+    const capturedLogsRef = useRef<string[]>([]);
     const logDebug = (msg: string) => {
-        const time = new Date().toLocaleTimeString();
-        console.log(`[${time}] ${msg}`);
+        const time = new Date().toISOString();
+        const formattedMsg = `[${time}] ${msg}`;
+        console.log(formattedMsg);
+        capturedLogsRef.current.push(formattedMsg);
+        if (capturedLogsRef.current.length > 2000) capturedLogsRef.current.shift(); // Cap at 2k lines
     };
     const peerRef = useRef<RTCPeerConnection | null>(null);
     const dataChannelsRef = useRef<RTCDataChannel[]>([]);
@@ -97,6 +101,22 @@ function InstantDropContent() {
 
     useEffect(() => {
         statusRef.current = status;
+        if (status === 'transferring' && peerRef.current) {
+            const statsInterval = setInterval(async () => {
+                if (!peerRef.current) return;
+                try {
+                    const stats = await peerRef.current.getStats();
+                    let reportStr = "--- WebRTC Stats Snapshot ---\n";
+                    stats.forEach(report => {
+                        if (report.type === 'inbound-rtp' || report.type === 'outbound-rtp' || report.type === 'remote-candidate' || report.type === 'candidate-pair') {
+                            reportStr += `${report.type}: ${JSON.stringify(report)}\n`;
+                        }
+                    });
+                    logDebug(reportStr);
+                } catch (e) {}
+            }, 5000);
+            return () => clearInterval(statsInterval);
+        }
     }, [status]);
 
     // Speed tracking
@@ -405,7 +425,8 @@ function InstantDropContent() {
                 try {
                     const msg = e.detail;
                     if (msg.type === 'ready') {
-                        logDebug(`Sender: Received Ready for ${file.name} - Launching 4-Sector Burst`);
+                        logDebug(`Sender: Received JSON Ready: ${JSON.stringify(msg)}`);
+                        logDebug(`Sender: Launching 4-Sector Burst for ${file.name}`);
                         clearInterval(handshakeInterval);
                         window.removeEventListener('webrtc-sender-msg', checkReady);
                         startParallelBurst();
@@ -447,6 +468,7 @@ function InstantDropContent() {
                         const deltaBytes = totalSentBytesRef.current - lastSentBytes;
                         const mbps = (deltaBytes / 1024 / 1024) / deltaSec;
                         logDebug(`Sender: Bitrate: ${mbps.toFixed(2)} MB/s | Window: ${Math.round(pulseWindow/1024)}KB/ch`);
+                        logDebug(`INTERNAL_STATS: {"mbps": ${mbps}, "window": ${pulseWindow}, "sent": ${totalSentBytesRef.current}}`);
                         lastProgressTime = now;
                         lastSentBytes = totalSentBytesRef.current;
                     }, 1000);
@@ -510,6 +532,7 @@ function InstantDropContent() {
                         // DYNAMIC PULSE ADJUSTMENT:
                         // Monitor how long it took the network to swallow this 1MB block.
                         const blockDuration = Date.now() - blockStartTime;
+                        logDebug(`BLOCK_PERF: {"duration": ${blockDuration}, "window": ${pulseWindow}}`);
                         if (blockDuration < 300) { 
                             // Network is fast, expand window aggressively
                             pulseWindow = Math.min(MAX_WINDOW, pulseWindow + (256 * 1024));
@@ -628,7 +651,8 @@ function InstantDropContent() {
                     if (receiveMeta.current?.name === msg.name && statusRef.current === 'transferring') {
                         logDebug(`Receiver: Redundant Metadata for ${msg.name} - Ignoring reset`);
                     } else {
-                        logDebug(`Receiver: Received Metadata for ${msg.name} (Parallel: ${msg.isParallel})`);
+                        logDebug(`Receiver: Received Metadata JSON: ${JSON.stringify(msg)}`);
+                        logDebug(`Receiver: Starting File Receipt for ${msg.name} (Parallel: ${msg.isParallel})`);
                         receiveMeta.current = msg;
                         setIncomingMeta(msg); // Link to reactive UI labels
 
@@ -839,6 +863,19 @@ function InstantDropContent() {
         document.body.appendChild(script);
     };
 
+    const downloadDiagnostics = () => {
+        const content = capturedLogsRef.current.join('\n');
+        const blob = new Blob([content], { type: 'text/plain' });
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = `TurboDrop_Diagnostics_${roomId || 'NoRoom'}_${new Date().getTime()}.txt`;
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+        URL.revokeObjectURL(url);
+    };
+
     const handleFileChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
         if (e.target.files && e.target.files.length > 0) {
             let fileList = Array.from(e.target.files) as File[];
@@ -861,7 +898,7 @@ function InstantDropContent() {
                         <Smartphone className="w-12 h-12 text-indigo-500" />
                     </div>
                     <h1 className="text-4xl md:text-5xl font-bold text-foreground mb-4">Turbo Drop</h1>
-                    <p className="text-xs text-muted-foreground font-medium tracking-widest uppercase mb-2">v01.4.5 Pulse Guard</p>
+                    <p className="text-xs text-muted-foreground font-medium tracking-widest uppercase mb-2">v01.4.6 Meta Analyzer</p>
                     <p className="text-lg text-muted-foreground max-w-2xl mx-auto">
                         The ultimate high-speed file sharing app. Transfer photos and large files (up to 200MB) from desktop to mobile or mobile to mobile instantly.
                     </p>
@@ -1163,7 +1200,15 @@ function InstantDropContent() {
                         </div>
                     )}
 
-                    {/* Debug Logs Section Removed */}
+                    {/* Debug Logs Section */}
+                    <div className="mt-8 pt-8 border-t flex flex-col items-center gap-4">
+                        <p className="text-xs text-muted-foreground max-w-sm">
+                            Running slow? Download diagnostics and send to developer for Superfast optimization analysis.
+                        </p>
+                        <Button variant="outline" size="sm" onClick={downloadDiagnostics} className="text-indigo-600 border-indigo-200 hover:bg-indigo-50">
+                            ≡ƒôè Download Meta Diagnostics
+                        </Button>
+                    </div>
 
                 </div>
             </main >
