@@ -240,7 +240,7 @@ function InstantDropContent() {
     };
 
     const setupWebRTC = async (ws: WebSocket, isSender: boolean) => {
-        logDebug(`Setting up RTCPeerConnection (v02.0.3 Turbo-Safe), isSender: ${isSender}`);
+        logDebug(`Setting up RTCPeerConnection (v02.0.4 Turbo-Ultra), isSender: ${isSender}`);
         
         // CRITICAL: Reset signaling state for new session
         remoteDescriptionSet.current = false;
@@ -533,8 +533,8 @@ function InstantDropContent() {
                 // v01.5.0: PACED ADAPTIVE STREAM
                 logDebug(`Sender: v01.5.0 Paced Stream Start. (Channels: ${numChannels})`);
 
-                const HIGH_WATER_MARK = 256 * 1024; // 256KB per channel (2MB total) - v02.0.3 Turbo-Safe (Mobile Hyper-Stable)
-                const LOW_WATER_MARK = 64 * 1024;   // 64KB per channel
+                const HIGH_WATER_MARK = 512 * 1024; // 512KB per channel (4MB total) - v02.0.4 Turbo-Ultra (Performance Push)
+                const LOW_WATER_MARK = 128 * 1024;  // 128KB per channel
                 const sectorSize = Math.ceil(file.size / numChannels);
                 
                 const workers = [];
@@ -554,8 +554,8 @@ function InstantDropContent() {
                                 await new Promise<void>(res => {
                                     dc.onbufferedamountlow = () => { 
                                         dc.onbufferedamountlow = null; 
-                                        // v02.0.2: Increased Recovery Breath (50ms) to clear physical network queues
-                                        setTimeout(res, 50); 
+                                        // v02.0.4: Reduced Recovery Breath (20ms) for high-speed throughput
+                                        setTimeout(res, 20); 
                                     };
                                 });
                             }
@@ -627,14 +627,13 @@ function InstantDropContent() {
                 isResolved = true;
                 
                 // v02.0.3: Drained-State Pipelining Guard
-                // We wait for the aggregate buffer to drop below 512KB before starting the next file.
-                // This prevents "Chain-Reaction Congestion" in multi-file batches.
+                // v02.0.4: Increased threshold to 1.5MB to allow metadata overlap during final push
                 const finishPipelining = async () => {
                     const checkDrain = () => {
                         const totalBuffered = dataChannelsRef.current.reduce(
                             (acc, c) => acc + (c.readyState === 'open' ? c.bufferedAmount : 0), 0
                         );
-                        if (totalBuffered < 512 * 1024) { // Drained!
+                        if (totalBuffered < 1536 * 1024) { // Drained! (1.5MB)
                             resolve();
                         } else {
                             setTimeout(checkDrain, 30);
@@ -950,7 +949,7 @@ function InstantDropContent() {
                         <Smartphone className="w-12 h-12 text-indigo-500" />
                     </div>
                     <h1 className="text-4xl md:text-5xl font-bold text-foreground mb-4">Turbo Drop</h1>
-                    <p className="text-xs text-muted-foreground font-medium tracking-widest uppercase mb-2">v02.0.3 Turbo-Safe (Adaptive Flow)</p>
+                    <p className="text-xs text-muted-foreground font-medium tracking-widest uppercase mb-2">v02.0.4 Turbo-Ultra (Max Throughput)</p>
                     <p className="text-lg text-muted-foreground max-w-2xl mx-auto">
                         The ultimate high-speed file sharing app. Transfer photos and large files (up to 200MB) from desktop to mobile or mobile to mobile instantly.
                     </p>
