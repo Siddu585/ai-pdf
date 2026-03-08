@@ -62,7 +62,7 @@ function InstantDropContent() {
     const [files, setFiles] = useState<File[]>([]);
     const [currentFileIndex, setCurrentFileIndex] = useState(0);
     const [progress, setProgress] = useState(0);
-    const [status, setStatus] = useState<"disconnected" | "waiting" | "connecting" | "transferring" | "done" | "error">("disconnected");
+    const [status, setStatus] = useState<"disconnected" | "waiting" | "connecting" | "transferring" | "done" | "error" | "done-waiting">("disconnected");
     const [receivedFiles, setReceivedFiles] = useState<{ blob: Blob, name: string }[]>([]);
     const [incomingMeta, setIncomingMeta] = useState<any>(null); // New state for reactive UI labels
     const [isZipping, setIsZipping] = useState(false);
@@ -351,6 +351,11 @@ function InstantDropContent() {
             totalSentBytesRef.current = 0;
             setCurrentFileIndex(i);
             await transferFileP2PParallel(currentFiles[i], i, currentFiles.length);
+            // v01.4.3: Add 'Breathe' time for mobile devices to settle memory/GC after a file
+            if (i < currentFiles.length - 1) {
+                logDebug(`Sender: Breathing for 300ms before next file...`);
+                await new Promise(r => setTimeout(r, 300));
+            }
         }
         dataChannelsRef.current[0]?.send(JSON.stringify({ type: 'batch-eof' }));
         setStatus('done');
@@ -611,22 +616,36 @@ function InstantDropContent() {
                     logDebug(`Receiver: Received Sector EOF on channel ${msg.channel}. Total: ${receivedEofs.current.size}`);
 
                     if (receiveMeta.current && receivedEofs.current.size >= (msg.parallelChannels || dataChannelsRef.current.length)) {
-                        logDebug(`Receiver: All sectors received for ${receiveMeta.current.name}`);
-                        // Reassemble from parallel buffers efficiently (no ...spread to avoid stack overflow)
-                        let fullChunks: ArrayBuffer[] = [];
+                        logDebug(`Receiver: All sectors received for ${receiveMeta.current.name}. Reassembling...`);
+                        
+                        // EFFICIENT REASSEMBLY: Avoid concat copies and stack overflows
+                        const allChunks: ArrayBuffer[] = [];
                         const channelsToReassemble = msg.parallelChannels || dataChannelsRef.current.length;
                         for (let i = 0; i < channelsToReassemble; i++) {
                             const sector = receiveBuffers.current.get(i) || [];
-                            fullChunks = fullChunks.concat(sector);
+                            for (let j = 0; j < sector.length; j++) {
+                                allChunks.push(sector[j]);
+                            }
+                            receiveBuffers.current.delete(i); // Instant Memory Relief
                         }
-                        const blob = new Blob(fullChunks, { type: receiveMeta.current.fileType });
-                        setReceivedFiles(prev => [...prev, { blob, name: receiveMeta.current!.name }]);
 
-                        // Send ACK back to sender
+                        const blob = new Blob(allChunks, { type: receiveMeta.current.fileType });
+                        allChunks.length = 0; // Clear references for GC
+                        
+                        setReceivedFiles(prev => [...prev, { blob, name: receiveMeta.current!.name }]);
+                        setStatus('done-waiting'); // Transition state to avoid redundant ready triggers
+
+                        // SYNC-LOCK: Send ACK ONLY after Blob is memory-resident
                         if (dataChannelsRef.current[0]?.readyState === 'open') {
-                            dataChannelsRef.current[0].send(JSON.stringify({ type: 'file-ack', name: receiveMeta.current.name }));
+                             logDebug(`Receiver: Reassembly complete for ${receiveMeta.current.name}. Sending Sync-Ack.`);
+                             dataChannelsRef.current[0].send(JSON.stringify({ 
+                                 type: 'file-ack', 
+                                 name: receiveMeta.current.name 
+                             }));
                         }
+                        
                         receivedEofs.current.clear();
+                        receiveMeta.current = null;
                     }
                 } else if (msg.type === 'batch-eof') {
                     logDebug("Receiver: Transfer Complete");
@@ -804,7 +823,7 @@ function InstantDropContent() {
                         <Smartphone className="w-12 h-12 text-indigo-500" />
                     </div>
                     <h1 className="text-4xl md:text-5xl font-bold text-foreground mb-4">Turbo Drop</h1>
-                    <p className="text-xs text-muted-foreground font-medium tracking-widest uppercase mb-2">v01.4.2 Hyperdrive 3.0</p>
+                    <p className="text-xs text-muted-foreground font-medium tracking-widest uppercase mb-2">v01.4.3 Sync-Lock</p>
                     <p className="text-lg text-muted-foreground max-w-2xl mx-auto">
                         The ultimate high-speed file sharing app. Transfer photos and large files (up to 200MB) from desktop to mobile or mobile to mobile instantly.
                     </p>
