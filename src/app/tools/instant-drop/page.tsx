@@ -11,8 +11,8 @@ import { Footer } from "@/components/layout/Footer";
 import { useUsage } from "@/hooks/useUsage";
 import { PaywallModal } from "@/components/layout/PaywallModal";
 
-// Strict WebRTC cross-browser compatible Chunk size (256KB for Max-Speed)
-const CHUNK_SIZE = 256 * 1024;
+// Strict WebRTC cross-browser compatible Chunk size (64KB - Reverted for Legacy-Refined)
+const CHUNK_SIZE = 64 * 1024;
 const MAX_IN_FLIGHT = 32;
 const getBackendUrls = () => {
     let rawUrl = (process.env.NEXT_PUBLIC_API_URL || "").trim().replace(/\/$/, "");
@@ -235,7 +235,7 @@ function InstantDropContent() {
     };
 
     const setupWebRTC = async (ws: WebSocket, isSender: boolean) => {
-        logDebug(`Setting up RTCPeerConnection (v01.5.6 Max-Velocity), isSender: ${isSender}`);
+        logDebug(`Setting up RTCPeerConnection (v01.5.8 Legacy-Refined), isSender: ${isSender}`);
         
         // CRITICAL: Reset signaling state for new session
         remoteDescriptionSet.current = false;
@@ -286,7 +286,7 @@ function InstantDropContent() {
         };
 
         if (isSender) {
-            const chLimit = isProRef.current ? 4 : 2; // v01.5.7: 4 channels is optimal to reduce protocol overhead
+            const chLimit = isProRef.current ? 8 : 4; // v01.5.8: Reverted to 8 channels for v01.5.1 efficiency
             logDebug(`Creating ${chLimit} Parallel DataChannels (Sender)`);
             for (let i = 0; i < chLimit; i++) {
                 const dc = peer.createDataChannel(`file-transfer-${i}`, { ordered: true });
@@ -450,8 +450,8 @@ function InstantDropContent() {
                 // v01.5.0: PACED ADAPTIVE STREAM
                 logDebug(`Sender: v01.5.0 Paced Stream Start. (Channels: ${numChannels})`);
 
-                const HIGH_WATER_MARK = 2 * 1024 * 1024; // 2MB per channel (8MB total) - v01.5.7 Max-Speed
-                const LOW_WATER_MARK = 512 * 1024;  // 512KB per channel
+                const HIGH_WATER_MARK = 4 * 1024 * 1024; // 4MB per channel (32MB total) - v01.5.8 Legacy-Refined
+                const LOW_WATER_MARK = 1024 * 1024;   // 1MB per channel
                 const sectorSize = Math.ceil(file.size / numChannels);
                 
                 const workers = [];
@@ -515,7 +515,7 @@ function InstantDropContent() {
                     logDebug(`Sender: ACK Timeout for ${file.name} - Moving to next file.`);
                     window.removeEventListener('webrtc-sender-msg', ackListener);
                     ackResolver();
-                }, 300000); // v01.5.6: 300s (5min) grace to allow 64MB buffer to drain on slow links.
+                }, 70000); // v01.5.8: 70s Enhanced Safety Timeout (Reverted from 300s)
 
                 const ackListener = (e: any) => {
                     try {
@@ -841,7 +841,7 @@ function InstantDropContent() {
                         <Smartphone className="w-12 h-12 text-indigo-500" />
                     </div>
                     <h1 className="text-4xl md:text-5xl font-bold text-foreground mb-4">Turbo Drop</h1>
-                    <p className="text-xs text-muted-foreground font-medium tracking-widest uppercase mb-2">v01.5.7 Max-Speed</p>
+                    <p className="text-xs text-muted-foreground font-medium tracking-widest uppercase mb-2">v01.5.8 Legacy-Refined</p>
                     <p className="text-lg text-muted-foreground max-w-2xl mx-auto">
                         The ultimate high-speed file sharing app. Transfer photos and large files (up to 200MB) from desktop to mobile or mobile to mobile instantly.
                     </p>
