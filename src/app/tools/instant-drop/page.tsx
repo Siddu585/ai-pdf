@@ -235,7 +235,7 @@ function InstantDropContent() {
     };
 
     const setupWebRTC = async (ws: WebSocket, isSender: boolean) => {
-        logDebug(`Setting up RTCPeerConnection (v01.5.2 Reliable Superfast Stream), isSender: ${isSender}`);
+        logDebug(`Setting up RTCPeerConnection (v01.5.3 Reliable Superfast Stream), isSender: ${isSender}`);
         
         // CRITICAL: Reset signaling state for new session
         remoteDescriptionSet.current = false;
@@ -509,35 +509,35 @@ function InstantDropContent() {
                     })());
                 }
 
+                // v01.5.3: ATTACH ACK LISTENER BEFORE WORKERS
+                // This prevents the race where the receiver ACKs while we are still draining the last bits.
+                let ackResolver: () => void;
+                const ackWaitPromise = new Promise<void>((res) => { ackResolver = res; });
+                
+                const ackTimeout = setTimeout(() => {
+                    logDebug(`Sender: ACK Timeout for ${file.name} - Moving to next file.`);
+                    window.removeEventListener('webrtc-sender-msg', ackListener);
+                    ackResolver();
+                }, 20000);
+
+                const ackListener = (e: any) => {
+                    try {
+                        const msg = e.detail;
+                        if (msg.type === 'file-ack' && msg.name === file.name) {
+                            logDebug(`Sender: Received ACK for ${file.name}.`);
+                            clearTimeout(ackTimeout);
+                            window.removeEventListener('webrtc-sender-msg', ackListener);
+                            ackResolver();
+                        }
+                    } catch (err) { }
+                };
+                window.addEventListener('webrtc-sender-msg', ackListener);
+
                 await Promise.all(workers);
                 logDebug(`Sender: Stream Complete for ${file.name}`);
 
                 logDebug(`Sender: Awaiting OOBS ACK for ${file.name}`);
-                await new Promise<void>((resolveAck) => {
-                    const ackTimeout = setTimeout(() => {
-                        logDebug(`Sender: ACK Timeout for ${file.name} - Moving to next file.`);
-                        window.removeEventListener('webrtc-sender-msg', ackListener);
-                        resolveAck();
-                    }, 20000);
-
-                    if (dataChannelsRef.current.length === 0 || !isActive.current) {
-                        clearTimeout(ackTimeout);
-                        return resolveAck();
-                    }
-                    
-                    const ackListener = (e: any) => {
-                        try {
-                            const msg = e.detail;
-                            if (msg.type === 'file-ack' && msg.name === file.name) {
-                                logDebug(`Sender: Received ACK for ${file.name}.`);
-                                clearTimeout(ackTimeout);
-                                window.removeEventListener('webrtc-sender-msg', ackListener);
-                                resolveAck();
-                            }
-                        } catch (err) { }
-                    };
-                    window.addEventListener('webrtc-sender-msg', ackListener);
-                });
+                await ackWaitPromise;
 
                 isResolved = true;
                 resolve();
@@ -844,7 +844,7 @@ function InstantDropContent() {
                         <Smartphone className="w-12 h-12 text-indigo-500" />
                     </div>
                     <h1 className="text-4xl md:text-5xl font-bold text-foreground mb-4">Turbo Drop</h1>
-                    <p className="text-xs text-muted-foreground font-medium tracking-widest uppercase mb-2">v01.5.2 Reliable Superfast Stream</p>
+                    <p className="text-xs text-muted-foreground font-medium tracking-widest uppercase mb-2">v01.5.3 Reliable Superfast Stream</p>
                     <p className="text-lg text-muted-foreground max-w-2xl mx-auto">
                         The ultimate high-speed file sharing app. Transfer photos and large files (up to 200MB) from desktop to mobile or mobile to mobile instantly.
                     </p>
