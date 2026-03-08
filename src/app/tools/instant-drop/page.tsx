@@ -11,8 +11,8 @@ import { Footer } from "@/components/layout/Footer";
 import { useUsage } from "@/hooks/useUsage";
 import { PaywallModal } from "@/components/layout/PaywallModal";
 
-// Strict WebRTC cross-browser compatible Chunk size (64KB limits maxMessageSize exceptions)
-const CHUNK_SIZE = 64 * 1024;
+// Strict WebRTC cross-browser compatible Chunk size (64-128KB limits maxMessageSize exceptions)
+const CHUNK_SIZE = 128 * 1024;
 const MAX_IN_FLIGHT = 32;
 const getBackendUrls = () => {
     let rawUrl = (process.env.NEXT_PUBLIC_API_URL || "").trim().replace(/\/$/, "");
@@ -411,21 +411,39 @@ function InstantDropContent() {
                         logDebug(`Sender: Adaptive Sensing - Relay Detected: ${isRelay}`);
                     } catch (e) { }
 
-                    // HYPERDRIVE TUNING: 
-                    // 1. Channel Concentration: Relays work better with 4 channels (less SCTP overhead)
-                    // 2. High-Speed Threshold: 1MB for Relays, 2MB for P2P
-                    const activeChannelCount = isRelay ? 4 : numChannels;
-                    const ADAPTIVE_THRESHOLD = isRelay ? 1024 * 1024 : 2 * 1024 * 1024;
+                    // HYPERDRIVE 2.0 TUNING:
+                    // 1. Channel Balance: 6 for Relays, 8 for P2P
+                    // 2. High-Speed Threshold: 2MB for Relays, 4MB for P2P (maximize pipe)
+                    const activeChannelCount = isRelay ? 6 : numChannels;
+                    const ADAPTIVE_THRESHOLD = isRelay ? 2 * 1024 * 1024 : 4 * 1024 * 1024;
                     
-                    logDebug(`Sender: Starting Hyperdrive ${isRelay ? 'Relay' : 'P2P'} Burst (${activeChannelCount} channels, ${ADAPTIVE_THRESHOLD / 1024}KB window)`);
+                    logDebug(`Sender: Starting Hyperdrive Pipelined ${isRelay ? 'Relay' : 'P2P'} Burst (${activeChannelCount} channels, ${ADAPTIVE_THRESHOLD / 1024}KB window)`);
 
                     let fileOffset = 0;
-                    const BLOCK_SIZE = 2 * 1024 * 1024; // 2MB Sequential Blocks
+                    const BLOCK_SIZE = 4 * 1024 * 1024; // 4MB Sequential Blocks
+                    
+                    // PIPELINED READ-AHEAD: Kick off first read
+                    let nextBlockPromise = (async () => {
+                        const readLen = Math.min(BLOCK_SIZE, file.size - fileOffset);
+                        const buf = await file.slice(fileOffset, fileOffset + readLen).arrayBuffer();
+                        return { buffer: buf, offset: fileOffset };
+                    })();
 
                     while (isActive.current && fileOffset < file.size) {
-                        // SEQUENTIAL DISK READ: One read at a time to prevent mobile I/O stutter
-                        const readLen = Math.min(BLOCK_SIZE, file.size - fileOffset);
-                        const blockBuffer = await file.slice(fileOffset, fileOffset + readLen).arrayBuffer();
+                        // Wait for current block to be ready
+                        const { buffer: blockBuffer } = await nextBlockPromise;
+                        const currentBlockLen = blockBuffer.byteLength;
+                        fileOffset += currentBlockLen;
+
+                        // Start reading NEXT block immediately (Pipelining)
+                        if (fileOffset < file.size) {
+                            const nextReadLen = Math.min(BLOCK_SIZE, file.size - fileOffset);
+                            const nextOff = fileOffset;
+                            nextBlockPromise = (async () => {
+                                const buf = await file.slice(nextOff, nextOff + nextReadLen).arrayBuffer();
+                                return { buffer: buf, offset: nextOff };
+                            })();
+                        }
                         
                         // Parallel Burst from Memory Block
                         const workers = [];
@@ -434,6 +452,11 @@ function InstantDropContent() {
                         for (let chIdx = 0; chIdx < activeChannelCount; chIdx++) {
                             workers.push((async () => {
                                 const dc = dataChannelsRef.current[chIdx];
+                                if (!dc) return;
+                                
+                                // Set aggressive low threshold (half of window)
+                                dc.bufferedAmountLowThreshold = ADAPTIVE_THRESHOLD / 2;
+                                
                                 const start = chIdx * subSectorSize;
                                 const end = Math.min(start + subSectorSize, blockBuffer.byteLength);
                                 let offset = start;
@@ -458,9 +481,8 @@ function InstantDropContent() {
                         }
 
                         await Promise.all(workers);
-                        fileOffset += readLen;
 
-                        // UI Progress update after each 2MB block
+                        // UI Progress update after each pipeline block
                         const totalBuffered = dataChannelsRef.current.reduce(
                             (acc, c) => acc + (c.readyState === 'open' ? c.bufferedAmount : 0), 0
                         );
@@ -470,8 +492,12 @@ function InstantDropContent() {
 
                     // Send Sector EOF on all used channels
                     for (let i = 0; i < activeChannelCount; i++) {
-                        if (dataChannelsRef.current[i].readyState === 'open') {
-                            dataChannelsRef.current[i].send(JSON.stringify({ type: 'sector-eof', channel: i }));
+                        if (dataChannelsRef.current[i]?.readyState === 'open') {
+                             dataChannelsRef.current[i].send(JSON.stringify({ 
+                                 type: 'sector-eof', 
+                                 channel: i,
+                                 parallelChannels: activeChannelCount 
+                             }));
                         }
                     }
 
@@ -771,7 +797,7 @@ function InstantDropContent() {
                         <Smartphone className="w-12 h-12 text-indigo-500" />
                     </div>
                     <h1 className="text-4xl md:text-5xl font-bold text-foreground mb-4">Turbo Drop</h1>
-                    <p className="text-xs text-muted-foreground font-medium tracking-widest uppercase mb-2">v01.4.0 Hyperdrive</p>
+                    <p className="text-xs text-muted-foreground font-medium tracking-widest uppercase mb-2">v01.4.1 Pipelined</p>
                     <p className="text-lg text-muted-foreground max-w-2xl mx-auto">
                         The ultimate high-speed file sharing app. Transfer photos and large files (up to 200MB) from desktop to mobile or mobile to mobile instantly.
                     </p>
