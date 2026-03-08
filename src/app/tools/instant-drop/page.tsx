@@ -11,8 +11,8 @@ import { Footer } from "@/components/layout/Footer";
 import { useUsage } from "@/hooks/useUsage";
 import { PaywallModal } from "@/components/layout/PaywallModal";
 
-// Strict WebRTC cross-browser compatible Chunk size (64KB is optimal for Relay MTUs)
-const CHUNK_SIZE = 64 * 1024;
+// Strict WebRTC cross-browser compatible Chunk size (256KB for Max-Speed)
+const CHUNK_SIZE = 256 * 1024;
 const MAX_IN_FLIGHT = 32;
 const getBackendUrls = () => {
     let rawUrl = (process.env.NEXT_PUBLIC_API_URL || "").trim().replace(/\/$/, "");
@@ -286,8 +286,9 @@ function InstantDropContent() {
         };
 
         if (isSender) {
-            logDebug("Creating 8 Parallel DataChannels (Sender)");
-            for (let i = 0; i < 8; i++) {
+            const chLimit = isProRef.current ? 4 : 2; // v01.5.7: 4 channels is optimal to reduce protocol overhead
+            logDebug(`Creating ${chLimit} Parallel DataChannels (Sender)`);
+            for (let i = 0; i < chLimit; i++) {
                 const dc = peer.createDataChannel(`file-transfer-${i}`, { ordered: true });
                 dataChannelsRef.current.push(dc);
                 setupDataChannel(dc, i);
@@ -383,11 +384,7 @@ function InstantDropContent() {
             totalSentBytesRef.current = 0;
             setCurrentFileIndex(i);
             await transferFileP2PParallel(currentFiles[i], i, currentFiles.length);
-            // v01.4.3: Add 'Breathe' time for mobile devices to settle memory/GC after a file
-            if (i < currentFiles.length - 1) {
-                logDebug(`Sender: Breathing for 300ms before next file...`);
-                await new Promise(r => setTimeout(r, 300));
-            }
+            // v01.5.7: Removed artificial 'Breathing' 300ms delay to maximize batch speed.
         }
         sendControlMsg({ type: 'batch-eof' });
         setStatus('done');
@@ -453,8 +450,8 @@ function InstantDropContent() {
                 // v01.5.0: PACED ADAPTIVE STREAM
                 logDebug(`Sender: v01.5.0 Paced Stream Start. (Channels: ${numChannels})`);
 
-                const HIGH_WATER_MARK = 8 * 1024 * 1024; // 8MB per channel (64MB total) - Max Velocity
-                const LOW_WATER_MARK = 2 * 1024 * 1024;  // 2MB per channel
+                const HIGH_WATER_MARK = 2 * 1024 * 1024; // 2MB per channel (8MB total) - v01.5.7 Max-Speed
+                const LOW_WATER_MARK = 512 * 1024;  // 512KB per channel
                 const sectorSize = Math.ceil(file.size / numChannels);
                 
                 const workers = [];
@@ -844,7 +841,7 @@ function InstantDropContent() {
                         <Smartphone className="w-12 h-12 text-indigo-500" />
                     </div>
                     <h1 className="text-4xl md:text-5xl font-bold text-foreground mb-4">Turbo Drop</h1>
-                    <p className="text-xs text-muted-foreground font-medium tracking-widest uppercase mb-2">v01.5.6 Max-Velocity</p>
+                    <p className="text-xs text-muted-foreground font-medium tracking-widest uppercase mb-2">v01.5.7 Max-Speed</p>
                     <p className="text-lg text-muted-foreground max-w-2xl mx-auto">
                         The ultimate high-speed file sharing app. Transfer photos and large files (up to 200MB) from desktop to mobile or mobile to mobile instantly.
                     </p>
