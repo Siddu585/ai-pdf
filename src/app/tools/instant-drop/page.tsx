@@ -240,7 +240,7 @@ function InstantDropContent() {
     };
 
     const setupWebRTC = async (ws: WebSocket, isSender: boolean) => {
-        logDebug(`Setting up RTCPeerConnection (v02.0.2 Turbo-Flow), isSender: ${isSender}`);
+        logDebug(`Setting up RTCPeerConnection (v02.0.3 Turbo-Safe), isSender: ${isSender}`);
         
         // CRITICAL: Reset signaling state for new session
         remoteDescriptionSet.current = false;
@@ -533,8 +533,8 @@ function InstantDropContent() {
                 // v01.5.0: PACED ADAPTIVE STREAM
                 logDebug(`Sender: v01.5.0 Paced Stream Start. (Channels: ${numChannels})`);
 
-                const HIGH_WATER_MARK = 1024 * 1024; // 1MB per channel (8MB total) - v02.0.2 Turbo-Flow (Mobile Stable)
-                const LOW_WATER_MARK = 256 * 1024;   // 256KB per channel
+                const HIGH_WATER_MARK = 256 * 1024; // 256KB per channel (2MB total) - v02.0.3 Turbo-Safe (Mobile Hyper-Stable)
+                const LOW_WATER_MARK = 64 * 1024;   // 64KB per channel
                 const sectorSize = Math.ceil(file.size / numChannels);
                 
                 const workers = [];
@@ -568,8 +568,8 @@ function InstantDropContent() {
                                 offset += chunkLen;
                                 totalSentBytesRef.current += chunkLen;
 
-                                // v02.0.2: Forced Yielding - Pauses every 16 chunks (1MB) to allow Network Thread to breathe
-                                if (offset % (CHUNK_SIZE * 16) === 0) {
+                                // v02.0.3: Rapid Yielding - Pauses every 4 chunks (256KB) to satisfy mobile NAT timing
+                                if (offset % (CHUNK_SIZE * 4) === 0) {
                                     await new Promise(res => setTimeout(res, 0));
                                 }
                                 
@@ -626,9 +626,23 @@ function InstantDropContent() {
                 // v02.0.0: Resolve NOW so next file starts its Metadata Sync immediately
                 isResolved = true;
                 
-                // v02.0.2: Pipelining Guard - 50ms pause before starting the next file metadata
-                // This prevents the "Accumulation of Pressure" where metadata sync fights with the last bits of data.
-                setTimeout(() => resolve(), 50);
+                // v02.0.3: Drained-State Pipelining Guard
+                // We wait for the aggregate buffer to drop below 512KB before starting the next file.
+                // This prevents "Chain-Reaction Congestion" in multi-file batches.
+                const finishPipelining = async () => {
+                    const checkDrain = () => {
+                        const totalBuffered = dataChannelsRef.current.reduce(
+                            (acc, c) => acc + (c.readyState === 'open' ? c.bufferedAmount : 0), 0
+                        );
+                        if (totalBuffered < 512 * 1024) { // Drained!
+                            resolve();
+                        } else {
+                            setTimeout(checkDrain, 30);
+                        }
+                    };
+                    checkDrain();
+                };
+                finishPipelining();
 
                 // Background: Wait for final ACK to ensure reliability
                 await ackWaitPromise;
@@ -936,7 +950,7 @@ function InstantDropContent() {
                         <Smartphone className="w-12 h-12 text-indigo-500" />
                     </div>
                     <h1 className="text-4xl md:text-5xl font-bold text-foreground mb-4">Turbo Drop</h1>
-                    <p className="text-xs text-muted-foreground font-medium tracking-widest uppercase mb-2">v02.0.2 Turbo-Flow (Congestion Control)</p>
+                    <p className="text-xs text-muted-foreground font-medium tracking-widest uppercase mb-2">v02.0.3 Turbo-Safe (Adaptive Flow)</p>
                     <p className="text-lg text-muted-foreground max-w-2xl mx-auto">
                         The ultimate high-speed file sharing app. Transfer photos and large files (up to 200MB) from desktop to mobile or mobile to mobile instantly.
                     </p>
