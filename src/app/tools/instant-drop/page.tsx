@@ -3,24 +3,26 @@
 import { useState, useRef, useEffect, Suspense } from "react";
 import { useSearchParams } from "next/navigation";
 import { QRCodeSVG } from "qrcode.react";
-import { UploadCloud, Download, CheckCircle, Smartphone, Loader2, Archive, Zap, X } from "lucide-react";
-import Link from "next/link";
+import { UploadCloud, Download, CheckCircle, Smartphone, Loader2, Archive } from "lucide-react";
 import JSZip from "jszip";
 import { Button } from "@/components/ui/button";
+import { Navbar } from "@/components/layout/Navbar";
 import { Footer } from "@/components/layout/Footer";
-import { useUsage, sanitizeBackendUrl } from "@/hooks/useUsage";
+import { useUsage } from "@/hooks/useUsage";
 import { PaywallModal } from "@/components/layout/PaywallModal";
-import { UserButton, SignInButton, SignedIn, SignedOut, useUser as useClerkUser } from "@clerk/nextjs";
-
-const IS_MOBILE = process.env.NEXT_PUBLIC_IS_MOBILE === 'true';
 
 // Strict WebRTC cross-browser compatible Chunk size (64KB limits maxMessageSize exceptions)
 const CHUNK_SIZE = 64 * 1024;
 const MAX_IN_FLIGHT = 32;
-const rawBase = sanitizeBackendUrl(process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000");
+const BACKEND_WS_URL = process.env.NEXT_PUBLIC_API_URL
+    ? process.env.NEXT_PUBLIC_API_URL.trim().replace(/\/$/, "").replace(/^https:\/\//i, "wss://").replace(/^http:\/\//i, "ws://")
+    : typeof window !== "undefined"
+        ? `${window.location.protocol === "https:" ? "wss:" : "ws:"}//${window.location.hostname}:8000`
+        : "ws://localhost:8000";
 
-const BACKEND_WS_URL = rawBase.replace(/^https:\/\//i, "wss://").replace(/^http:\/\//i, "ws://");
-const BACKEND_HTTP_URL = rawBase;
+const BACKEND_HTTP_URL = process.env.NEXT_PUBLIC_API_URL
+    ? process.env.NEXT_PUBLIC_API_URL.trim().replace(/\/$/, "")
+    : "http://localhost:8000";
 
 const ICE_SERVERS = {
     iceServers: [
@@ -36,10 +38,7 @@ function InstantDropContent() {
 
     const [mode, setMode] = useState<'select' | 'send' | 'receive'>(initialRoom ? 'receive' : 'select');
     const [roomId, setRoomId] = useState<string>(initialRoom || "");
-    const { recordUsage, isPaywallOpen, setIsPaywallOpen, handleAction, deviceId, isPro, email, loading: usageLoading } = useUsage();
-    const clerkUser = useClerkUser();
-    const clerkLoaded = IS_MOBILE ? true : clerkUser.isLoaded;
-    const isSignedIn = IS_MOBILE ? false : clerkUser.isSignedIn;
+    const { recordUsage, isPaywallOpen, setIsPaywallOpen, handleAction, deviceId, isPro, email } = useUsage();
     const [files, setFiles] = useState<File[]>([]);
     const [currentFileIndex, setCurrentFileIndex] = useState(0);
     const [progress, setProgress] = useState(0);
@@ -50,7 +49,6 @@ function InstantDropContent() {
     const [compressImages, setCompressImages] = useState(false);
     const [isCompressing, setIsCompressing] = useState(false);
     const [transferSpeed, setTransferSpeed] = useState<number | null>(null); // MB/s
-    const [usingGigabitRelay, setUsingGigabitRelay] = useState(false);
 
     const wsRef = useRef<WebSocket | null>(null);
     const logDebug = (msg: string) => {
@@ -65,8 +63,6 @@ function InstantDropContent() {
     const isProRef = useRef(isPro);
     const emailRef = useRef(email);
     const deviceIdRef = useRef(deviceId);
-    const sharedTurnServersRef = useRef<any[] | null>(null);
-    const connTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
     useEffect(() => {
         isProRef.current = isPro;
@@ -83,102 +79,9 @@ function InstantDropContent() {
         statusRef.current = status;
     }, [status]);
 
-    // Wake Lock to prevent mobile screen sleep during transfer
-    const wakeLockRef = useRef<any>(null);
-    useEffect(() => {
-        const requestWakeLock = async () => {
-            if ('wakeLock' in navigator) {
-                try {
-                    wakeLockRef.current = await (navigator as any).wakeLock.request('screen');
-                    logDebug("Screen Wake Lock acquired.");
-                } catch (err: any) {
-                    logDebug(`Wake Lock error: ${err.name}, ${err.message}`);
-                }
-            }
-        };
-        const releaseWakeLock = () => {
-            if (wakeLockRef.current !== null) {
-                wakeLockRef.current.release()
-                    .then(() => {
-                        wakeLockRef.current = null;
-                        logDebug("Screen Wake Lock released.");
-                    });
-            }
-        };
-
-        if (status === 'transferring') {
-            requestWakeLock();
-        } else {
-            releaseWakeLock();
-        }
-
-        // Handle page visibility changes (user minimizing the app)
-        const handleVisibilityChange = () => {
-            if (wakeLockRef.current !== null && document.visibilityState === 'visible') {
-                requestWakeLock();
-            }
-        };
-        document.addEventListener('visibilitychange', handleVisibilityChange);
-
-        return () => {
-            releaseWakeLock();
-            document.removeEventListener('visibilitychange', handleVisibilityChange);
-        };
-    }, [status]);
-
     // Speed tracking
     const lastBytesRef = useRef(0);
     const speedTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
-
-    // --- CONNECTION HARDENING: Robust State Purge ---
-    const resetConnection = () => {
-        logDebug("Purging all active connections for a fresh start...");
-
-        // 1. Close WebRTC Peer Connection
-        if (peerRef.current) {
-            try {
-                // Remove listeners to prevent state updates during closure
-                peerRef.current.onicecandidate = null;
-                peerRef.current.ontrack = null;
-                peerRef.current.onconnectionstatechange = null;
-                peerRef.current.oniceconnectionstatechange = null;
-                peerRef.current.ondatachannel = null;
-
-                peerRef.current.close();
-            } catch (e) { console.error("Error closing peer:", e); }
-            peerRef.current = null;
-        }
-
-        // 2. Close Data Channels
-        dataChannelsRef.current.forEach(dc => {
-            try { dc.close(); } catch (e) { }
-        });
-        dataChannelsRef.current = [];
-
-        // 3. Close WebSocket
-        if (wsRef.current) {
-            try { wsRef.current.close(); } catch (e) { }
-            wsRef.current = null;
-        }
-
-        // 4. Clear Buffers and Intervals
-        iceBuffer.current = [];
-        remoteDescriptionSet.current = false;
-        sharedTurnServersRef.current = null;
-        isActive.current = false;
-
-        if (connTimeoutRef.current) {
-            clearTimeout(connTimeoutRef.current);
-            connTimeoutRef.current = null;
-        }
-
-        if (speedTimerRef.current) {
-            clearInterval(speedTimerRef.current);
-            speedTimerRef.current = null;
-        }
-        setTransferSpeed(null);
-        setUsingGigabitRelay(isProRef.current); // Reset to base status
-    };
 
     // Compress an image file to JPG using canvas (works for JPEG, PNG, WEBP)
     const compressImageFile = async (file: File): Promise<File> => {
@@ -227,8 +130,7 @@ function InstantDropContent() {
     const fileInputRef = useRef<HTMLInputElement>(null);
 
     // --- SENDER LOGIC (Turbo Drop 2.0) ---
-    const prepareFilesForSending = (selectedFiles: FileList | File[]) => {
-        resetConnection(); // Ensure a clean slate before any new session
+    const startSending = (selectedFiles: FileList | File[]) => {
         const fileList = Array.from(selectedFiles);
         setFiles(fileList);
         filesRef.current = fileList;
@@ -250,42 +152,12 @@ function InstantDropContent() {
             ws.onclose = () => clearInterval(heartbeat);
         };
 
-        let senderRtcStarted = false; // dedup guard: only call setupWebRTC once
-
         ws.onmessage = async (event) => {
             console.log("Sender WS Message:", event.data);
-            if (typeof event.data !== 'string') return;
             const data = JSON.parse(event.data);
-            if (data.type === 'peer-connected' || data.type === 'receiver-ready') {
-                if (senderRtcStarted) {
-                    logDebug(`Sender: Ignoring duplicate ${data.type} - WebRTC already starting`);
-                    return;
-                }
-                senderRtcStarted = true;
-                setStatus('connecting');
-                logDebug(`Sender: Remote peer joined (${data.type}). Initiating WebRTC offer...`);
-
-                // Handshake Timeout: If we don't reach 'transferring' within 25 seconds, assume peer dropped.
-                if (connTimeoutRef.current) clearTimeout(connTimeoutRef.current);
-                connTimeoutRef.current = setTimeout(() => {
-                    if (statusRef.current !== 'transferring' && statusRef.current !== 'done') {
-                        logDebug("Sender: Handshake Timeout (25s) - Receiver dropped or network failed.");
-                        setStatus('error');
-                    }
-                }, 25000);
-
-                // Start the WebRTC offer with explicit error logging
-                try {
-                    await setupWebRTC(ws, true);
-                } catch (err) {
-                    console.error("Sender: setupWebRTC FAILED:", err);
-                    logDebug(`Sender: WebRTC Setup Error: ${err}`);
-                    setStatus('error');
-                }
-
-            } else if (data.type === 'file-ready') {
-                logDebug("Sender: Receiver is ready for files. Starting transmission...");
-                startFileTransfer();
+            if (data.type === 'peer-connected') {
+                console.log("Peer connected, starting WebRTC setup");
+                setupWebRTC(ws, true);
             } else if (data.type === 'answer') {
                 console.log("Received answer, setting remote description");
                 await peerRef.current?.setRemoteDescription(new RTCSessionDescription(data.sdp));
@@ -303,11 +175,6 @@ function InstantDropContent() {
                     console.log("Adding remote ICE candidate");
                     await peerRef.current?.addIceCandidate(new RTCIceCandidate(data.candidate));
                 }
-            } else if (data.type === 'peer-disconnected') {
-                logDebug("Sender: Remote peer disconnected. Resetting for retry...");
-                senderRtcStarted = false; // Allow fresh attempt when receiver reconnects
-                resetConnection();
-                setStatus('waiting');
             }
         };
     };
@@ -319,42 +186,20 @@ function InstantDropContent() {
 
         let currentIceServers = [...ICE_SERVERS.iceServers];
         try {
-            logDebug("Fetching high-speed TURN relay servers...");
+            // Fetch TURN relay servers for ALL users — required for cross-network transfers
+            logDebug("Fetching TURN relay servers...");
             const turnRes = await fetch(`${BACKEND_HTTP_URL}/api/turn?deviceId=${deviceIdRef.current}&email=${encodeURIComponent(emailRef.current || "")}`);
-            
             if (turnRes.ok) {
                 const turnData = await turnRes.json();
                 if (Array.isArray(turnData)) {
                     currentIceServers = [...currentIceServers, ...turnData];
-                    setUsingGigabitRelay(true);
-                    logDebug(`✅ TURN Relay: Injected ${turnData.length} servers from backend.`);
-                    console.log("TURN servers received:", JSON.stringify(turnData));
+                    logDebug(`✅ TURN: Injected ${turnData.length} relay servers`);
                 }
             } else {
-                console.warn(`⚠️ TURN fetch HTTP ${turnRes.status} from ${BACKEND_HTTP_URL}/api/turn → using fallback`);
-                throw new Error(`TURN fetch failed: ${turnRes.status}`);
+                logDebug(`⚠️ TURN fetch ${turnRes.status} — using STUN only`);
             }
         } catch (e) {
-            console.warn("⚠️ TURN fetch error:", e, "→ using Frontend Fail-Safe Relay");
-            logDebug("Connectivity Controller Error: falling back to Frontend Fail-Safe Relay...");
-            // FRONTEND FAIL-SAFE:
-            // If the backend API fails (404, CORS, etc.), we provide the free 
-            // Metered Relay servers directly from the frontend to guarantee 
-            // the user can still transfer files across networks.
-            // Expanded fail-safe relay list for maximum cross-network compatibility
-            const failSafeRelay = [
-                // Metered OpenRelay (free TURN)
-                { urls: "turn:openrelay.metered.ca:80", username: "openrelayproject", credential: "openrelayproject" },
-                { urls: "turn:openrelay.metered.ca:443", username: "openrelayproject", credential: "openrelayproject" },
-                { urls: "turn:openrelay.metered.ca:443?transport=tcp", username: "openrelayproject", credential: "openrelayproject" },
-                { urls: "turn:openrelay.metered.ca:3478", username: "openrelayproject", credential: "openrelayproject" },
-                // Backup STUN servers for ICE gathering
-                { urls: "stun:stun3.l.google.com:19302" },
-                { urls: "stun:stun4.l.google.com:19302" },
-                { urls: "stun:stun.cloudflare.com:3478" },
-            ];
-            currentIceServers = [...currentIceServers, ...failSafeRelay];
-            setUsingGigabitRelay(true);
+            logDebug("TURN fetch failed — using STUN only");
         }
 
         const peer = new RTCPeerConnection({ iceServers: currentIceServers });
@@ -368,15 +213,10 @@ function InstantDropContent() {
         };
 
         peer.onconnectionstatechange = () => {
-            logDebug(`WebRTC Connection State: ${peer.connectionState}`);
+            console.log("WebRTC Connection State:", peer.connectionState);
             if (peer.connectionState === 'failed') {
-                if (statusRef.current !== 'done' && statusRef.current !== 'error') {
-                   logDebug("WebRTC Path Failed. Attempting Automatic Optimization...");
-                   // Silently try to rejoin the room to trigger a fresh handshake
-                   // without alarming the user with an "Error" screen.
-                   if (modeRef.current === 'receive') {
-                       setTimeout(() => joinRoom(roomId), 2000);
-                   }
+                if (statusRef.current !== 'done') {
+                    setStatus('error');
                 }
             }
         };
@@ -387,8 +227,7 @@ function InstantDropContent() {
                 const dc = peer.createDataChannel(`file-transfer-${i}`, { ordered: true });
                 dataChannelsRef.current.push(dc);
                 setupDataChannel(dc, i);
-                const isMobile = typeof window !== 'undefined' && /Mobi|Android/i.test(navigator.userAgent);
-                dc.bufferedAmountLowThreshold = isMobile ? 256 * 1024 : 512 * 1024; // Dynamic low-water mark
+                dc.bufferedAmountLowThreshold = 4 * 1024 * 1024; // 4MB ΓÇö maximize pipeline
             }
 
             const offer = await peer.createOffer();
@@ -413,17 +252,13 @@ function InstantDropContent() {
             logDebug(`Channel ${channelIdx} Open. Mode: ${modeRef.current}`);
             // Only start transfer once index 0 is open
             if (channelIdx === 0) {
-                if (connTimeoutRef.current) { clearTimeout(connTimeoutRef.current); connTimeoutRef.current = null; }
                 setStatus('transferring');
                 // Start speed timer
                 lastBytesRef.current = 0;
                 if (speedTimerRef.current) clearInterval(speedTimerRef.current);
                 speedTimerRef.current = setInterval(() => {
-                    const totalBuffered = dataChannelsRef.current.reduce((acc, c) => acc + (c.readyState === 'open' ? c.bufferedAmount : 0), 0);
-                    const currentSent = Math.max(0, totalSentBytesRef.current - totalBuffered);
-                    const currentTotal = modeRef.current === 'send' ? currentSent : totalReceivedBytesRef.current;
-                    const bytesSinceLast = Math.max(0, currentTotal - lastBytesRef.current);
-                    lastBytesRef.current = currentTotal;
+                    const bytesSinceLast = totalSentBytesRef.current + totalReceivedBytesRef.current - lastBytesRef.current;
+                    lastBytesRef.current = totalSentBytesRef.current + totalReceivedBytesRef.current;
                     setTransferSpeed(parseFloat((bytesSinceLast / 1024 / 1024).toFixed(1)));
                 }, 1000);
                 if (modeRef.current === 'send') {
@@ -476,7 +311,6 @@ function InstantDropContent() {
             setTransferSpeed(null);
         };
     };
-
 
     const startFileTransfer = async () => {
         const currentFiles = filesRef.current;
@@ -551,8 +385,7 @@ function InstantDropContent() {
 
                 const workers = dataChannelsRef.current.map(async (dc, chIdx) => {
                     const sectorData = sectorBuffers[chIdx];
-                    const isMobileUser = typeof window !== 'undefined' && /Mobi|Android/i.test(navigator.userAgent);
-                    const THRESHOLD = isMobileUser ? 1024 * 1024 : 2 * 1024 * 1024; // Dynamic high-water mark
+                    const THRESHOLD = 4 * 1024 * 1024; // 4MB buffer drain threshold
                     let offset = 0;
 
                     while (isActive.current && offset < sectorData.byteLength) {
@@ -617,21 +450,11 @@ function InstantDropContent() {
         setMode('receive');
         setStatus('connecting');
 
-        // Handshake Timeout: If we don't reach 'transferring' within 25 seconds, assume sender dropped.
-        if (connTimeoutRef.current) clearTimeout(connTimeoutRef.current);
-        connTimeoutRef.current = setTimeout(() => {
-            if (statusRef.current !== 'transferring' && statusRef.current !== 'done') {
-                logDebug("Receiver: Handshake Timeout (25s) - Sender dropped or network failed.");
-                setStatus('error');
-            }
-        }, 25000);
-
         const ws = new WebSocket(`${BACKEND_WS_URL}/ws/drop/${code}/receiver`);
         wsRef.current = ws;
 
         ws.onopen = () => {
-            logDebug("Receiver: WebSocket Tunnel Established");
-            ws.send(JSON.stringify({ type: 'receiver-ready' }));
+            console.log("Receiver WS Opened");
             const heartbeat = setInterval(() => {
                 if (ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify({ type: 'ping' }));
             }, 10000);
@@ -642,11 +465,7 @@ function InstantDropContent() {
             console.log("Receiver WS Message:", event.data);
             const data = JSON.parse(event.data);
             if (data.type === 'offer') {
-                logDebug("Receiver: Received offer, initiating Gigabit-Handshake...");
-
-                // Clear any existing connection
-                if (peerRef.current) peerRef.current.close();
-
+                console.log("Received offer, setting up WebRTC and creating answer");
                 await setupWebRTC(ws, false);
                 await peerRef.current?.setRemoteDescription(new RTCSessionDescription(data.sdp));
                 remoteDescriptionSet.current = true;
@@ -659,9 +478,6 @@ function InstantDropContent() {
                     await peerRef.current?.addIceCandidate(new RTCIceCandidate(candidate));
                 }
                 iceBuffer.current = [];
-            } else if (data.type === 'pro-turn-servers') {
-                logDebug(`Receiver: Received shared Gigabit Relay servers from Pro Sender`);
-                sharedTurnServersRef.current = data.iceServers;
             } else if (data.type === 'ice-candidate') {
                 if (!remoteDescriptionSet.current) {
                     console.log("Buffering remote ICE candidate (Receiver)");
@@ -670,10 +486,6 @@ function InstantDropContent() {
                     console.log("Adding remote ICE candidate (Receiver)");
                     await peerRef.current?.addIceCandidate(new RTCIceCandidate(data.candidate));
                 }
-            } else if (data.type === 'peer-disconnected') {
-                logDebug("Receiver: Remote peer disconnected. Resetting state...");
-                resetConnection();
-                setStatus('disconnected');
             }
         };
     };
@@ -769,7 +581,7 @@ function InstantDropContent() {
         };
     }, []);
 
-    // Smart save: images use native share sheet (→ Google Photos / iOS Library), docs use anchor download
+    // Smart save: images use native share sheet (ΓåÆ Google Photos / iOS Library), docs use anchor download
     const isImageFile = (blob: Blob, name: string) => {
         const imageTypes = ['image/jpeg', 'image/jpg', 'image/png', 'image/gif', 'image/webp', 'image/heic', 'image/heif'];
         const ext = name.split('.').pop()?.toLowerCase() || '';
@@ -805,14 +617,14 @@ function InstantDropContent() {
         const images = receivedFiles.filter(rf => isImageFile(rf.blob, rf.name));
         const docs = receivedFiles.filter(rf => !isImageFile(rf.blob, rf.name));
 
-        // Batch-share 3+ images in one native share sheet (one tap → Save to Photos/Google Photos)
+        // Batch-share 3+ images in one native share sheet (one tap ΓåÆ Save to Photos/Google Photos)
         if (images.length >= 3 && navigator.canShare) {
             const imageFiles = images.map(rf => new File([rf.blob], rf.name, { type: rf.blob.type || 'image/jpeg' }));
             if (navigator.canShare({ files: imageFiles })) {
                 try {
                     await navigator.share({ files: imageFiles, title: `${images.length} Photos` });
                 } catch (_) {
-                    // Cancelled or failed — fall back to per-image downloads
+                    // Cancelled or failed ΓÇö fall back to per-image downloads
                     for (const rf of images) {
                         await smartSaveFile(rf.blob, rf.name);
                         await new Promise(res => setTimeout(res, 400));
@@ -883,64 +695,29 @@ function InstantDropContent() {
         document.body.appendChild(script);
     };
 
-    const handleFileSelection = async (files: FileList) => {
-        let fileList = Array.from(files) as File[];
-        if (compressImages) {
-            setIsCompressing(true);
-            fileList = await Promise.all(fileList.map(f => compressImageFile(f)));
-            setIsCompressing(false);
-        }
-        handleAction(() => prepareFilesForSending(fileList));
-    };
-
-    const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const handleFileChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
         if (e.target.files && e.target.files.length > 0) {
-            handleAction(() => handleFileSelection(e.target.files!));
+            let fileList = Array.from(e.target.files) as File[];
+            if (compressImages) {
+                setIsCompressing(true);
+                fileList = await Promise.all(fileList.map(f => compressImageFile(f)));
+                setIsCompressing(false);
+            }
+            handleAction(() => startSending(fileList));
         }
     };
 
     return (
         <div className="min-h-screen bg-background flex flex-col font-sans">
-            {/* Header */}
-            <header className="fixed top-0 left-0 right-0 z-50 bg-background/80 backdrop-blur-xl border-b border-border">
-                <div className="max-w-7xl mx-auto px-6 h-16 flex items-center justify-between">
-                    <div className="flex items-center gap-3">
-                        <div className="w-10 h-10 rounded-xl bg-gradient-to-br from-indigo-500 to-purple-600 flex items-center justify-center shadow-lg shadow-indigo-500/20">
-                            <Zap className="w-5 h-5 text-white" />
-                        </div>
-                        <div>
-                            <h1 className="text-lg font-bold tracking-tight text-foreground">
-                                Instant Drop
-                            </h1>
-                            <p className="text-[10px] text-muted-foreground font-medium tracking-wider uppercase">v01.2.8 Gigabit Relay</p>
-                        </div>
-                    </div>
-
-                    <div className="flex items-center gap-4">
-                        <div className="flex items-center gap-2">
-                            {/* <SignedIn>
-                                <UserButton afterSignOutUrl="/tools/instant-drop" />
-                            </SignedIn>
-                            <SignedOut>
-                                <SignInButton mode="modal">
-                                    <Button variant="outline" size="sm" className="text-xs h-8">Login</Button>
-                                </SignInButton>
-                            </SignedOut> */}
-                        </div>
-
-                        <Link href="/" className="p-2 hover:bg-muted rounded-full transition-colors group">
-                            <X className="w-5 h-5 text-muted-foreground group-hover:text-foreground transition-colors" />
-                        </Link>
-                    </div>
-                </div>
-            </header>
+            <Navbar />
 
             <main className="flex-1 container mx-auto px-4 max-w-4xl py-12">
                 <div className="text-center mb-12">
                     <div className="bg-indigo-500/10 p-4 rounded-full inline-block mb-4">
                         <Smartphone className="w-12 h-12 text-indigo-500" />
                     </div>
-                    <h1 className="text-4xl md:text-5xl font-bold text-foreground mb-4">Turbo Drop: Desktop to Mobile</h1>
+                    <h1 className="text-4xl md:text-5xl font-bold text-foreground mb-4">Turbo Drop</h1>
+                    <p className="text-xs text-muted-foreground font-medium tracking-widest uppercase mb-2">v01.3.0 Gigabit Relay</p>
                     <p className="text-lg text-muted-foreground max-w-2xl mx-auto">
                         The ultimate high-speed file sharing app. Transfer photos and large files (up to 200MB) from desktop to mobile or mobile to mobile instantly.
                     </p>
@@ -1023,29 +800,23 @@ function InstantDropContent() {
 
                     {mode !== 'select' && (
                         <div className="space-y-8 animate-in fade-in zoom-in-95 duration-300 w-full">
-                            {mode === 'send' && (status === 'waiting' || status === 'connecting' || status === 'transferring') && (
+                            {mode === 'send' && status === 'waiting' && (
                                 <>
-                                    <h2 className="text-2xl font-bold">
-                                        {status === 'waiting' ? 'Ready to Send' : 'Sending File'}
-                                    </h2>
-                                    {status === 'waiting' && (
-                                        <p className="text-muted-foreground">Scan the QR code with another device to download.</p>
-                                    )}
+                                    <h2 className="text-2xl font-bold">Ready to Send</h2>
+                                    <p className="text-muted-foreground">Scan the QR code with another device to download.</p>
 
-                                    {status === 'waiting' && (
-                                        <div className="bg-background rounded-2xl p-6 shadow-sm inline-block mx-auto border border-border">
-                                            <QRCodeSVG
-                                                value={`${typeof window !== 'undefined' ? window.location.origin : ''}/tools/instant-drop?room=${roomId}`}
-                                                size={200}
-                                                level="H"
-                                                includeMargin={true}
-                                                fgColor="#000"
-                                                bgColor="#FFF"
-                                            />
-                                        </div>
-                                    )}
+                                    <div className="bg-background rounded-2xl p-6 shadow-sm inline-block mx-auto border border-border">
+                                        <QRCodeSVG
+                                            value={`${typeof window !== 'undefined' ? window.location.origin : ''}/tools/instant-drop?room=${roomId}`}
+                                            size={200}
+                                            level="H"
+                                            includeMargin={true}
+                                            fgColor="#000"
+                                            bgColor="#FFF"
+                                        />
+                                    </div>
 
-                                    <div className={`text-3xl font-mono font-bold tracking-[0.5em] text-indigo-600 bg-indigo-50 dark:bg-indigo-950/30 py-4 rounded-xl ${status !== 'waiting' ? 'opacity-50' : ''}`}>
+                                    <div className="text-3xl font-mono font-bold tracking-[0.5em] text-indigo-600 bg-indigo-50 dark:bg-indigo-950/30 py-4 rounded-xl">
                                         {roomId}
                                     </div>
                                 </>
@@ -1063,7 +834,7 @@ function InstantDropContent() {
                                             </p>
                                             <p className="text-xs text-muted-foreground flex items-center mt-1">
                                                 <span className="bg-indigo-100 text-indigo-700 dark:bg-indigo-900/40 dark:text-indigo-300 px-2 py-0.5 rounded-full font-bold inline-flex items-center gap-1 mr-2">
-                                                    ⚡ 4x Sector Speed
+                                                    ΓÜí 4x Sector Speed
                                                 </span>
                                                 Batch size: {mode === 'send'
                                                     ? (files.reduce((acc, f) => acc + f.size, 0) / 1024 / 1024).toFixed(2)
@@ -1113,7 +884,7 @@ function InstantDropContent() {
                                                             : transferSpeed >= 1 ? 'bg-amber-100 text-amber-700 dark:bg-amber-900/40 dark:text-amber-300'
                                                                 : 'bg-red-100 text-red-700 dark:bg-red-900/40 dark:text-red-300'
                                                             }`}>
-                                                            ⚡ {transferSpeed} MB/s
+                                                            ΓÜí {transferSpeed} MB/s
                                                         </span>
                                                     )}
                                                     <span>{progress}%</span>
@@ -1132,7 +903,7 @@ function InstantDropContent() {
                                         <div className="flex flex-col items-center justify-center p-6 bg-green-50 dark:bg-green-900/10 border border-green-200 dark:border-green-800 rounded-xl space-y-4">
                                             <CheckCircle className="w-12 h-12 text-green-500" />
                                             <p className="text-lg font-bold text-green-700 dark:text-green-400">All Files Transferred!</p>
-                                            <Button variant="outline" onClick={() => window.location.href = '/tools/instant-drop'}>
+                                            <Button variant="outline" onClick={() => { setMode('select'); setStatus('disconnected'); setFiles([]); }}>
                                                 Send More
                                             </Button>
                                         </div>
@@ -1141,10 +912,12 @@ function InstantDropContent() {
                             )}
 
                             {status === 'error' && (
-                                <div className="p-6 bg-indigo-50 text-indigo-600 rounded-xl border border-indigo-200 flex flex-col items-center">
-                                    <Loader2 className="w-8 h-8 animate-spin mb-3 text-indigo-400" />
-                                    <p className="font-bold">Optimizing Connection</p>
-                                    <p className="text-sm mt-1 text-center">Firewall or slow network detected. Re-establishing high-speed tunnel...</p>
+                                <div className="p-6 bg-red-50 text-red-600 rounded-xl border border-red-200">
+                                    <p className="font-bold">Connection Failed</p>
+                                    <p className="text-sm mt-2 mb-4">Could not establish direct peer-to-peer connection.</p>
+                                    <Button variant="outline" className="border-red-200 hover:bg-red-100" onClick={() => { setMode('select'); setStatus('disconnected'); }}>
+                                        Try Again
+                                    </Button>
                                 </div>
                             )}
                         </div>
@@ -1222,23 +995,25 @@ function InstantDropContent() {
                                             <div key={idx} className="flex items-center justify-between p-3 bg-card border rounded-lg">
                                                 <p className="text-xs font-semibold text-left truncate flex-1 mr-2">{rf.name}</p>
                                                 <Button size="sm" variant="secondary" onClick={() => smartSaveFile(rf.blob, rf.name)}>
-                                                    {isImageFile(rf.blob, rf.name) ? '📷 Save' : '💾 Save'}
+                                                    {isImageFile(rf.blob, rf.name) ? '≡ƒô╖ Save' : '≡ƒÆ╛ Save'}
                                                 </Button>
                                             </div>
                                         ))}
                                     </div>
 
-                                    <Button variant="ghost" className="mt-4" onClick={() => window.location.href = '/tools/instant-drop'}>
+                                    <Button variant="ghost" className="mt-4" onClick={() => { setMode('select'); setStatus('disconnected'); setReceivedFiles([]); }}>
                                         Receive More
                                     </Button>
                                 </div>
                             )}
 
                             {status === 'error' && (
-                                <div className="p-6 bg-indigo-50 text-indigo-600 rounded-xl border border-indigo-200 flex flex-col items-center">
-                                    <Loader2 className="w-8 h-8 animate-spin mb-3 text-indigo-400" />
-                                    <p className="font-bold">Optimizing Connection</p>
-                                    <p className="text-sm mt-1 text-center">Firewall or slow network detected. Re-establishing high-speed tunnel...</p>
+                                <div className="p-6 bg-red-50 text-red-600 rounded-xl border border-red-200">
+                                    <p className="font-bold">Connection Failed</p>
+                                    <p className="text-sm mt-2 mb-4">Could not establish direct peer-to-peer connection.</p>
+                                    <Button variant="outline" className="border-red-200 hover:bg-red-100" onClick={() => { setMode('select'); setStatus('disconnected'); }}>
+                                        Try Again
+                                    </Button>
                                 </div>
                             )}
                         </div>
