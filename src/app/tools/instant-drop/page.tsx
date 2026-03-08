@@ -396,57 +396,63 @@ function InstantDropContent() {
             };
             window.addEventListener('webrtc-sender-msg', checkReady);
 
-            const startParallelBurst = async () => {
-                const numChannels = dataChannelsRef.current.length;
-                const sectorSize = Math.ceil(file.size / numChannels);
-
-                // PRE-READ all sectors into memory BEFORE sending.
-                // This eliminates the disk-read bottleneck inside the send loop.
-                logDebug(`Sender: Pre-reading ${file.size} bytes into ${numChannels} sectors`);
-                const sectorBuffers: ArrayBuffer[] = await Promise.all(
-                    dataChannelsRef.current.map((_, chIdx) => {
-                        const start = chIdx * sectorSize;
-                        const end = Math.min(start + sectorSize, file.size);
-                        return file.slice(start, end).arrayBuffer();
-                    })
-                );
-                logDebug(`Sender: All sectors pre-read. Starting parallel burst.`);
-
-                let sectorsFinished = 0;
-
-                const workers = dataChannelsRef.current.map(async (dc, chIdx) => {
-                    const sectorData = sectorBuffers[chIdx];
-                    const THRESHOLD = 2 * 1024 * 1024; // 2MB trigger
-                    let offset = 0;
-
-                    while (isActive.current && offset < sectorData.byteLength) {
-                        if (dc.bufferedAmount > THRESHOLD) {
-                            await new Promise<void>(res => {
-                                dc.onbufferedamountlow = () => { dc.onbufferedamountlow = null; res(); };
-                            });
-                        }
-
-                        const chunkLen = Math.min(CHUNK_SIZE, sectorData.byteLength - offset);
-                        const chunk = sectorData.slice(offset, offset + chunkLen);
-
-                        if (dc.readyState === 'open') {
-                            try {
-                                dc.send(chunk);
-                                offset += chunkLen;
-                                totalSentBytesRef.current += chunkLen;
-
-                                const totalBuffered = dataChannelsRef.current.reduce(
-                                    (acc, c) => acc + (c.readyState === 'open' ? c.bufferedAmount : 0), 0
-                                );
-                                const trueSent = Math.max(0, totalSentBytesRef.current - totalBuffered);
-                                setProgress(Math.round((trueSent / file.size) * 100));
-                            } catch (err) {
-                                console.error("WebRTC Send Error (likely maxMessageSize or buffer full):", err);
-                                // If send fails (e.g., buffer overflow), wait and try again
-                                await new Promise(res => setTimeout(res, 100));
+                const startParallelBurst = async () => {
+                    const numChannels = dataChannelsRef.current.length;
+                    const sectorSize = Math.ceil(file.size / numChannels);
+                    
+                    // Sensing: Check if we are on a Relay connection
+                    let isRelay = false;
+                    try {
+                        const stats = await peerRef.current?.getStats();
+                        stats?.forEach(report => {
+                            if (report.type === 'remote-candidate' || report.type === 'local-candidate') {
+                                if (report.candidateType === 'relay') isRelay = true;
                             }
-                        } else break;
-                    }
+                        });
+                        logDebug(`Sender: Adaptive Sensing - Relay Detected: ${isRelay}`);
+                    } catch (e) { }
+
+                    // Adaptive Thresholds: 256KB for Relay (prevent bloat), 2MB for P2P (max speed)
+                    const ADAPTIVE_THRESHOLD = isRelay ? 256 * 1024 : 2 * 1024 * 1024;
+                    logDebug(`Sender: Starting burst with ${isRelay ? 'Safe-Relay' : 'High-Speed'} logic (${ADAPTIVE_THRESHOLD / 1024}KB window).`);
+
+                    dataChannelsRef.current.map(async (dc, chIdx) => {
+                        const startOffset = chIdx * sectorSize;
+                        const endOffset = Math.min(startOffset + sectorSize, file.size);
+                        let offset = startOffset;
+                        let chunkCounter = 0;
+
+                        while (isActive.current && offset < endOffset) {
+                            if (dc.bufferedAmount > ADAPTIVE_THRESHOLD) {
+                                await new Promise<void>(res => {
+                                    dc.onbufferedamountlow = () => { dc.onbufferedamountlow = null; res(); };
+                                });
+                            }
+
+                            const chunkLen = Math.min(CHUNK_SIZE, endOffset - offset);
+                            // ZERO-COPY: Slice directly from the file object
+                            const chunk = await file.slice(offset, offset + chunkLen).arrayBuffer();
+
+                            if (dc.readyState === 'open') {
+                                try {
+                                    dc.send(chunk);
+                                    offset += chunkLen;
+                                    totalSentBytesRef.current += chunkLen;
+                                    chunkCounter++;
+
+                                    // UI Performance: Only update progress every 100 chunks to save CPU
+                                    if (chunkCounter % 100 === 0 || offset >= endOffset) {
+                                        const totalBuffered = dataChannelsRef.current.reduce(
+                                            (acc, c) => acc + (c.readyState === 'open' ? c.bufferedAmount : 0), 0
+                                        );
+                                        const trueSent = Math.max(0, totalSentBytesRef.current - totalBuffered);
+                                        setProgress(Math.round((trueSent / file.size) * 100));
+                                    }
+                                } catch (err) {
+                                    await new Promise(res => setTimeout(res, 100));
+                                }
+                            } else break;
+                        }
                     if (isActive.current && dc.readyState === 'open') {
                         dc.send(JSON.stringify({ type: 'sector-eof', channel: chIdx }));
                     }
@@ -749,7 +755,7 @@ function InstantDropContent() {
                         <Smartphone className="w-12 h-12 text-indigo-500" />
                     </div>
                     <h1 className="text-4xl md:text-5xl font-bold text-foreground mb-4">Turbo Drop</h1>
-                    <p className="text-xs text-muted-foreground font-medium tracking-widest uppercase mb-2">v01.3.6 Gigabit Relay</p>
+                    <p className="text-xs text-muted-foreground font-medium tracking-widest uppercase mb-2">v01.3.7 Adaptive</p>
                     <p className="text-lg text-muted-foreground max-w-2xl mx-auto">
                         The ultimate high-speed file sharing app. Transfer photos and large files (up to 200MB) from desktop to mobile or mobile to mobile instantly.
                     </p>
