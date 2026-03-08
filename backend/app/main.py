@@ -82,6 +82,50 @@ class ConnectionManager:
 
 manager = ConnectionManager()
 
+# -----------------------------------------------------------------------
+# TURN SERVER RELAY ENDPOINT
+# Required for WebRTC ICE negotiation across different networks (NAT traversal).
+# Both sender and receiver call this to get TURN relay credentials.
+# Without this, cross-network transfers fail completely.
+# -----------------------------------------------------------------------
+@app.get("/api/turn")
+async def get_turn_servers(
+    request: Request,
+    deviceId: str = "",
+    email: str = ""
+):
+    print(f"TURN request from device={deviceId[:10]}... email={email}")
+    turn_servers = [
+        {
+            "urls": "turn:openrelay.metered.ca:80",
+            "username": "openrelayproject",
+            "credential": "openrelayproject"
+        },
+        {
+            "urls": "turn:openrelay.metered.ca:443",
+            "username": "openrelayproject",
+            "credential": "openrelayproject"
+        },
+        {
+            "urls": "turn:openrelay.metered.ca:443?transport=tcp",
+            "username": "openrelayproject",
+            "credential": "openrelayproject"
+        },
+        {
+            "urls": "turn:openrelay.metered.ca:3478",
+            "username": "openrelayproject",
+            "credential": "openrelayproject"
+        },
+        {
+            "urls": "stun:stun.cloudflare.com:3478"
+        },
+        {
+            "urls": "stun:stun3.l.google.com:19302"
+        }
+    ]
+    print(f"Returning {len(turn_servers)} TURN/STUN servers")
+    return turn_servers
+
 # --- MONETIZATION ENDPOINTS (Phase 8) ---
 
 # --- MONETIZATION ENDPOINTS (Phase 8 - PADDLE) ---
