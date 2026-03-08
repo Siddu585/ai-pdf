@@ -13,10 +13,13 @@ from app.pdf_agent import run_iterative_pdf_compression, organize_pdf, extract_p
 from app.ocr_agent import extract_text_from_image
 from app.chat_agent import chat_with_pdf
 from app.image_agent import run_iterative_image_compression
-from fastapi.concurrency import run_in_threadpool
+import hashlib
+from datetime import datetime
+import httpx
+import uvicorn
 import functools
 import sys
-import os
+from fastapi.concurrency import run_in_threadpool
 
 # ENTERPRISE SCALING HACK — DISABLED
 # WebSocket rooms use in-memory state (manager.rooms).
@@ -96,9 +99,12 @@ async def get_turn_servers(
     deviceId: str = "",
     email: str = ""
 ):
-    print(f"TURN request: device={deviceId[:8]}... email={email[:15]}...")
+    # Safer slicing for IDE
+    d_id = (deviceId or "")[:8]
+    e_mail = (email or "")[:15]
+    print(f"TURN request: device={d_id}... email={e_mail}...")
     
-    # Check eligibility: Pro users OR first 5 free users get paid TURN access
+    # Check eligibility: Pro users OR first free users get paid TURN access
     email_norm = email.lower().strip() if email else ""
     is_pro = (deviceId in tracker.pro_users if deviceId else False) or \
              (email_norm in tracker.pro_users if email_norm else False) or \
@@ -110,13 +116,12 @@ async def get_turn_servers(
         today = datetime.now().strftime("%Y-%m-%d")
         count = tracker.data.get(today, {}).get(key, 0)
         # User said first 5 instances get Pro service (TURN)
-        if count >= 8: # Added a small buffer for UX (8 instead of 5)
+        if count >= 8: # 8 instead of 5 for buffer
             usage_allowed = False
-            print(f"🚫 Usage limit reached for {key[:8]} (Free), providing minimal STUN")
+            k_id = (key or "")[:8]
+            print(f"🚫 TURN Limit: {k_id} used {count} times")
 
     if is_pro or usage_allowed:
-        # Try to get fresh credentials from Metered API (Paid Reliable Servers)
-        import httpx
         try:
             async with httpx.AsyncClient(timeout=3.0) as client:
                 resp = await client.get(
@@ -125,31 +130,17 @@ async def get_turn_servers(
                 )
                 if resp.status_code == 200:
                     servers = resp.json()
-                    print(f"✅ Metered TURN: Returning {len(servers)} servers (Status: {'Pro' if is_pro else 'Trial'})")
+                    status_log = "Pro" if is_pro else "Trial"
+                    print(f"✅ Metered TURN: Returning {len(servers)} servers ({status_log})")
                     return servers
-                else:
-                    print(f"⚠️ Metered API error {resp.status_code}, using hardcoded paid-relay fallback")
         except Exception as e:
-            print(f"⚠️ Metered API connection failed: {e}")
+            print(f"⚠️ Metered API error: {e}")
 
-    # Fallback to Public OpenRelay for everyone else or if API is down
-    print("ℹ️ Providing Public OpenRelay Fallback")
+    # Fallback to Public OpenRelay for others
     return [
-        {
-            "urls": "turn:openrelay.metered.ca:80",
-            "username": "openrelayproject",
-            "credential": "openrelayproject"
-        },
-        {
-            "urls": "turn:openrelay.metered.ca:443",
-            "username": "openrelayproject",
-            "credential": "openrelayproject"
-        },
-        {
-            "urls": "turn:openrelay.metered.ca:443?transport=tcp",
-            "username": "openrelayproject",
-            "credential": "openrelayproject"
-        },
+        {"urls": "turn:openrelay.metered.ca:80", "username": "openrelayproject", "credential": "openrelayproject"},
+        {"urls": "turn:openrelay.metered.ca:443", "username": "openrelayproject", "credential": "openrelayproject"},
+        {"urls": "turn:openrelay.metered.ca:443?transport=tcp", "username": "openrelayproject", "credential": "openrelayproject"},
         {"urls": "stun:stun.l.google.com:19302"},
         {"urls": "stun:stun.cloudflare.com:3478"}
     ]

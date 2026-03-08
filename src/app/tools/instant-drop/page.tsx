@@ -202,30 +202,34 @@ function InstantDropContent() {
     };
 
     const setupWebRTC = async (ws: WebSocket, isSender: boolean) => {
-        logDebug(`Setting up RTCPeerConnection (Parallel), isSender: ${isSender}`);
-        // HARD RESET for parallel channel persistence
+        logDebug(`Setting up RTCPeerConnection (v01.3.6), isSender: ${isSender}`);
+        
+        // CRITICAL: Reset signaling state for new session
+        remoteDescriptionSet.current = false;
+        iceBuffer.current = [];
         dataChannelsRef.current = [];
 
-        let currentIceServers = [...ICE_SERVERS.iceServers];
-        try {
-            // Fetch TURN relay servers for ALL users — required for cross-network transfers
-            logDebug("Fetching TURN relay servers...");
-            const turnRes = await fetch(`${BACKEND_HTTP_URL}/api/turn?deviceId=${deviceIdRef.current}&email=${encodeURIComponent(emailRef.current || "")}`);
-            if (turnRes.ok) {
-                const turnData = await turnRes.json();
-                if (Array.isArray(turnData)) {
-                    currentIceServers = [...currentIceServers, ...turnData];
-                    logDebug(`✅ TURN: Injected ${turnData.length} relay servers`);
-                }
-            } else {
-                logDebug(`⚠️ TURN fetch ${turnRes.status} — using STUN only`);
-            }
-        } catch (e) {
-            logDebug("TURN fetch failed — using STUN only");
-        }
-
-        const peer = new RTCPeerConnection({ iceServers: currentIceServers });
+        // Initialize Peer SYNCHRONOUSLY with default STUN/TURN to avoid signaling race conditions
+        const peer = new RTCPeerConnection(ICE_SERVERS);
         peerRef.current = peer;
+
+        // Asynchronously fetch additional relay servers and update configuration
+        const fetchRelays = async () => {
+            try {
+                const turnRes = await fetch(`${BACKEND_HTTP_URL}/api/turn?deviceId=${deviceIdRef.current}&email=${encodeURIComponent(emailRef.current || "")}`);
+                if (turnRes.ok) {
+                    const turnData = await turnRes.json();
+                    if (Array.isArray(turnData)) {
+                        const newConfig = { iceServers: [...ICE_SERVERS.iceServers, ...turnData] };
+                        peer.setConfiguration(newConfig);
+                        logDebug(`✅ TURN: Injected ${turnData.length} additional relay servers`);
+                    }
+                }
+            } catch (e) {
+                logDebug("TURN fetch non-blocking failure - using defaults");
+            }
+        };
+        fetchRelays();
 
         peer.onicecandidate = (e) => {
             if (e.candidate) {
@@ -745,7 +749,7 @@ function InstantDropContent() {
                         <Smartphone className="w-12 h-12 text-indigo-500" />
                     </div>
                     <h1 className="text-4xl md:text-5xl font-bold text-foreground mb-4">Turbo Drop</h1>
-                    <p className="text-xs text-muted-foreground font-medium tracking-widest uppercase mb-2">v01.3.5 Gigabit Relay</p>
+                    <p className="text-xs text-muted-foreground font-medium tracking-widest uppercase mb-2">v01.3.6 Gigabit Relay</p>
                     <p className="text-lg text-muted-foreground max-w-2xl mx-auto">
                         The ultimate high-speed file sharing app. Transfer photos and large files (up to 200MB) from desktop to mobile or mobile to mobile instantly.
                     </p>
