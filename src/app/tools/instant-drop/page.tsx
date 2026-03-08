@@ -411,18 +411,31 @@ function InstantDropContent() {
                         logDebug(`Sender: Adaptive Sensing - Relay Detected: ${isRelay}`);
                     } catch (e) { }
 
-                    // HYPERDRIVE 2.0 TUNING:
-                    // 1. Channel Balance: 6 for Relays, 8 for P2P
-                    // 2. High-Speed Threshold: 2MB for Relays, 4MB for P2P (maximize pipe)
-                    const activeChannelCount = isRelay ? 6 : numChannels;
-                    const ADAPTIVE_THRESHOLD = isRelay ? 2 * 1024 * 1024 : 4 * 1024 * 1024;
+                    // HYPERDRIVE 3.0 TUNING:
+                    // 1. Parallel Saturation: Use all channels (8) for both P2P and Relay.
+                    // 2. Aggressive Windows: 4MB per channel (32MB total) to saturate LTE/5G pipes.
+                    const activeChannelCount = numChannels;
+                    const ADAPTIVE_THRESHOLD = isRelay ? 4 * 1024 * 1024 : 8 * 1024 * 1024;
                     
-                    logDebug(`Sender: Starting Hyperdrive Pipelined ${isRelay ? 'Relay' : 'P2P'} Burst (${activeChannelCount} channels, ${ADAPTIVE_THRESHOLD / 1024}KB window)`);
+                    logDebug(`Sender: Starting Hyperdrive 3.0 ${isRelay ? 'Relay' : 'P2P'} Burst (${activeChannelCount} channels, ${ADAPTIVE_THRESHOLD / 1024}KB window/ch)`);
 
                     let fileOffset = 0;
-                    const BLOCK_SIZE = 4 * 1024 * 1024; // 4MB Sequential Blocks
-                    
-                    // PIPELINED READ-AHEAD: Kick off first read
+                    const BLOCK_SIZE = 8 * 1024 * 1024; // 8MB Sequential Blocks
+                    let lastProgressTime = Date.now();
+                    let lastSentBytes = 0;
+
+                    // BITRATE MONITOR
+                    const bitrateInterval = setInterval(() => {
+                        const now = Date.now();
+                        const deltaSec = (now - lastProgressTime) / 1000;
+                        const deltaBytes = totalSentBytesRef.current - lastSentBytes;
+                        const mbps = (deltaBytes / 1024 / 1024) / deltaSec;
+                        logDebug(`Sender: Current Bitrate: ${mbps.toFixed(2)} MB/s`);
+                        lastProgressTime = now;
+                        lastSentBytes = totalSentBytesRef.current;
+                    }, 1000);
+
+                    // PIPELINED READ-AHEAD: First read
                     let nextBlockPromise = (async () => {
                         const readLen = Math.min(BLOCK_SIZE, file.size - fileOffset);
                         const buf = await file.slice(fileOffset, fileOffset + readLen).arrayBuffer();
@@ -430,12 +443,10 @@ function InstantDropContent() {
                     })();
 
                     while (isActive.current && fileOffset < file.size) {
-                        // Wait for current block to be ready
                         const { buffer: blockBuffer } = await nextBlockPromise;
                         const currentBlockLen = blockBuffer.byteLength;
                         fileOffset += currentBlockLen;
 
-                        // Start reading NEXT block immediately (Pipelining)
                         if (fileOffset < file.size) {
                             const nextReadLen = Math.min(BLOCK_SIZE, file.size - fileOffset);
                             const nextOff = fileOffset;
@@ -445,7 +456,6 @@ function InstantDropContent() {
                             })();
                         }
                         
-                        // Parallel Burst from Memory Block
                         const workers = [];
                         const subSectorSize = Math.ceil(blockBuffer.byteLength / activeChannelCount);
 
@@ -453,8 +463,6 @@ function InstantDropContent() {
                             workers.push((async () => {
                                 const dc = dataChannelsRef.current[chIdx];
                                 if (!dc) return;
-                                
-                                // Set aggressive low threshold (half of window)
                                 dc.bufferedAmountLowThreshold = ADAPTIVE_THRESHOLD / 2;
                                 
                                 const start = chIdx * subSectorSize;
@@ -482,7 +490,6 @@ function InstantDropContent() {
 
                         await Promise.all(workers);
 
-                        // UI Progress update after each pipeline block
                         const totalBuffered = dataChannelsRef.current.reduce(
                             (acc, c) => acc + (c.readyState === 'open' ? c.bufferedAmount : 0), 0
                         );
@@ -490,7 +497,7 @@ function InstantDropContent() {
                         setProgress(Math.round((trueSent / file.size) * 100));
                     }
 
-                    // Send Sector EOF on all used channels
+                    clearInterval(bitrateInterval);
                     for (let i = 0; i < activeChannelCount; i++) {
                         if (dataChannelsRef.current[i]?.readyState === 'open') {
                              dataChannelsRef.current[i].send(JSON.stringify({ 
@@ -797,7 +804,7 @@ function InstantDropContent() {
                         <Smartphone className="w-12 h-12 text-indigo-500" />
                     </div>
                     <h1 className="text-4xl md:text-5xl font-bold text-foreground mb-4">Turbo Drop</h1>
-                    <p className="text-xs text-muted-foreground font-medium tracking-widest uppercase mb-2">v01.4.1 Pipelined</p>
+                    <p className="text-xs text-muted-foreground font-medium tracking-widest uppercase mb-2">v01.4.2 Hyperdrive 3.0</p>
                     <p className="text-lg text-muted-foreground max-w-2xl mx-auto">
                         The ultimate high-speed file sharing app. Transfer photos and large files (up to 200MB) from desktop to mobile or mobile to mobile instantly.
                     </p>
