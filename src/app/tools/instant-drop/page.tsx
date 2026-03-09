@@ -240,7 +240,7 @@ function InstantDropContent() {
     };
 
     const setupWebRTC = async (ws: WebSocket, isSender: boolean) => {
-        logDebug(`Setting up RTCPeerConnection (v02.0.7 Universal-Gold), isSender: ${isSender}`);
+        logDebug(`Setting up RTCPeerConnection (v02.0.8 Ultimate-Gold), isSender: ${isSender}`);
         
         // CRITICAL: Reset signaling state for new session
         remoteDescriptionSet.current = false;
@@ -398,12 +398,13 @@ function InstantDropContent() {
 
         dc.onopen = () => {
             logDebug(`✅ DataChannel ${channelIdx} OPEN (Mode: ${modeRef.current})`);
-            // v02.0.3: Start transfer ONLY after index 0 is open + a 500ms "Stability Breath"
-            // This ensures all 8 channels have time to settle on both Mobile and Desktop.
-            if (channelIdx === 0 && modeRef.current === 'send' && !isActive.current) {
-                logDebug("DataChannel 0 OPEN - Waiting 500ms for sub-channel stabilization...");
+            // v02.0.8: Start transfer as soon as ANY channel is open (resilient to slow index-0)
+            const openCount = dataChannelsRef.current.filter(c => c.readyState === 'open').length;
+            if (openCount >= 1 && modeRef.current === 'send' && !isActive.current) {
+                logDebug(`DataChannel(s) OPEN (${openCount}/8) - Waiting 500ms Stability Breath...`);
+                isActive.current = true; // Guard immediately to prevent double-trigger
                 setTimeout(() => {
-                    logDebug("Starting Gold Standard parallel transfer...");
+                    logDebug("Starting Ultimate-Gold parallel transfer...");
                     setStatus('transferring');
                     // Start speed timer
                     lastBytesRef.current = 0;
@@ -484,7 +485,7 @@ function InstantDropContent() {
             const sendMeta = async () => {
                 if (isResolved) return;
                 
-                if (dataChannelsRef.current[0]?.readyState !== 'open') return;
+                // v02.0.8: Remove Channel-0 check to allow reliable WebSocket signaling
                 logDebug(`Sender: Sending Parallel Metadata (OOBS) for ${file.name}`);
                 sendControlMsg({
                     type: 'metadata',
@@ -939,7 +940,7 @@ function InstantDropContent() {
                         <Smartphone className="w-12 h-12 text-indigo-500" />
                     </div>
                     <h1 className="text-4xl md:text-5xl font-bold text-foreground mb-4">Turbo Drop</h1>
-                    <p className="text-xs text-muted-foreground font-medium tracking-widest uppercase mb-2">v02.0.7 Universal-Gold (The True Champion)</p>
+                    <p className="text-xs text-muted-foreground font-medium tracking-widest uppercase mb-2">v02.0.8 Ultimate-Gold (The True Champion)</p>
                     <p className="text-lg text-muted-foreground max-w-2xl mx-auto">
                         The ultimate high-speed file sharing app. Transfer photos and large files (up to 200MB) from desktop to mobile or mobile to mobile instantly.
                     </p>
