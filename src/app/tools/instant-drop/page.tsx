@@ -240,12 +240,12 @@ function InstantDropContent() {
     };
 
     const setupWebRTC = async (ws: WebSocket, isSender: boolean) => {
-        // v02.0.10: Prevent redundant re-initialization if a handshake is already in progress
-        if (peerRef.current && peerRef.current.signalingState !== 'stable') {
-            logDebug("WebRTC: Handshake already in progress, skipping redundant setup.");
+        // v02.0.11: Stronger Titanium Guard - Ignore signals if handshake or connection is already active
+        if (peerRef.current && (peerRef.current.signalingState !== 'stable' || peerRef.current.iceConnectionState === 'connected' || peerRef.current.iceConnectionState === 'completed')) {
+            logDebug("WebRTC: Connection/Handshake already active, skipping redundant setup.");
             return;
         }
-        logDebug(`Setting up RTCPeerConnection (v02.0.10 True-Gold), isSender: ${isSender}`);
+        logDebug(`Setting up RTCPeerConnection (v02.0.11 Titanium-Gold), isSender: ${isSender}`);
         
         // CRITICAL: Reset signaling state for new session
         remoteDescriptionSet.current = false;
@@ -273,8 +273,8 @@ function InstantDropContent() {
             }
         }, 5000);
 
-        // Asynchronously fetch additional relay servers and update configuration
-        const fetchRelays = async () => {
+        // v02.0.11: Titanium Sequential Setup - Await relays before creating channel/offer to resolve Desktop races
+        const injectRelays = async () => {
             try {
                 const turnRes = await fetch(`${BACKEND_HTTP_URL}/api/turn?deviceId=${deviceIdRef.current}&email=${encodeURIComponent(emailRef.current || "")}`);
                 if (turnRes.ok) {
@@ -289,7 +289,7 @@ function InstantDropContent() {
                 logDebug("TURN fetch non-blocking failure - using defaults");
             }
         };
-        fetchRelays();
+        await injectRelays();
 
         peer.onicecandidate = (e) => {
             if (e.candidate) {
@@ -946,7 +946,7 @@ function InstantDropContent() {
                         <Smartphone className="w-12 h-12 text-indigo-500" />
                     </div>
                     <h1 className="text-4xl md:text-5xl font-bold text-foreground mb-4">Turbo Drop</h1>
-                    <p className="text-xs text-muted-foreground font-medium tracking-widest uppercase mb-2">v02.0.10 True-Gold (The Ultimate Champion)</p>
+                    <p className="text-xs text-muted-foreground font-medium tracking-widest uppercase mb-2">v02.0.11 Titanium-Gold (The Final Fortress)</p>
                     <p className="text-lg text-muted-foreground max-w-2xl mx-auto">
                         The ultimate high-speed file sharing app. Transfer photos and large files (up to 200MB) from desktop to mobile or mobile to mobile instantly.
                     </p>
