@@ -328,8 +328,17 @@ function InstantDropContent() {
                     dc.bufferedAmountLowThreshold = 64 * 1024; // v02.0.3: 64KB threshold (Stability Gold)
                 }
 
+                // v02.0.15: Engine Settling - Wait 200ms for browser engine to finalize channels before offer
+                logDebug("WebRTC: Channels created. Waiting 200ms for engine to settle...");
+                await new Promise(res => setTimeout(res, 200));
+
+                logDebug("WebRTC: Generating connection Offer...");
                 const offer = await peer.createOffer();
+                
+                logDebug("WebRTC: Setting Local Description...");
                 await peer.setLocalDescription(offer);
+                
+                logDebug("WebRTC: Offer Sent via WebSocket.");
                 ws.send(JSON.stringify({ type: 'offer', sdp: offer }));
             } else {
                 logDebug("Awaiting Parallel DataChannels (Receiver)");
@@ -970,7 +979,7 @@ function InstantDropContent() {
                         <Smartphone className="w-12 h-12 text-indigo-500" />
                     </div>
                     <h1 className="text-4xl md:text-5xl font-bold text-foreground mb-4">Turbo Drop</h1>
-                    <p className="text-xs text-muted-foreground font-medium tracking-widest uppercase mb-2">v02.0.14 Stellar-Gold (The Instant Master)</p>
+                    <p className="text-xs text-muted-foreground font-medium tracking-widest uppercase mb-2">v02.0.15 Infinity-Gold (The Unstoppable Engine)</p>
                     <p className="text-lg text-muted-foreground max-w-2xl mx-auto">
                         The ultimate high-speed file sharing app. Transfer photos and large files (up to 200MB) from desktop to mobile or mobile to mobile instantly.
                     </p>
