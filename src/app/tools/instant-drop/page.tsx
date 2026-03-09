@@ -240,12 +240,13 @@ function InstantDropContent() {
     };
 
     const setupWebRTC = async (ws: WebSocket, isSender: boolean) => {
-        logDebug(`Setting up RTCPeerConnection (v02.0.8 Ultimate-Gold), isSender: ${isSender}`);
+        logDebug(`Setting up RTCPeerConnection (v02.0.9 Solid-Gold), isSender: ${isSender}`);
         
         // CRITICAL: Reset signaling state for new session
         remoteDescriptionSet.current = false;
         iceBuffer.current = [];
         dataChannelsRef.current = [];
+        isActive.current = false; // v02.0.9: CRITICAL - Reset active state for new session room codes
 
         // Initialize Peer SYNCHRONOUSLY with default STUN/TURN to avoid signaling race conditions
         const peer = new RTCPeerConnection(ICE_SERVERS);
@@ -254,7 +255,7 @@ function InstantDropContent() {
         peer.oniceconnectionstatechange = () => {
             logDebug(`ICE Connection State: ${peer.iceConnectionState}`);
             if (peer.iceConnectionState === 'disconnected' || peer.iceConnectionState === 'failed') {
-                logDebug("v02.0.0: Aggressive ICE Restart triggered due to connection stall...");
+                logDebug("v02.0.9: Aggressive ICE Restart triggered due to connection stall...");
                 try { peer.restartIce(); } catch (e) { logDebug("ICE Restart failed: " + e); }
             }
         };
@@ -300,10 +301,6 @@ function InstantDropContent() {
                     logDebug("❌ WebRTC Connection Failed - likely NAT traversal issue");
                 }
             }
-        };
-
-        peer.oniceconnectionstatechange = () => {
-            logDebug(`ICE Connection State: ${peer.iceConnectionState}`);
         };
 
         if (isSender) {
@@ -940,7 +937,7 @@ function InstantDropContent() {
                         <Smartphone className="w-12 h-12 text-indigo-500" />
                     </div>
                     <h1 className="text-4xl md:text-5xl font-bold text-foreground mb-4">Turbo Drop</h1>
-                    <p className="text-xs text-muted-foreground font-medium tracking-widest uppercase mb-2">v02.0.8 Ultimate-Gold (The True Champion)</p>
+                    <p className="text-xs text-muted-foreground font-medium tracking-widest uppercase mb-2">v02.0.9 Solid-Gold (The Absolute Champion)</p>
                     <p className="text-lg text-muted-foreground max-w-2xl mx-auto">
                         The ultimate high-speed file sharing app. Transfer photos and large files (up to 200MB) from desktop to mobile or mobile to mobile instantly.
                     </p>
