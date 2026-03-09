@@ -398,20 +398,23 @@ function InstantDropContent() {
 
         dc.onopen = () => {
             logDebug(`✅ DataChannel ${channelIdx} OPEN (Mode: ${modeRef.current})`);
-            // v02.0.3: Start transfer ONLY when all intended channels are OPEN
-            const openCount = dataChannelsRef.current.filter(c => c.readyState === 'open').length;
-            if (openCount === 8 && modeRef.current === 'send' && !isActive.current) {
-                logDebug("All 8 DataChannels OPEN - Starting Gold Standard transfer...");
-                setStatus('transferring');
-                // Start speed timer
-                lastBytesRef.current = 0;
-                if (speedTimerRef.current) clearInterval(speedTimerRef.current);
-                speedTimerRef.current = setInterval(() => {
-                    const bytesSinceLast = totalSentBytesRef.current + totalReceivedBytesRef.current - lastBytesRef.current;
-                    lastBytesRef.current = totalSentBytesRef.current + totalReceivedBytesRef.current;
-                    setTransferSpeed(parseFloat((bytesSinceLast / 1024 / 1024).toFixed(1)));
-                }, 1000);
-                startFileTransfer();
+            // v02.0.3: Start transfer ONLY after index 0 is open + a 500ms "Stability Breath"
+            // This ensures all 8 channels have time to settle on both Mobile and Desktop.
+            if (channelIdx === 0 && modeRef.current === 'send' && !isActive.current) {
+                logDebug("DataChannel 0 OPEN - Waiting 500ms for sub-channel stabilization...");
+                setTimeout(() => {
+                    logDebug("Starting Gold Standard parallel transfer...");
+                    setStatus('transferring');
+                    // Start speed timer
+                    lastBytesRef.current = 0;
+                    if (speedTimerRef.current) clearInterval(speedTimerRef.current);
+                    speedTimerRef.current = setInterval(() => {
+                        const bytesSinceLast = totalSentBytesRef.current + totalReceivedBytesRef.current - lastBytesRef.current;
+                        lastBytesRef.current = totalSentBytesRef.current + totalReceivedBytesRef.current;
+                        setTransferSpeed(parseFloat((bytesSinceLast / 1024 / 1024).toFixed(1)));
+                    }, 1000);
+                    startFileTransfer();
+                }, 500);
             }
         };
         dc.onmessage = (e) => {
