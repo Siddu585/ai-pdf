@@ -240,7 +240,12 @@ function InstantDropContent() {
     };
 
     const setupWebRTC = async (ws: WebSocket, isSender: boolean) => {
-        logDebug(`Setting up RTCPeerConnection (v02.0.9 Solid-Gold), isSender: ${isSender}`);
+        // v02.0.10: Prevent redundant re-initialization if a handshake is already in progress
+        if (peerRef.current && peerRef.current.signalingState !== 'stable') {
+            logDebug("WebRTC: Handshake already in progress, skipping redundant setup.");
+            return;
+        }
+        logDebug(`Setting up RTCPeerConnection (v02.0.10 True-Gold), isSender: ${isSender}`);
         
         // CRITICAL: Reset signaling state for new session
         remoteDescriptionSet.current = false;
@@ -550,25 +555,29 @@ function InstantDropContent() {
                             const chunkLen = Math.min(CHUNK_SIZE, end - offset);
                             const chunk = await file.slice(offset, offset + chunkLen).arrayBuffer();
 
-                            if (dc.readyState === 'open') {
-                                dc.send(chunk);
-                                offset += chunkLen;
-                                totalSentBytesRef.current += chunkLen;
+                            if (dc.readyState !== 'open') {
+                                // v02.0.10: Patient Workers - wait for channel to open instead of breaking.
+                                // This ensures all 8 channels eventually join the transfer.
+                                await new Promise(res => setTimeout(res, 100));
+                                continue;
+                            }
+                            dc.send(chunk);
+                            offset += chunkLen;
+                            totalSentBytesRef.current += chunkLen;
 
-                                // v02.0.3: Rapid Yielding - Pauses every 4 chunks (256KB) to satisfy mobile NAT timing
-                                if (offset % (CHUNK_SIZE * 4) === 0) {
-                                    await new Promise(res => setTimeout(res, 0));
-                                }
-                                
-                                // Periodic Bitrate/Progress
-                                if (offset % (1024 * 1024) === 0) {
-                                        const totalBuffered = dataChannelsRef.current.reduce(
-                                        (acc, c) => acc + (c.readyState === 'open' ? c.bufferedAmount : 0), 0
-                                    );
-                                    const trueSent = Math.max(0, totalSentBytesRef.current - totalBuffered);
-                                    setProgress(Math.round((trueSent / file.size) * 100));
-                                }
-                            } else break;
+                            // v02.0.3: Rapid Yielding - Pauses every 4 chunks (256KB) to satisfy mobile NAT timing
+                            if (offset % (CHUNK_SIZE * 4) === 0) {
+                                await new Promise(res => setTimeout(res, 0));
+                            }
+                            
+                            // Periodic Bitrate/Progress
+                            if (offset % (1024 * 1024) === 0) {
+                                    const totalBuffered = dataChannelsRef.current.reduce(
+                                    (acc, c) => acc + (c.readyState === 'open' ? c.bufferedAmount : 0), 0
+                                );
+                                const trueSent = Math.max(0, totalSentBytesRef.current - totalBuffered);
+                                setProgress(Math.round((trueSent / file.size) * 100));
+                            }
                         }
                         
                         if (dc.readyState === 'open') {
@@ -937,7 +946,7 @@ function InstantDropContent() {
                         <Smartphone className="w-12 h-12 text-indigo-500" />
                     </div>
                     <h1 className="text-4xl md:text-5xl font-bold text-foreground mb-4">Turbo Drop</h1>
-                    <p className="text-xs text-muted-foreground font-medium tracking-widest uppercase mb-2">v02.0.9 Solid-Gold (The Absolute Champion)</p>
+                    <p className="text-xs text-muted-foreground font-medium tracking-widest uppercase mb-2">v02.0.10 True-Gold (The Ultimate Champion)</p>
                     <p className="text-lg text-muted-foreground max-w-2xl mx-auto">
                         The ultimate high-speed file sharing app. Transfer photos and large files (up to 200MB) from desktop to mobile or mobile to mobile instantly.
                     </p>
