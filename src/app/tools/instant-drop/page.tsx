@@ -258,104 +258,91 @@ function InstantDropContent() {
     };
 
     const setupWebRTC = async (ws: WebSocket, isSender: boolean) => {
-        // v02.0.13: Obsidian Initialization Lock - Stop all concurrent startup races
-        if (isInitializingRef.current) {
-            logDebug("WebRTC: Setup already initializing, ignoring redundant trigger.");
-            return;
-        }
-
-        // Only allow if no active handshake is in progress
-        if (peerRef.current && (peerRef.current.signalingState !== 'stable' && peerRef.current.signalingState !== 'closed')) {
-            logDebug("WebRTC: Handshake already in progress, skipping.");
-            return;
-        }
-
-        isInitializingRef.current = true;
+        logDebug(`Setting up RTCPeerConnection (v02.0.16 Legacy-Gold), isSender: ${isSender}`);
         
-        try {
-            logDebug(`Setting up RTCPeerConnection (v02.0.14 Stellar-Gold), isSender: ${isSender}`);
-            
-            // CRITICAL: Reset signaling state for new session
-            remoteDescriptionSet.current = false;
-            iceBuffer.current = [];
-            dataChannelsRef.current = [];
-            isActive.current = false; // v02.0.9: CRITICAL - Reset active state for new session room codes
+        // CRITICAL: Reset signaling state for new session
+        remoteDescriptionSet.current = false;
+        iceBuffer.current = [];
+        dataChannelsRef.current = [];
+        isActive.current = false; // v02.0.9: CRITICAL - Reset active state for new session room codes
 
-            // v02.0.14: Initialize Peer with PRE-FETCHED relays (No await gaps!)
-            const peer = new RTCPeerConnection({ iceServers: relayServersRef.current });
-            peerRef.current = peer;
+        // Initialize Peer SYNCHRONOUSLY with default STUN/TURN to avoid signaling race conditions
+        const peer = new RTCPeerConnection(ICE_SERVERS);
+        peerRef.current = peer;
 
-            peer.oniceconnectionstatechange = () => {
-                logDebug(`ICE Connection State: ${peer.iceConnectionState}`);
-                if (peer.iceConnectionState === 'disconnected' || peer.iceConnectionState === 'failed') {
-                    logDebug("v02.0.9: Aggressive ICE Restart triggered due to connection stall...");
-                    try { peer.restartIce(); } catch (e) { logDebug("ICE Restart failed: " + e); }
-                }
-            };
+        peer.oniceconnectionstatechange = () => {
+            logDebug(`ICE Connection State: ${peer.iceConnectionState}`);
+            if (peer.iceConnectionState === 'disconnected' || peer.iceConnectionState === 'failed') {
+                logDebug("v02.0.9: Aggressive ICE Restart triggered due to connection stall...");
+                try { peer.restartIce(); } catch (e) { logDebug("ICE Restart failed: " + e); }
+            }
+        };
 
-            // v02.0.0: NAT Keep-Alive Heartbeat (every 5s)
-            if (heartbeatIntervalRef.current) clearInterval(heartbeatIntervalRef.current);
-            heartbeatIntervalRef.current = setInterval(() => {
-                if (peerRef.current?.iceConnectionState === 'connected' || peerRef.current?.iceConnectionState === 'completed') {
-                    sendControlMsg({ type: 'heartbeat', ts: Date.now() });
-                }
-            }, 5000);
+        // v02.0.0: NAT Keep-Alive Heartbeat (every 5s)
+        if (heartbeatIntervalRef.current) clearInterval(heartbeatIntervalRef.current);
+        heartbeatIntervalRef.current = setInterval(() => {
+            if (peerRef.current?.iceConnectionState === 'connected' || peerRef.current?.iceConnectionState === 'completed') {
+                sendControlMsg({ type: 'heartbeat', ts: Date.now() });
+            }
+        }, 5000);
 
-            peer.onicecandidate = (e) => {
-                if (e.candidate) {
-                    console.log("Generated local ICE candidate");
-                    ws.send(JSON.stringify({ type: 'ice-candidate', candidate: e.candidate }));
-                }
-            };
-
-            peer.onconnectionstatechange = () => {
-                logDebug(`WebRTC Connection State: ${peer.connectionState}`);
-                if (peer.connectionState === 'failed') {
-                    if (statusRef.current !== 'done') {
-                        setStatus('error');
-                        logDebug("❌ WebRTC Connection Failed - likely NAT traversal issue");
+        // v02.0.16: Non-blocking Relay Injection (Legacy-Gold Flow)
+        const injectRelays = async () => {
+            try {
+                const turnRes = await fetch(`${BACKEND_HTTP_URL}/api/turn?deviceId=${deviceIdRef.current}&email=${encodeURIComponent(emailRef.current || "")}`);
+                if (turnRes.ok) {
+                    const turnData = await turnRes.json();
+                    if (Array.isArray(turnData)) {
+                        const newConfig = { iceServers: [...ICE_SERVERS.iceServers, ...turnData] };
+                        peer.setConfiguration(newConfig);
+                        logDebug(`✅ TURN: Injected ${turnData.length} additional relay servers`);
                     }
                 }
-            };
-
-            if (isSender) {
-                const chLimit = 8; // v02.0.3: Standardized to 8 for consistent Parallel Metadata
-                logDebug(`Creating ${chLimit} Parallel DataChannels (Sender)`);
-                for (let i = 0; i < chLimit; i++) {
-                    const dc = peer.createDataChannel(`file-transfer-${i}`, { ordered: true });
-                    dataChannelsRef.current.push(dc);
-                    setupDataChannel(dc, i);
-                    dc.bufferedAmountLowThreshold = 64 * 1024; // v02.0.3: 64KB threshold (Stability Gold)
-                }
-
-                // v02.0.15: Engine Settling - Wait 200ms for browser engine to finalize channels before offer
-                logDebug("WebRTC: Channels created. Waiting 200ms for engine to settle...");
-                await new Promise(res => setTimeout(res, 200));
-
-                logDebug("WebRTC: Generating connection Offer...");
-                const offer = await peer.createOffer();
-                
-                logDebug("WebRTC: Setting Local Description...");
-                await peer.setLocalDescription(offer);
-                
-                logDebug("WebRTC: Offer Sent via WebSocket.");
-                ws.send(JSON.stringify({ type: 'offer', sdp: offer }));
-            } else {
-                logDebug("Awaiting Parallel DataChannels (Receiver)");
-                peer.ondatachannel = (e) => {
-                    const label = e.channel.label;
-                    const index = parseInt(label.split('-').pop() || '0');
-                    logDebug(`Receiver: DataChannel ${index} Received`);
-                    dataChannelsRef.current[index] = e.channel;
-                    setupDataChannel(e.channel, index);
-                };
+            } catch (e) {
+                logDebug("TURN fetch non-blocking failure - using defaults");
             }
-        } catch (err) {
-            logDebug(`setupWebRTC Error: ${err}`);
-            setStatus('error');
-        } finally {
-            // v02.0.14: Always release lock so user can try again without page refresh
-            isInitializingRef.current = false;
+        };
+        injectRelays();
+
+        peer.onicecandidate = (e) => {
+            if (e.candidate) {
+                console.log("Generated local ICE candidate");
+                ws.send(JSON.stringify({ type: 'ice-candidate', candidate: e.candidate }));
+            }
+        };
+
+        peer.onconnectionstatechange = () => {
+            logDebug(`WebRTC Connection State: ${peer.connectionState}`);
+            if (peer.connectionState === 'failed') {
+                if (statusRef.current !== 'done') {
+                    setStatus('error');
+                    logDebug("❌ WebRTC Connection Failed - likely NAT traversal issue");
+                }
+            }
+        };
+
+        if (isSender) {
+            const chLimit = 8; // v02.0.3: Standardized to 8 for consistent Parallel Metadata
+            logDebug(`Creating ${chLimit} Parallel DataChannels (Sender)`);
+            for (let i = 0; i < chLimit; i++) {
+                const dc = peer.createDataChannel(`file-transfer-${i}`, { ordered: true });
+                dataChannelsRef.current.push(dc);
+                setupDataChannel(dc, i);
+                dc.bufferedAmountLowThreshold = 64 * 1024; // v02.0.3: 64KB threshold (Stability Gold)
+            }
+
+            const offer = await peer.createOffer();
+            await peer.setLocalDescription(offer);
+            ws.send(JSON.stringify({ type: 'offer', sdp: offer }));
+        } else {
+            logDebug("Awaiting Parallel DataChannels (Receiver)");
+            peer.ondatachannel = (e) => {
+                const label = e.channel.label;
+                const index = parseInt(label.split('-').pop() || '0');
+                logDebug(`Receiver: DataChannel ${index} Received`);
+                dataChannelsRef.current[index] = e.channel;
+                setupDataChannel(e.channel, index);
+            };
         }
     };
 
@@ -979,7 +966,7 @@ function InstantDropContent() {
                         <Smartphone className="w-12 h-12 text-indigo-500" />
                     </div>
                     <h1 className="text-4xl md:text-5xl font-bold text-foreground mb-4">Turbo Drop</h1>
-                    <p className="text-xs text-muted-foreground font-medium tracking-widest uppercase mb-2">v02.0.15 Infinity-Gold (The Unstoppable Engine)</p>
+                    <p className="text-xs text-muted-foreground font-medium tracking-widest uppercase mb-2">v02.0.16 Legacy-Gold (Champion Restoration)</p>
                     <p className="text-lg text-muted-foreground max-w-2xl mx-auto">
                         The ultimate high-speed file sharing app. Transfer photos and large files (up to 200MB) from desktop to mobile or mobile to mobile instantly.
                     </p>
