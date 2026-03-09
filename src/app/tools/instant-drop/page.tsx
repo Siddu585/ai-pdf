@@ -87,6 +87,7 @@ function InstantDropContent() {
     const isProRef = useRef(isPro);
     const emailRef = useRef(email);
     const deviceIdRef = useRef(deviceId);
+    const isInitializingRef = useRef(false); // v02.0.13: Obsidian initialization lock
 
     useEffect(() => {
         isProRef.current = isPro;
@@ -241,13 +242,20 @@ function InstantDropContent() {
     };
 
     const setupWebRTC = async (ws: WebSocket, isSender: boolean) => {
-        // v02.0.12: Diamond Guard - Only block if a LIVE handshake is in progress.
-        // If the peer is null, or closed, we MUST allow a fresh initialization.
-        if (peerRef.current && (peerRef.current.signalingState !== 'stable' && peerRef.current.signalingState !== 'closed')) {
-            logDebug("WebRTC: Active handshake already in progress, skipping redundant setup.");
+        // v02.0.13: Obsidian Initialization Lock - Stop all concurrent startup races
+        if (isInitializingRef.current) {
+            logDebug("WebRTC: Setup already initializing, ignoring redundant trigger.");
             return;
         }
-        logDebug(`Setting up RTCPeerConnection (v02.0.12 Diamond-Gold), isSender: ${isSender}`);
+
+        // Only allow if no active handshake is in progress
+        if (peerRef.current && (peerRef.current.signalingState !== 'stable' && peerRef.current.signalingState !== 'closed')) {
+            logDebug("WebRTC: Handshake already in progress, skipping.");
+            return;
+        }
+
+        isInitializingRef.current = true;
+        logDebug(`Setting up RTCPeerConnection (v02.0.13 Obsidian-Gold), isSender: ${isSender}`);
         
         // CRITICAL: Reset signaling state for new session
         remoteDescriptionSet.current = false;
@@ -782,10 +790,11 @@ function InstantDropContent() {
     };
 
     const disconnectEverything = () => {
-        logDebug("v02.0.12: Performing Diamond-Gold Atomic Session Cleanup...");
+        logDebug("v02.0.13: Performing Obsidian-Gold Full Session Reset...");
         if (wsRef.current) { wsRef.current.close(); wsRef.current = null; }
         if (peerRef.current) { peerRef.current.close(); peerRef.current = null; }
         isActive.current = false;
+        isInitializingRef.current = false; // Release lock
         remoteDescriptionSet.current = false;
         iceBuffer.current = [];
         dataChannelsRef.current = [];
@@ -954,7 +963,7 @@ function InstantDropContent() {
                         <Smartphone className="w-12 h-12 text-indigo-500" />
                     </div>
                     <h1 className="text-4xl md:text-5xl font-bold text-foreground mb-4">Turbo Drop</h1>
-                    <p className="text-xs text-muted-foreground font-medium tracking-widest uppercase mb-2">v02.0.12 Diamond-Gold (The Invincible Fortress)</p>
+                    <p className="text-xs text-muted-foreground font-medium tracking-widest uppercase mb-2">v02.0.13 Obsidian-Gold (The Unbreakable Fortress)</p>
                     <p className="text-lg text-muted-foreground max-w-2xl mx-auto">
                         The ultimate high-speed file sharing app. Transfer photos and large files (up to 200MB) from desktop to mobile or mobile to mobile instantly.
                     </p>
