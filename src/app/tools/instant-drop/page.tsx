@@ -258,7 +258,7 @@ function InstantDropContent() {
     };
 
     const setupWebRTC = async (ws: WebSocket, isSender: boolean) => {
-        logDebug(`Setting up RTCPeerConnection (v02.0.16 Legacy-Gold), isSender: ${isSender}`);
+        logDebug(`Setting up RTCPeerConnection (v02.0.17 Platinum-Gold), isSender: ${isSender}`);
         
         // CRITICAL: Reset signaling state for new session
         remoteDescriptionSet.current = false;
@@ -266,8 +266,11 @@ function InstantDropContent() {
         dataChannelsRef.current = [];
         isActive.current = false; // v02.0.9: CRITICAL - Reset active state for new session room codes
 
-        // Initialize Peer SYNCHRONOUSLY with default STUN/TURN to avoid signaling race conditions
-        const peer = new RTCPeerConnection(ICE_SERVERS);
+        // v02.0.17: Initialize Peer SYNCHRONOUSLY with PRE-FETCHED relays to avoid signaling race conditions/deadlocks
+        const currentRelays = relayServersRef.current && relayServersRef.current.length > 0 
+                                ? relayServersRef.current 
+                                : ICE_SERVERS.iceServers;
+        const peer = new RTCPeerConnection({ iceServers: currentRelays });
         peerRef.current = peer;
 
         peer.oniceconnectionstatechange = () => {
@@ -285,24 +288,6 @@ function InstantDropContent() {
                 sendControlMsg({ type: 'heartbeat', ts: Date.now() });
             }
         }, 5000);
-
-        // v02.0.16: Non-blocking Relay Injection (Legacy-Gold Flow)
-        const injectRelays = async () => {
-            try {
-                const turnRes = await fetch(`${BACKEND_HTTP_URL}/api/turn?deviceId=${deviceIdRef.current}&email=${encodeURIComponent(emailRef.current || "")}`);
-                if (turnRes.ok) {
-                    const turnData = await turnRes.json();
-                    if (Array.isArray(turnData)) {
-                        const newConfig = { iceServers: [...ICE_SERVERS.iceServers, ...turnData] };
-                        peer.setConfiguration(newConfig);
-                        logDebug(`✅ TURN: Injected ${turnData.length} additional relay servers`);
-                    }
-                }
-            } catch (e) {
-                logDebug("TURN fetch non-blocking failure - using defaults");
-            }
-        };
-        injectRelays();
 
         peer.onicecandidate = (e) => {
             if (e.candidate) {
@@ -966,7 +951,7 @@ function InstantDropContent() {
                         <Smartphone className="w-12 h-12 text-indigo-500" />
                     </div>
                     <h1 className="text-4xl md:text-5xl font-bold text-foreground mb-4">Turbo Drop</h1>
-                    <p className="text-xs text-muted-foreground font-medium tracking-widest uppercase mb-2">v02.0.16 Legacy-Gold (Champion Restoration)</p>
+                    <p className="text-xs text-muted-foreground font-medium tracking-widest uppercase mb-2">v02.0.17 Platinum-Gold (The Zero-Collision Engine)</p>
                     <p className="text-lg text-muted-foreground max-w-2xl mx-auto">
                         The ultimate high-speed file sharing app. Transfer photos and large files (up to 200MB) from desktop to mobile or mobile to mobile instantly.
                     </p>

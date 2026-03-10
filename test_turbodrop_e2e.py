@@ -64,12 +64,14 @@ async def run():
         print("\n--- SENDER LOGS DUMP ---")
         for log in sender_logs:
             if any(k in log for k in ["WebRTC", "Sender", "Receiver", "error", "offer", "answer", "ice", "channel", "Generating", "TURN", "[SENDER]"]):
-                print(log)
+                try: print(log)
+                except UnicodeEncodeError: print(log.encode('ascii', 'ignore').decode('ascii'))
                 
         print("\n--- RECEIVER LOGS DUMP ---")
         for log in receiver_logs:
             if any(k in log for k in ["WebRTC", "Sender", "Receiver", "error", "offer", "answer", "ice", "channel", "Generating", "TURN", "[RECEIVER]"]):
-                print(log)
+                try: print(log)
+                except UnicodeEncodeError: print(log.encode('ascii', 'ignore').decode('ascii'))
         
         if os.path.exists(dummy_file_path):
             os.remove(dummy_file_path)
