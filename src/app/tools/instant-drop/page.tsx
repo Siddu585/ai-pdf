@@ -237,7 +237,9 @@ function InstantDropContent() {
                 logDebug("Peer joined, waiting for receiver-ready signal...");
             } else if (data.type === 'receiver-ready') {
                 logDebug("Receiver is READY. Initializing WebRTC Offer...");
-                setupWebRTC(ws, true);
+                setupWebRTC(ws, true).catch(err => {
+                    logDebug(`❌ Unhandled Sender Setup Error: ${err.message || err}`);
+                });
             } else if (data.type === 'answer') {
                 console.log("Received answer, setting remote description");
                 await peerRef.current?.setRemoteDescription(new RTCSessionDescription(data.sdp));
@@ -257,77 +259,88 @@ function InstantDropContent() {
         };
     };
 
-    const setupWebRTC = async (ws: WebSocket, isSender: boolean) => {
-        logDebug(`Setting up RTCPeerConnection (v02.0.17 Platinum-Gold), isSender: ${isSender}`);
-        
-        // CRITICAL: Reset signaling state for new session
-        remoteDescriptionSet.current = false;
-        iceBuffer.current = [];
-        dataChannelsRef.current = [];
-        isActive.current = false; // v02.0.9: CRITICAL - Reset active state for new session room codes
+    const setupWebRTC = async (ws: WebSocket, isSender: boolean, useFallback = false) => {
+        try {
+            logDebug(`Setting up RTCPeerConnection (v02.0.18 Titanium-Resilience), isSender: ${isSender}, fallback: ${useFallback}`);
+            
+            // CRITICAL: Reset signaling state for new session
+            remoteDescriptionSet.current = false;
+            iceBuffer.current = [];
+            dataChannelsRef.current = [];
+            isActive.current = false; 
 
-        // v02.0.17: Initialize Peer SYNCHRONOUSLY with PRE-FETCHED relays to avoid signaling race conditions/deadlocks
-        const currentRelays = relayServersRef.current && relayServersRef.current.length > 0 
-                                ? relayServersRef.current 
-                                : ICE_SERVERS.iceServers;
-        const peer = new RTCPeerConnection({ iceServers: currentRelays });
-        peerRef.current = peer;
+            // v02.0.18: Titanium Adaptive Fallback Engine
+            const currentRelays = (!useFallback && relayServersRef.current && relayServersRef.current.length > 0) 
+                                    ? relayServersRef.current 
+                                    : ICE_SERVERS.iceServers;
+            const peer = new RTCPeerConnection({ iceServers: currentRelays });
+            peerRef.current = peer;
 
-        peer.oniceconnectionstatechange = () => {
-            logDebug(`ICE Connection State: ${peer.iceConnectionState}`);
-            if (peer.iceConnectionState === 'disconnected' || peer.iceConnectionState === 'failed') {
-                logDebug("v02.0.9: Aggressive ICE Restart triggered due to connection stall...");
-                try { peer.restartIce(); } catch (e) { logDebug("ICE Restart failed: " + e); }
-            }
-        };
-
-        // v02.0.0: NAT Keep-Alive Heartbeat (every 5s)
-        if (heartbeatIntervalRef.current) clearInterval(heartbeatIntervalRef.current);
-        heartbeatIntervalRef.current = setInterval(() => {
-            if (peerRef.current?.iceConnectionState === 'connected' || peerRef.current?.iceConnectionState === 'completed') {
-                sendControlMsg({ type: 'heartbeat', ts: Date.now() });
-            }
-        }, 5000);
-
-        peer.onicecandidate = (e) => {
-            if (e.candidate) {
-                console.log("Generated local ICE candidate");
-                ws.send(JSON.stringify({ type: 'ice-candidate', candidate: e.candidate }));
-            }
-        };
-
-        peer.onconnectionstatechange = () => {
-            logDebug(`WebRTC Connection State: ${peer.connectionState}`);
-            if (peer.connectionState === 'failed') {
-                if (statusRef.current !== 'done') {
-                    setStatus('error');
-                    logDebug("❌ WebRTC Connection Failed - likely NAT traversal issue");
+            peer.oniceconnectionstatechange = () => {
+                logDebug(`ICE Connection State: ${peer.iceConnectionState}`);
+                if (peer.iceConnectionState === 'disconnected' || peer.iceConnectionState === 'failed') {
+                    logDebug("v02.0.9: Aggressive ICE Restart...");
+                    try { peer.restartIce(); } catch (e) { logDebug("ICE Restart failed: " + e); }
                 }
-            }
-        };
-
-        if (isSender) {
-            const chLimit = 8; // v02.0.3: Standardized to 8 for consistent Parallel Metadata
-            logDebug(`Creating ${chLimit} Parallel DataChannels (Sender)`);
-            for (let i = 0; i < chLimit; i++) {
-                const dc = peer.createDataChannel(`file-transfer-${i}`, { ordered: true });
-                dataChannelsRef.current.push(dc);
-                setupDataChannel(dc, i);
-                dc.bufferedAmountLowThreshold = 64 * 1024; // v02.0.3: 64KB threshold (Stability Gold)
-            }
-
-            const offer = await peer.createOffer();
-            await peer.setLocalDescription(offer);
-            ws.send(JSON.stringify({ type: 'offer', sdp: offer }));
-        } else {
-            logDebug("Awaiting Parallel DataChannels (Receiver)");
-            peer.ondatachannel = (e) => {
-                const label = e.channel.label;
-                const index = parseInt(label.split('-').pop() || '0');
-                logDebug(`Receiver: DataChannel ${index} Received`);
-                dataChannelsRef.current[index] = e.channel;
-                setupDataChannel(e.channel, index);
             };
+
+            if (heartbeatIntervalRef.current) clearInterval(heartbeatIntervalRef.current);
+            heartbeatIntervalRef.current = setInterval(() => {
+                if (peerRef.current?.iceConnectionState === 'connected' || peerRef.current?.iceConnectionState === 'completed') {
+                    sendControlMsg({ type: 'heartbeat', ts: Date.now() });
+                }
+            }, 5000);
+
+            peer.onicecandidate = (e) => {
+                if (e.candidate) {
+                    console.log("Generated local ICE candidate");
+                    ws.send(JSON.stringify({ type: 'ice-candidate', candidate: e.candidate }));
+                }
+            };
+
+            peer.onconnectionstatechange = () => {
+                logDebug(`WebRTC Connection State: ${peer.connectionState}`);
+                if (peer.connectionState === 'failed') {
+                    if (statusRef.current !== 'done') {
+                        setStatus('error');
+                        logDebug("❌ WebRTC Connection Failed");
+                    }
+                }
+            };
+
+            if (isSender) {
+                const chLimit = 8;
+                logDebug(`Creating ${chLimit} Parallel DataChannels (Sender)`);
+                for (let i = 0; i < chLimit; i++) {
+                    const dc = peer.createDataChannel(`file-transfer-${i}`, { ordered: true });
+                    dataChannelsRef.current.push(dc);
+                    setupDataChannel(dc, i);
+                    dc.bufferedAmountLowThreshold = 64 * 1024;
+                }
+
+                logDebug(`Awaiting createOffer...`);
+                const offer = await peer.createOffer();
+                logDebug(`createOffer succeeded, setting local description...`);
+                await peer.setLocalDescription(offer);
+                ws.send(JSON.stringify({ type: 'offer', sdp: offer }));
+            } else {
+                logDebug("Awaiting Parallel DataChannels (Receiver)");
+                peer.ondatachannel = (e) => {
+                    const label = e.channel.label;
+                    const index = parseInt(label.split('-').pop() || '0');
+                    logDebug(`Receiver: DataChannel ${index} Received`);
+                    dataChannelsRef.current[index] = e.channel;
+                    setupDataChannel(e.channel, index);
+                };
+            }
+        } catch (err: any) {
+            logDebug(`❌ CRITICAL WEBRTC ERROR IN SETUP: ${err.message || err}`);
+            if (!useFallback) {
+                logDebug(`⚠️ Triggering Adaptive Fallback Engine... retrying with standard STUN.`);
+                await setupWebRTC(ws, isSender, true);
+            } else {
+                setStatus('error');
+            }
         }
     };
 
@@ -669,18 +682,35 @@ function InstantDropContent() {
             const data = JSON.parse(event.data);
             if (data.type === 'offer') {
                 console.log("Received offer, setting up WebRTC and creating answer");
-                await setupWebRTC(ws, false);
-                await peerRef.current?.setRemoteDescription(new RTCSessionDescription(data.sdp));
-                remoteDescriptionSet.current = true;
-                const answer = await peerRef.current?.createAnswer();
-                await peerRef.current?.setLocalDescription(answer);
-                ws.send(JSON.stringify({ type: 'answer', sdp: answer }));
+                const processOffer = async (useFallback = false) => {
+                    try {
+                        await setupWebRTC(ws, false, useFallback);
+                        logDebug(`Awaiting remote description...`);
+                        await peerRef.current?.setRemoteDescription(new RTCSessionDescription(data.sdp));
+                        remoteDescriptionSet.current = true;
+                        
+                        // Handle potential buffered candidates AFTER setting remote description
+                        for (const candidate of iceBuffer.current) {
+                            await peerRef.current?.addIceCandidate(new RTCIceCandidate(candidate));
+                        }
+                        iceBuffer.current = [];
 
-                // Flush buffered candidates
-                for (const candidate of iceBuffer.current) {
-                    await peerRef.current?.addIceCandidate(new RTCIceCandidate(candidate));
-                }
-                iceBuffer.current = [];
+                        logDebug(`Awaiting createAnswer...`);
+                        const answer = await peerRef.current?.createAnswer();
+                        logDebug(`Setting local description (answer)...`);
+                        await peerRef.current?.setLocalDescription(answer);
+                        ws.send(JSON.stringify({ type: 'answer', sdp: answer }));
+                    } catch (err: any) {
+                        logDebug(`❌ CRITICAL RECEIVER ERROR: ${err.message || err}`);
+                        if (!useFallback) {
+                            logDebug(`⚠️ Triggering Receiver Fallback Engine...`);
+                            await processOffer(true);
+                        } else {
+                            setStatus('error');
+                        }
+                    }
+                };
+                processOffer();
             } else if (data.type === 'ice-candidate') {
                 if (!remoteDescriptionSet.current) {
                     iceBuffer.current.push(data.candidate);
@@ -951,7 +981,7 @@ function InstantDropContent() {
                         <Smartphone className="w-12 h-12 text-indigo-500" />
                     </div>
                     <h1 className="text-4xl md:text-5xl font-bold text-foreground mb-4">Turbo Drop</h1>
-                    <p className="text-xs text-muted-foreground font-medium tracking-widest uppercase mb-2">v02.0.17 Platinum-Gold (The Zero-Collision Engine)</p>
+                    <p className="text-xs text-muted-foreground font-medium tracking-widest uppercase mb-2">v02.0.18 Titanium-Resilience (Adaptive Fallback)</p>
                     <p className="text-lg text-muted-foreground max-w-2xl mx-auto">
                         The ultimate high-speed file sharing app. Transfer photos and large files (up to 200MB) from desktop to mobile or mobile to mobile instantly.
                     </p>
