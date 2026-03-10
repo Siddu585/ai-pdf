@@ -170,20 +170,19 @@ function InstantDropContent() {
     const remoteDescriptionSet = useRef(false);
     const iceBuffer = useRef<RTCIceCandidateInit[]>([]);
 
-    const receiveBuffers = useRef<Map<number, ArrayBuffer[]>>(new Map());
-    const receiveMetas = useRef<Map<number, any>>(new Map());
-    const receivedEofs = useRef<Set<number>>(new Set());
+    // --- PIPELINED IN-BAND REASSEMBLY STATE (v02.0.22) ---
+    const channelFileIndex = useRef<number[]>(new Array(8).fill(0));
+    const fileBuffers = useRef<Map<number, Map<number, ArrayBuffer[]>>>(new Map());
+    const fileEofs = useRef<Map<number, Set<number>>>(new Map());
+    const fileMetas = useRef<Map<number, any>>(new Map());
+    const reassembledCount = useRef<number>(0);
+    const expectedTotalFiles = useRef<number>(-1);
+
     const totalReceivedBytesRef = useRef(0);
     const totalSentBytesRef = useRef(0);
 
     // Transfer state
     const isActive = useRef(false);
-
-    // For receiving
-    const receiveBuffer = useRef<ArrayBuffer[]>([]);
-    const receiveMeta = useRef<{ name: string, size: number, type: string, fileType?: string, totalFiles?: number, currentIdx?: number, isParallel?: boolean, parallelChannels?: number } | null>(null);
-    const pendingMeta = useRef<any>(null); // v02.0.0: Pipelined Metadata Queue
-    const receivedBytes = useRef(0);
 
     const fileInputRef = useRef<HTMLInputElement>(null);
     const roomRef = useRef<string | null>(null);
@@ -286,7 +285,15 @@ function InstantDropContent() {
             remoteDescriptionSet.current = false;
             iceBuffer.current = [];
             dataChannelsRef.current = [];
-            isActive.current = false; 
+            isActive.current = false;
+
+            // v02.0.22 Pipeline State Reset
+            channelFileIndex.current = new Array(8).fill(0);
+            fileBuffers.current.clear();
+            fileEofs.current.clear();
+            fileMetas.current.clear();
+            reassembledCount.current = 0;
+            expectedTotalFiles.current = -1;
 
             // v02.0.18: Titanium Adaptive Fallback Engine
             const currentRelays = (!useFallback && relayServersRef.current && relayServersRef.current.length > 0) 
@@ -379,67 +386,7 @@ function InstantDropContent() {
         }
     };
 
-    const processJsonMsg = (msg: any) => {
-        if (msg.type === 'metadata') {
-            // v02.0.0: Metadata Pipelining Support
-            if (receiveMeta.current && receiveMeta.current.name !== msg.name) {
-                logDebug(`Receiver: Pipelined Metadata received for ${msg.name}. Queuing...`);
-                pendingMeta.current = msg;
-                return;
-            }
-
-            receiveMeta.current = msg;
-            setStatus('transferring');
-            totalReceivedBytesRef.current = 0;
-            receiveBuffers.current.clear();
-            receivedEofs.current.clear();
-            logDebug(`Receiver: Starting File Receipt for ${msg.name} (Parallel: ${msg.isParallel})`);
-            
-            // v01.5.0: Send READY signal Out-of-Band
-            sendControlMsg({ type: 'ready', name: msg.name });
-        } else if (msg.type === 'sector-eof') {
-            const fileName = receiveMeta.current?.name;
-            const expectedSize = receiveMeta.current?.size || 0;
-            const numChannels = receiveMeta.current?.parallelChannels || 1;
-            
-            receivedEofs.current.add(msg.channel);
-            if (receivedEofs.current.size === numChannels) {
-                logDebug(`Receiver: All sectors received for ${fileName}. Reassembling...`);
-                const allChunks: ArrayBuffer[] = [];
-                for (let i = 0; i < numChannels; i++) {
-                    const sector = receiveBuffers.current.get(i) || [];
-                    allChunks.push(...sector);
-                }
-                const blob = new Blob(allChunks, { type: receiveMeta.current?.fileType || 'application/octet-stream' });
-                allChunks.length = 0;
-                
-                if (blob.size > 0 || expectedSize === 0) {
-                    setReceivedFiles(prev => [...prev, { blob, name: fileName! }]);
-                    logDebug(`Receiver: Reassembly complete for ${fileName} (${blob.size} bytes). Sending OOBS ACK.`);
-                    sendControlMsg({ type: 'file-ack', name: fileName });
-                } else {
-                    logDebug(`Receiver: CRITICAL ERROR - Reassembled 0 bytes for ${fileName} (expected ${expectedSize}). Check DataChannels.`);
-                    setStatus('error');
-                }
-                
-                receivedEofs.current.clear();
-                receiveMeta.current = null;
-                
-                // v02.0.0: Process Queued Pipelined Metadata
-                if (pendingMeta.current) {
-                    const next = pendingMeta.current;
-                    pendingMeta.current = null;
-                    logDebug(`Receiver: Processing Queued Metadata for ${next.name}`);
-                    setTimeout(() => processJsonMsg(next), 10);
-                }
-            }
-        } else if (msg.type === 'batch-eof') {
-            logDebug("Receiver: Transfer Complete");
-            setStatus('done');
-            statusRef.current = 'done';
-            disconnectEverything();
-        }
-    };
+    // (Legacy synchronous processJsonMsg obsoleted by v02.0.22 Pipeline Engine)
 
     const setupDataChannel = (dc: RTCDataChannel, channelIdx: number) => {
         dc.binaryType = 'arraybuffer';
@@ -512,185 +459,122 @@ function InstantDropContent() {
         const currentFiles = filesRef.current;
         if (currentFiles.length === 0) return;
         isActive.current = true;
+        
         for (let i = 0; i < currentFiles.length; i++) {
             totalSentBytesRef.current = 0;
             setCurrentFileIndex(i);
+            
+            // v02.0.22 Pipeline: Send Metadata then immediately stream chunks
+            logDebug(`Sender: Sending Pipelined Metadata for ${currentFiles[i].name}`);
+            sendControlMsg({
+                type: 'metadata',
+                name: currentFiles[i].name,
+                size: currentFiles[i].size,
+                fileType: currentFiles[i].type,
+                currentIdx: i,
+                totalFiles: currentFiles.length,
+                isParallel: true,
+                parallelChannels: dataChannelsRef.current.length
+            });
+
             await transferFileP2PParallel(currentFiles[i], i, currentFiles.length);
-            // v01.5.7: Removed artificial 'Breathing' 300ms delay to maximize batch speed.
         }
-        sendControlMsg({ type: 'batch-eof' });
+        
+        sendControlMsg({ type: 'batch-eof', totalFiles: currentFiles.length });
         setStatus('done');
         isActive.current = false;
     };
 
     const transferFileP2PParallel = (file: File, index: number, total: number) => {
-        return new Promise<void>((resolve) => {
-            if (dataChannelsRef.current.length === 0) return resolve();
+        return new Promise<void>(async (resolve) => {
+            const numChannels = dataChannelsRef.current.length;
+            if (numChannels === 0) return resolve();
 
-            let handshakeInterval: any;
-            let isResolved = false;
+            // v02.0.22: PIPELINED ADAPTIVE STREAM (Zero-Buffer Fast Path)
+            logDebug(`Sender: v02.0.22 Paced Stream Start (Pipelined Engine)`);
 
-            const sendMeta = async () => {
-                if (isResolved) return;
-                
-                // v02.0.8: Remove Channel-0 check to allow reliable WebSocket signaling
-                logDebug(`Sender: Sending Parallel Metadata (OOBS) for ${file.name}`);
-                sendControlMsg({
-                    type: 'metadata',
-                    name: file.name,
-                    size: file.size,
-                    fileType: file.type,
-                    currentIdx: index,
-                    totalFiles: total,
-                    isParallel: true,
-                    parallelChannels: 8 // v02.0.3: Explicitly 8 channels
-                });
-            };
+            const HIGH_WATER_MARK = 1024 * 1024; 
+            const LOW_WATER_MARK = 256 * 1024;
+            const sectorSize = Math.ceil(file.size / numChannels);
+            
+            const promises = [];
+            for (let chIdx = 0; chIdx < numChannels; chIdx++) {
+                promises.push((async () => {
+                    const dc = dataChannelsRef.current[chIdx];
+                    if (!dc) return;
+                    dc.bufferedAmountLowThreshold = LOW_WATER_MARK;
+                    
+                    const start = chIdx * sectorSize;
+                    const end = Math.min(start + sectorSize, file.size);
+                    let offset = start;
+                    let fileSentBytes = 0;
 
-            sendMeta();
-            handshakeInterval = setInterval(sendMeta, 3000);
+                    while (isActive.current && offset < end) {
+                        if (dc.bufferedAmount > HIGH_WATER_MARK) {
+                            await new Promise<void>(res => {
+                                dc.onbufferedamountlow = () => { 
+                                    dc.onbufferedamountlow = null; 
+                                    setTimeout(res, 30); 
+                                };
+                            });
+                        }
 
-            const checkReady = (e: any) => {
-                if (isResolved) return;
-                try {
-                    const msg = e.detail;
-                    if (msg.type === 'ready') {
-                        logDebug(`Sender: Received OOBS Ready for ${file.name}`);
-                        logDebug(`Sender: Launching Paced Stream for ${file.name}`);
-                        clearInterval(handshakeInterval);
-                        window.removeEventListener('webrtc-sender-msg', checkReady);
-                        startParallelBurst();
+                        const chunkLen = Math.min(CHUNK_SIZE, end - offset);
+                        const chunk = await file.slice(offset, offset + chunkLen).arrayBuffer();
+
+                        if (dc.readyState !== 'open') {
+                            await new Promise(res => setTimeout(res, 50));
+                            continue;
+                        }
+                        dc.send(chunk);
+                        offset += chunkLen;
+                        fileSentBytes += chunkLen;
+                        totalSentBytesRef.current += chunkLen;
+
+                        if (offset % (CHUNK_SIZE * 16) === 0) {
+                            await new Promise(res => setTimeout(res, 0));
+                        }
+                        
+                        // Per-file generic progress calculation
+                        if (offset % (1024 * 1024) === 0) {
+                             const totalBuffered = dataChannelsRef.current.reduce(
+                                (acc, c) => acc + (c.readyState === 'open' ? c.bufferedAmount : 0), 0
+                            );
+                            const estimatedSent = Math.max(0, fileSentBytes - (totalBuffered / numChannels));
+                            setProgress(Math.round((estimatedSent / (file.size / numChannels)) * 100));
+                        }
                     }
-                } catch (err) { }
-            };
-            window.addEventListener('webrtc-sender-msg', checkReady);
+                    
+                    if (dc.readyState === 'open') {
+                        // IN-BAND EOF (v02.0.22 Pipelining Key)
+                        dc.send(JSON.stringify({ 
+                            type: 'sector-eof', 
+                            channel: chIdx,
+                            fileIndex: index,
+                            parallelChannels: numChannels 
+                        }));
+                    }
+                })());
+            }
 
-            const startParallelBurst = async () => {
-                const numChannels = dataChannelsRef.current.length;
-                
-                // v02.0.21: INFINITY TRAVERSAL (High BDP Saturation for Cellular)
-                logDebug(`Sender: v02.0.21 Paced Stream Start (Infinity Traversal)`);
-
-                // 1MB per channel High Water (8MB total flight) to saturate high-latency LTE/5G
-                const HIGH_WATER_MARK = 1024 * 1024; 
-                const LOW_WATER_MARK = 256 * 1024;   // 256KB low watermark
-                const sectorSize = Math.ceil(file.size / numChannels);
-                
-                const workers = [];
-                for (let chIdx = 0; chIdx < numChannels; chIdx++) {
-                    workers.push((async () => {
-                        const dc = dataChannelsRef.current[chIdx];
-                        if (!dc) return;
-                        dc.bufferedAmountLowThreshold = LOW_WATER_MARK;
-                        
-                        const start = chIdx * sectorSize;
-                        const end = Math.min(start + sectorSize, file.size);
-                        let offset = start;
-
-                        while (isActive.current && offset < end) {
-                            // Pacer: Only send if we are below High Water Mark
-                            if (dc.bufferedAmount > HIGH_WATER_MARK) {
-                                await new Promise<void>(res => {
-                                    dc.onbufferedamountlow = () => { 
-                                        dc.onbufferedamountlow = null; 
-                                        // v02.0.2: Increased Recovery Breath (50ms) to clear physical network queues
-                                        setTimeout(res, 50); 
-                                    };
-                                });
-                            }
-
-                            const chunkLen = Math.min(CHUNK_SIZE, end - offset);
-                            const chunk = await file.slice(offset, offset + chunkLen).arrayBuffer();
-
-                            if (dc.readyState !== 'open') {
-                                // v02.0.10: Patient Workers - wait for channel to open instead of breaking.
-                                // This ensures all 8 channels eventually join the transfer.
-                                await new Promise(res => setTimeout(res, 50));
-                                continue;
-                            }
-                            dc.send(chunk);
-                            offset += chunkLen;
-                            totalSentBytesRef.current += chunkLen;
-
-                            // v02.0.21: Infinity Traversal - Relax yielding to 1MB bounds to push cellular limits
-                            if (offset % (CHUNK_SIZE * 16) === 0) {
-                                await new Promise(res => setTimeout(res, 0));
-                            }
-                            
-                            // Periodic Bitrate/Progress
-                            if (offset % (1024 * 1024) === 0) {
-                                    const totalBuffered = dataChannelsRef.current.reduce(
-                                    (acc, c) => acc + (c.readyState === 'open' ? c.bufferedAmount : 0), 0
-                                );
-                                const trueSent = Math.max(0, totalSentBytesRef.current - totalBuffered);
-                                setProgress(Math.round((trueSent / file.size) * 100));
-                            }
-                        }
-                        
-                        if (dc.readyState === 'open') {
-                            // v01.5.2: MUST send sector-eof IN-BAND via DataChannel to ensure it arrives AFTER data.
-                            // WebSocket (OOBS) is too fast and causes 0-byte reassembly race conditions.
-                            dc.send(JSON.stringify({ 
-                                type: 'sector-eof', 
-                                channel: chIdx,
-                                parallelChannels: numChannels 
-                            }));
-                        }
-                    })());
-                }
-
-                // v01.5.3: ATTACH ACK LISTENER BEFORE WORKERS
-                // This prevents the race where the receiver ACKs while we are still draining the last bits.
-                let ackResolver: () => void;
-                const ackWaitPromise = new Promise<void>((res) => { ackResolver = res; });
-                
-                const ackTimeout = setTimeout(() => {
-                    logDebug(`Sender: ACK Timeout for ${file.name} - Moving to next file.`);
-                    window.removeEventListener('webrtc-sender-msg', ackListener);
-                    ackResolver();
-                }, 400000); // v01.5.9: 400s Safety Shield for 32MB Buffer (MAOP Speed Priority)
-
-                const ackListener = (e: any) => {
-                    try {
-                        const msg = e.detail;
-                        if (msg.type === 'file-ack' && msg.name === file.name) {
-                            logDebug(`Sender: Received ACK for ${file.name}.`);
-                            clearTimeout(ackTimeout);
-                            window.removeEventListener('webrtc-sender-msg', ackListener);
-                            ackResolver();
-                        }
-                    } catch (err) { }
+            await Promise.all(promises);
+            logDebug(`Sender: Data pipelined for ${file.name}.`);
+            
+            // v02.0.22: Drained-State Wait
+            const finishPipelining = async () => {
+                const checkDrain = () => {
+                    const totalBuffered = dataChannelsRef.current.reduce(
+                        (acc, c) => acc + (c.readyState === 'open' ? c.bufferedAmount : 0), 0
+                    );
+                    if (totalBuffered < 1024 * 1024) { 
+                        resolve();
+                    } else {
+                        setTimeout(checkDrain, 30);
+                    }
                 };
-                window.addEventListener('webrtc-sender-msg', ackListener);
-
-                await Promise.all(workers);
-                logDebug(`Sender: Data pushed for ${file.name}. Pipelining next file...`);
-                
-                // v02.0.0: Resolve NOW so next file starts its Metadata Sync immediately
-                isResolved = true;
-                
-                // v02.0.3: Drained-State Pipelining Guard
-                // We wait for the aggregate buffer to drop below 512KB before starting the next file.
-                // This prevents "Chain-Reaction Congestion" in multi-file batches.
-                const finishPipelining = async () => {
-                    const checkDrain = () => {
-                        const totalBuffered = dataChannelsRef.current.reduce(
-                            (acc, c) => acc + (c.readyState === 'open' ? c.bufferedAmount : 0), 0
-                        );
-                        if (totalBuffered < 512 * 1024) { // Drained! (512KB)
-                            resolve();
-                        } else {
-                            setTimeout(checkDrain, 30);
-                        }
-                    };
-                    checkDrain();
-                };
-                finishPipelining();
-
-                // Background: Wait for final ACK to ensure reliability
-                await ackWaitPromise;
-                logDebug(`Sender: Background ACK received for ${file.name}`);
+                checkDrain();
             };
+            finishPipelining();
         });
     };
 
@@ -771,82 +655,103 @@ function InstantDropContent() {
     const handleIncomingData = (data: any, channelIdx: number) => {
         const processJsonMsg = (msg: any) => {
             if (msg.type === 'metadata') {
-                if (receiveMeta.current?.name === msg.name && statusRef.current === 'transferring') {
-                    logDebug(`Receiver: Redundant Metadata for ${msg.name} - Ignoring reset`);
-                } else {
-                    logDebug(`Receiver: Received Metadata JSON: ${JSON.stringify(msg)}`);
-                    logDebug(`Receiver: Starting File Receipt for ${msg.name} (Parallel: ${msg.isParallel})`);
-                    receiveMeta.current = msg;
-                    setIncomingMeta(msg);
-                    receiveBuffers.current = new Map();
-                    receivedEofs.current.clear();
-                    totalReceivedBytesRef.current = 0;
-                    setCurrentFileIndex(msg.currentIdx || 0);
-                    setStatus('transferring');
-                }
-                sendControlMsg({ type: 'ready' });
-                logDebug("Receiver: Sent OOBS READY");
+                logDebug(`Receiver: Received Pipelined Metadata for ${msg.name}`);
+                fileMetas.current.set(msg.currentIdx, msg);
+                setIncomingMeta(msg);
+                setCurrentFileIndex(msg.currentIdx || 0);
+                setStatus('transferring');
+                checkReassembly(msg.currentIdx);
+                // No READY signal. Fire and forget pipeline.
             } else if (msg.type === 'sector-eof') {
-                receivedEofs.current.add(msg.channel);
-                logDebug(`Receiver: Received Sector EOF on channel ${msg.channel}. Total: ${receivedEofs.current.size}`);
+                const fileIdx = msg.fileIndex !== undefined ? msg.fileIndex : channelFileIndex.current[msg.channel];
+                logDebug(`Receiver: Received Sector EOF on channel ${msg.channel} for FileIdx ${fileIdx}`);
+                
+                if (!fileEofs.current.has(fileIdx)) {
+                    fileEofs.current.set(fileIdx, new Set());
+                }
+                fileEofs.current.get(fileIdx)!.add(msg.channel);
+                
+                // v02.0.22: Advance channel file pointer natively
+                channelFileIndex.current[msg.channel]++;
+                
+                checkReassembly(fileIdx);
+            } else if (msg.type === 'batch-eof') {
+                logDebug(`Receiver: Batch EOF via WS. Expecting ${msg.totalFiles} files.`);
+                expectedTotalFiles.current = msg.totalFiles || 0;
+                checkFinish();
+            }
+        };
 
-                if (receiveMeta.current && receivedEofs.current.size >= (msg.parallelChannels || dataChannelsRef.current.length)) {
-                    logDebug(`Receiver: All sectors received for ${receiveMeta.current.name}. Reassembling...`);
-                    const allChunks: ArrayBuffer[] = [];
-                    const channelsToReassemble = msg.parallelChannels || dataChannelsRef.current.length;
-                    for (let i = 0; i < channelsToReassemble; i++) {
-                        const sector = receiveBuffers.current.get(i) || [];
+        const checkReassembly = (fileIdx: number) => {
+            const meta = fileMetas.current.get(fileIdx);
+            const eofs = fileEofs.current.get(fileIdx);
+            const numExpectedChannels = meta?.parallelChannels || dataChannelsRef.current.length || 8;
+            
+            if (meta && eofs && eofs.size === numExpectedChannels) {
+                logDebug(`Receiver: All sectors received for ${meta.name}. Reassembling...`);
+                const allChunks: ArrayBuffer[] = [];
+                const chanMap = fileBuffers.current.get(fileIdx);
+                if (chanMap) {
+                    for (let i = 0; i < numExpectedChannels; i++) {
+                        const sector = chanMap.get(i) || [];
                         for (let j = 0; j < sector.length; j++) {
                             allChunks.push(sector[j]);
                         }
-                        receiveBuffers.current.delete(i);
                     }
-                    
-                    const fileName = receiveMeta.current.name;
-                    const fileType = receiveMeta.current.fileType;
-                    const expectedSize = receiveMeta.current.size;
-                    const blob = new Blob(allChunks, { type: fileType });
-                    allChunks.length = 0;
-                    
-                    if (blob.size > 0 || expectedSize === 0) {
-                        setReceivedFiles(prev => [...prev, { blob, name: fileName }]);
-                        setStatus('done-waiting');
-                        logDebug(`Receiver: Reassembly complete for ${fileName} (${blob.size} bytes). Sending OOBS ACK.`);
-                        sendControlMsg({ type: 'file-ack', name: fileName });
-                    } else {
-                        logDebug(`Receiver: CRITICAL ERROR - Reassembled 0 bytes for ${fileName} (expected ${expectedSize}). Check DataChannels.`);
-                        // Don't crash, but inform user
-                        setStatus('error');
-                    }
-                    
-                    receivedEofs.current.clear();
-                    receiveMeta.current = null;
                 }
-            } else if (msg.type === 'batch-eof') {
-                logDebug("Receiver: Transfer Complete");
-                setStatus('done');
+                
+                const blob = new Blob(allChunks, { type: meta.fileType || 'application/octet-stream' });
+                allChunks.length = 0; // GC Help
+                
+                if (blob.size > 0 || meta.size === 0) {
+                    setReceivedFiles(prev => [...prev, { blob, name: meta.name }]);
+                    logDebug(`Receiver: Reassembly complete for ${meta.name} (${blob.size} bytes).`);
+                    setCurrentFileIndex(fileIdx);
+                } else {
+                    logDebug(`Receiver: CRITICAL ERROR - Reassembled 0 bytes for ${meta.name}.`);
+                    setStatus('error');
+                }
+                
+                // Aggressive Cleanup
+                fileBuffers.current.delete(fileIdx);
+                fileEofs.current.delete(fileIdx);
+                
+                reassembledCount.current++;
+                checkFinish();
+            }
+        };
+
+        const checkFinish = () => {
+            if (expectedTotalFiles.current !== -1 && reassembledCount.current >= expectedTotalFiles.current) {
+                logDebug("Receiver: Transfer Complete. All pipelined files reassembled!");
+                setStatus('done-waiting');
                 statusRef.current = 'done';
-                disconnectEverything();
+                setTimeout(disconnectEverything, 500); 
             }
         };
 
         if (typeof data === 'string') {
             try {
-                const msg = JSON.parse(data);
-                processJsonMsg(msg);
-            } catch (err) {
-                logDebug(`Receiver Parse Error: ${err}`);
-            }
+                processJsonMsg(JSON.parse(data));
+            } catch (err) { logDebug(`Receiver Parse Error: ${err}`); }
         } else if (typeof data === 'object' && data !== null && data.type) {
             processJsonMsg(data);
         } else {
             // Binary sector chunk
-            const sector = receiveBuffers.current.get(channelIdx) || [];
+            const fileIdx = channelFileIndex.current[channelIdx];
+            if (!fileBuffers.current.has(fileIdx)) fileBuffers.current.set(fileIdx, new Map());
+            const chanMap = fileBuffers.current.get(fileIdx)!;
+            const sector = chanMap.get(channelIdx) || [];
             sector.push(data);
-            receiveBuffers.current.set(channelIdx, sector);
+            chanMap.set(channelIdx, sector);
+            
             totalReceivedBytesRef.current += data.byteLength;
-            if (receiveMeta.current?.size) {
-                setProgress(Math.round((totalReceivedBytesRef.current / receiveMeta.current.size) * 100));
+            
+            const meta = fileMetas.current.get(fileIdx);
+            if (meta?.size) {
+                let currentFileRcvd = 0;
+                chanMap.forEach(arrs => currentFileRcvd += arrs.reduce((acc, a) => acc + a.byteLength, 0));
+                setProgress(Math.round((currentFileRcvd / meta.size) * 100));
             }
         }
     };
@@ -860,6 +765,12 @@ function InstantDropContent() {
         remoteDescriptionSet.current = false;
         iceBuffer.current = [];
         dataChannelsRef.current = [];
+        channelFileIndex.current = new Array(8).fill(0);
+        fileBuffers.current.clear();
+        fileEofs.current.clear();
+        fileMetas.current.clear();
+        reassembledCount.current = 0;
+        expectedTotalFiles.current = -1;
     };
 
     useEffect(() => {
@@ -1281,7 +1192,7 @@ function InstantDropContent() {
                                                 </div>
                                             )}
 
-                                            <p className="text-sm font-semibold truncate">Current File Part ({currentFileIndex + 1}): {receiveMeta.current?.name}</p>
+                                            <p className="text-sm font-semibold truncate">Current File Part ({currentFileIndex + 1}): {incomingMeta?.name}</p>
                                             <div className="flex justify-between text-sm font-medium">
                                                 <span>Transferring File Data...</span>
                                                 <span>{progress}%</span>
