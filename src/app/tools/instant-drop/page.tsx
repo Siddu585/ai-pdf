@@ -243,15 +243,28 @@ function InstantDropContent() {
                     });
                 } else if (data.type === 'answer') {
                     logDebug("Received answer, setting remote description");
-                    await peerRef.current?.setRemoteDescription(new RTCSessionDescription(data.sdp));
-                    remoteDescriptionSet.current = true;
-                    // Flush buffered candidates
-                    for (const candidate of iceBuffer.current) {
-                        try {
-                            await peerRef.current?.addIceCandidate(new RTCIceCandidate(candidate));
-                        } catch (e) { logDebug("Sender buffered ICE warning: " + e); }
+                    try {
+                        await peerRef.current?.setRemoteDescription(new RTCSessionDescription(data.sdp));
+                        remoteDescriptionSet.current = true;
+                        logDebug("✅ Remote Description Set. Flushing " + iceBuffer.current.length + " buffered candidates");
+                        // Flush buffered candidates
+                        for (const candidate of iceBuffer.current) {
+                            try {
+                                await peerRef.current?.addIceCandidate(new RTCIceCandidate(candidate));
+                            } catch (e) { logDebug("Sender buffered ICE warning: " + e); }
+                        }
+                        iceBuffer.current = [];
+                    } catch (e: any) {
+                        logDebug("❌ Failed to set remote description: " + e.message);
                     }
-                    iceBuffer.current = [];
+                } else if (data.type === 'ice-candidate') {
+                    if (!remoteDescriptionSet.current) {
+                        iceBuffer.current.push(data.candidate);
+                    } else {
+                        try {
+                            await peerRef.current?.addIceCandidate(new RTCIceCandidate(data.candidate));
+                        } catch (e) { logDebug("Sender live ICE warning: " + e); }
+                    }
                 } else if (data.type === 'heartbeat') {
                     // v02.0.0: Ignore heartbeat, purely for NAT keep-alive
                     return;
@@ -278,9 +291,32 @@ function InstantDropContent() {
             // v02.0.18: Titanium Adaptive Fallback Engine
             const currentRelays = (!useFallback && relayServersRef.current && relayServersRef.current.length > 0) 
                                     ? relayServersRef.current 
-                                    : ICE_SERVERS.iceServers;
+                                    : [...ICE_SERVERS.iceServers];
+                                    
+            logDebug(`Initializing RTCPeerConnection with ${currentRelays.length} configured ICE servers.`);
             const peer = new RTCPeerConnection({ iceServers: currentRelays });
             peerRef.current = peer;
+
+            // v02.0.20: Universal Traversal - Setup channels BEFORE any negotiation
+            if (isSender) {
+                const chLimit = 8;
+                logDebug(`Creating ${chLimit} Parallel DataChannels (Sender) pre-negotiation...`);
+                for (let i = 0; i < chLimit; i++) {
+                    const dc = peer.createDataChannel(`file-transfer-${i}`, { ordered: true, negotiated: false });
+                    dataChannelsRef.current.push(dc);
+                    setupDataChannel(dc, i);
+                    dc.bufferedAmountLowThreshold = 64 * 1024;
+                }
+            } else {
+                logDebug("Awaiting Parallel DataChannels (Receiver)");
+                peer.ondatachannel = (e) => {
+                    const label = e.channel.label;
+                    const index = parseInt(label.split('-').pop() || '0');
+                    logDebug(`Receiver: DataChannel ${index} Received`);
+                    dataChannelsRef.current[index] = e.channel;
+                    setupDataChannel(e.channel, index);
+                };
+            }
 
             peer.oniceconnectionstatechange = () => {
                 logDebug(`ICE Connection State: ${peer.iceConnectionState}`);
@@ -321,29 +357,15 @@ function InstantDropContent() {
             };
 
             if (isSender) {
-                const chLimit = 8;
-                logDebug(`Creating ${chLimit} Parallel DataChannels (Sender)`);
-                for (let i = 0; i < chLimit; i++) {
-                    const dc = peer.createDataChannel(`file-transfer-${i}`, { ordered: true });
-                    dataChannelsRef.current.push(dc);
-                    setupDataChannel(dc, i);
-                    dc.bufferedAmountLowThreshold = 64 * 1024;
-                }
-
                 logDebug(`Awaiting createOffer...`);
-                const offer = await peer.createOffer();
+                // Enforce SDP semantics
+                const offer = await peer.createOffer({ offerToReceiveAudio: false, offerToReceiveVideo: false });
                 logDebug(`createOffer succeeded, setting local description...`);
+                
+                // CRITICAL: Await setLocalDescription completely before sending to signal
                 await peer.setLocalDescription(offer);
-                ws.send(JSON.stringify({ type: 'offer', sdp: offer }));
-            } else {
-                logDebug("Awaiting Parallel DataChannels (Receiver)");
-                peer.ondatachannel = (e) => {
-                    const label = e.channel.label;
-                    const index = parseInt(label.split('-').pop() || '0');
-                    logDebug(`Receiver: DataChannel ${index} Received`);
-                    dataChannelsRef.current[index] = e.channel;
-                    setupDataChannel(e.channel, index);
-                };
+                logDebug(`Set Local Description complete. Sending offer via WS.`);
+                ws.send(JSON.stringify({ type: 'offer', sdp: peer.localDescription }));
             }
         } catch (err: any) {
             logDebug(`❌ CRITICAL WEBRTC ERROR IN SETUP: ${err.message || err}`);
@@ -1001,7 +1023,7 @@ function InstantDropContent() {
                         <Smartphone className="w-12 h-12 text-indigo-500" />
                     </div>
                     <h1 className="text-4xl md:text-5xl font-bold text-foreground mb-4">Turbo Drop</h1>
-                    <p className="text-xs text-muted-foreground font-medium tracking-widest uppercase mb-2">v02.0.19 Diagnostic Engine (Silent Crash Protection)</p>
+                    <p className="text-xs text-muted-foreground font-medium tracking-widest uppercase mb-2">v02.0.20 Universal Traversal (NAT Engine)</p>
                     <p className="text-lg text-muted-foreground max-w-2xl mx-auto">
                         The ultimate high-speed file sharing app. Transfer photos and large files (up to 200MB) from desktop to mobile or mobile to mobile instantly.
                     </p>
