@@ -177,6 +177,8 @@ function InstantDropContent() {
     const fileMetas = useRef<Map<number, any>>(new Map());
     const reassembledCount = useRef<number>(0);
     const expectedTotalFiles = useRef<number>(-1);
+    const currentFileReceivedRef = useRef<Map<number, number>>(new Map()); // v02.0.23: O(1) Progress Counter
+
 
     const totalReceivedBytesRef = useRef(0);
     const totalSentBytesRef = useRef(0);
@@ -514,7 +516,7 @@ function InstantDropContent() {
                             await new Promise<void>(res => {
                                 dc.onbufferedamountlow = () => { 
                                     dc.onbufferedamountlow = null; 
-                                    setTimeout(res, 30); 
+                                    res(); // v02.0.23: Removed 30ms latency anchor
                                 };
                             });
                         }
@@ -531,7 +533,7 @@ function InstantDropContent() {
                         fileSentBytes += chunkLen;
                         totalSentBytesRef.current += chunkLen;
 
-                        if (offset % (CHUNK_SIZE * 16) === 0) {
+                        if (offset % (CHUNK_SIZE * 64) === 0) { // v02.0.23: Reduced yield frequency
                             await new Promise(res => setTimeout(res, 0));
                         }
                         
@@ -747,11 +749,13 @@ function InstantDropContent() {
             
             totalReceivedBytesRef.current += data.byteLength;
             
+            // v02.0.23: O(1) Massive Speedup - No more per-packet re-scanning of buffers
+            const currentRcvd = (currentFileReceivedRef.current.get(fileIdx) || 0) + data.byteLength;
+            currentFileReceivedRef.current.set(fileIdx, currentRcvd);
+            
             const meta = fileMetas.current.get(fileIdx);
             if (meta?.size) {
-                let currentFileRcvd = 0;
-                chanMap.forEach(arrs => currentFileRcvd += arrs.reduce((acc, a) => acc + a.byteLength, 0));
-                setProgress(Math.round((currentFileRcvd / meta.size) * 100));
+                setProgress(Math.round((currentRcvd / meta.size) * 100));
             }
         }
     };
@@ -771,6 +775,7 @@ function InstantDropContent() {
         fileMetas.current.clear();
         reassembledCount.current = 0;
         expectedTotalFiles.current = -1;
+        currentFileReceivedRef.current.clear();
     };
 
     useEffect(() => {
@@ -936,7 +941,7 @@ function InstantDropContent() {
                         <Smartphone className="w-12 h-12 text-indigo-500" />
                     </div>
                     <h1 className="text-4xl md:text-5xl font-bold text-foreground mb-4">Turbo Drop</h1>
-                    <p className="text-xs text-muted-foreground font-medium tracking-widest uppercase mb-2">v02.0.22 Pipeline Engine (5MB/s Architecture)</p>
+                    <p className="text-xs text-muted-foreground font-medium tracking-widest uppercase mb-2">v02.0.23 Ultra-Flow (5MB/s Target)</p>
                     <p className="text-lg text-muted-foreground max-w-2xl mx-auto">
                         The ultimate high-speed file sharing app. Transfer photos and large files (up to 200MB) from desktop to mobile or mobile to mobile instantly.
                     </p>
