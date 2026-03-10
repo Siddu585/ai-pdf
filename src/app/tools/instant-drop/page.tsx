@@ -231,30 +231,36 @@ function InstantDropContent() {
         };
 
         ws.onmessage = async (event) => {
-            console.log("Sender WS Message:", event.data);
-            const data = JSON.parse(event.data);
-            if (data.type === 'peer-connected') {
-                logDebug("Peer joined, waiting for receiver-ready signal...");
-            } else if (data.type === 'receiver-ready') {
-                logDebug("Receiver is READY. Initializing WebRTC Offer...");
-                setupWebRTC(ws, true).catch(err => {
-                    logDebug(`❌ Unhandled Sender Setup Error: ${err.message || err}`);
-                });
-            } else if (data.type === 'answer') {
-                console.log("Received answer, setting remote description");
-                await peerRef.current?.setRemoteDescription(new RTCSessionDescription(data.sdp));
-                remoteDescriptionSet.current = true;
-                // Flush buffered candidates
-                for (const candidate of iceBuffer.current) {
-                    await peerRef.current?.addIceCandidate(new RTCIceCandidate(candidate));
+            logDebug("Sender WS Message: " + event.data);
+            try {
+                const data = JSON.parse(event.data);
+                if (data.type === 'peer-connected') {
+                    logDebug("Peer joined, waiting for receiver-ready signal...");
+                } else if (data.type === 'receiver-ready') {
+                    logDebug("Receiver is READY. Initializing WebRTC Offer...");
+                    setupWebRTC(ws, true).catch(err => {
+                        logDebug(`❌ Unhandled Sender Setup Error: ${err.message || err}`);
+                    });
+                } else if (data.type === 'answer') {
+                    logDebug("Received answer, setting remote description");
+                    await peerRef.current?.setRemoteDescription(new RTCSessionDescription(data.sdp));
+                    remoteDescriptionSet.current = true;
+                    // Flush buffered candidates
+                    for (const candidate of iceBuffer.current) {
+                        try {
+                            await peerRef.current?.addIceCandidate(new RTCIceCandidate(candidate));
+                        } catch (e) { logDebug("Sender buffered ICE warning: " + e); }
+                    }
+                    iceBuffer.current = [];
+                } else if (data.type === 'heartbeat') {
+                    // v02.0.0: Ignore heartbeat, purely for NAT keep-alive
+                    return;
+                } else if (data.type === 'metadata' || data.type === 'ready' || data.type === 'file-ack' || data.type === 'sector-eof') {
+                    // v01.5.0: Process Out-of-Band Control Messages
+                    window.dispatchEvent(new CustomEvent('webrtc-sender-msg', { detail: data }));
                 }
-                iceBuffer.current = [];
-            } else if (data.type === 'heartbeat') {
-                // v02.0.0: Ignore heartbeat, purely for NAT keep-alive
-                return;
-            } else if (data.type === 'metadata' || data.type === 'ready' || data.type === 'file-ack' || data.type === 'sector-eof') {
-                // v01.5.0: Process Out-of-Band Control Messages
-                window.dispatchEvent(new CustomEvent('webrtc-sender-msg', { detail: data }));
+            } catch (err: any) {
+                logDebug("❌ Sender WS Error: " + err.message);
             }
         };
     };
@@ -291,10 +297,16 @@ function InstantDropContent() {
                 }
             }, 5000);
 
+            peer.onicegatheringstatechange = () => {
+                logDebug(`ICE Gathering State: ${peer.iceGatheringState}`);
+            };
+
             peer.onicecandidate = (e) => {
                 if (e.candidate) {
-                    console.log("Generated local ICE candidate");
+                    logDebug("Generated local ICE candidate");
                     ws.send(JSON.stringify({ type: 'ice-candidate', candidate: e.candidate }));
+                } else {
+                    logDebug("Native ICE Gathering COMPLETED (null candidate).");
                 }
             };
 
@@ -678,48 +690,56 @@ function InstantDropContent() {
         };
 
         ws.onmessage = async (event) => {
-            console.log("Receiver WS Message:", event.data);
-            const data = JSON.parse(event.data);
-            if (data.type === 'offer') {
-                console.log("Received offer, setting up WebRTC and creating answer");
-                const processOffer = async (useFallback = false) => {
-                    try {
-                        await setupWebRTC(ws, false, useFallback);
-                        logDebug(`Awaiting remote description...`);
-                        await peerRef.current?.setRemoteDescription(new RTCSessionDescription(data.sdp));
-                        remoteDescriptionSet.current = true;
-                        
-                        // Handle potential buffered candidates AFTER setting remote description
-                        for (const candidate of iceBuffer.current) {
-                            await peerRef.current?.addIceCandidate(new RTCIceCandidate(candidate));
-                        }
-                        iceBuffer.current = [];
+            logDebug("Receiver WS Message: " + event.data);
+            try {
+                const data = JSON.parse(event.data);
+                if (data.type === 'offer') {
+                    logDebug("Received offer, setting up WebRTC and creating answer");
+                    const processOffer = async (useFallback = false) => {
+                        try {
+                            await setupWebRTC(ws, false, useFallback);
+                            logDebug(`Awaiting remote description...`);
+                            await peerRef.current?.setRemoteDescription(new RTCSessionDescription(data.sdp));
+                            remoteDescriptionSet.current = true;
+                            
+                            // Handle potential buffered candidates AFTER setting remote description
+                            for (const candidate of iceBuffer.current) {
+                                try {
+                                    await peerRef.current?.addIceCandidate(new RTCIceCandidate(candidate));
+                                } catch (e) { logDebug("Receiver buffered ICE warning: " + e); }
+                            }
+                            iceBuffer.current = [];
 
-                        logDebug(`Awaiting createAnswer...`);
-                        const answer = await peerRef.current?.createAnswer();
-                        logDebug(`Setting local description (answer)...`);
-                        await peerRef.current?.setLocalDescription(answer);
-                        ws.send(JSON.stringify({ type: 'answer', sdp: answer }));
-                    } catch (err: any) {
-                        logDebug(`❌ CRITICAL RECEIVER ERROR: ${err.message || err}`);
-                        if (!useFallback) {
-                            logDebug(`⚠️ Triggering Receiver Fallback Engine...`);
-                            await processOffer(true);
-                        } else {
-                            setStatus('error');
+                            logDebug(`Awaiting createAnswer...`);
+                            const answer = await peerRef.current?.createAnswer();
+                            logDebug(`Setting local description (answer)...`);
+                            await peerRef.current?.setLocalDescription(answer);
+                            ws.send(JSON.stringify({ type: 'answer', sdp: answer }));
+                        } catch (err: any) {
+                            logDebug(`❌ CRITICAL RECEIVER ERROR: ${err.message || err}`);
+                            if (!useFallback) {
+                                logDebug(`⚠️ Triggering Receiver Fallback Engine...`);
+                                await processOffer(true);
+                            } else {
+                                setStatus('error');
+                            }
                         }
+                    };
+                    processOffer();
+                } else if (data.type === 'ice-candidate') {
+                    if (!remoteDescriptionSet.current) {
+                        iceBuffer.current.push(data.candidate);
+                    } else {
+                        try {
+                            await peerRef.current?.addIceCandidate(new RTCIceCandidate(data.candidate));
+                        } catch (e) { logDebug("Receiver live ICE warning: " + e); }
                     }
-                };
-                processOffer();
-            } else if (data.type === 'ice-candidate') {
-                if (!remoteDescriptionSet.current) {
-                    iceBuffer.current.push(data.candidate);
-                } else {
-                    await peerRef.current?.addIceCandidate(new RTCIceCandidate(data.candidate));
+                } else if (data.type === 'metadata' || data.type === 'sector-eof' || data.type === 'batch-eof') {
+                    // v01.5.0: Process Out-of-Band signals
+                    handleIncomingData(data, 0);
                 }
-            } else if (data.type === 'metadata' || data.type === 'sector-eof' || data.type === 'batch-eof') {
-                // v01.5.0: Process Out-of-Band signals
-                handleIncomingData(data, 0);
+            } catch (err: any) {
+                logDebug("❌ Receiver WS Error: " + err.message);
             }
         };
     };
@@ -981,7 +1001,7 @@ function InstantDropContent() {
                         <Smartphone className="w-12 h-12 text-indigo-500" />
                     </div>
                     <h1 className="text-4xl md:text-5xl font-bold text-foreground mb-4">Turbo Drop</h1>
-                    <p className="text-xs text-muted-foreground font-medium tracking-widest uppercase mb-2">v02.0.18 Titanium-Resilience (Adaptive Fallback)</p>
+                    <p className="text-xs text-muted-foreground font-medium tracking-widest uppercase mb-2">v02.0.19 Diagnostic Engine (Silent Crash Protection)</p>
                     <p className="text-lg text-muted-foreground max-w-2xl mx-auto">
                         The ultimate high-speed file sharing app. Transfer photos and large files (up to 200MB) from desktop to mobile or mobile to mobile instantly.
                     </p>
