@@ -305,7 +305,8 @@ function InstantDropContent() {
                     const dc = peer.createDataChannel(`file-transfer-${i}`, { ordered: true, negotiated: false });
                     dataChannelsRef.current.push(dc);
                     setupDataChannel(dc, i);
-                    dc.bufferedAmountLowThreshold = 64 * 1024;
+                    // v02.0.21 Infinity Traversal: Increase low watermark to 256KB for cellular BDP
+                    dc.bufferedAmountLowThreshold = 256 * 1024;
                 }
             } else {
                 logDebug("Awaiting Parallel DataChannels (Receiver)");
@@ -567,11 +568,12 @@ function InstantDropContent() {
             const startParallelBurst = async () => {
                 const numChannels = dataChannelsRef.current.length;
                 
-                // v01.5.0: PACED ADAPTIVE STREAM
-                logDebug(`Sender: v02.0.3 Paced Stream Start (Bone-Stock Gold Standard)`);
+                // v02.0.21: INFINITY TRAVERSAL (High BDP Saturation for Cellular)
+                logDebug(`Sender: v02.0.21 Paced Stream Start (Infinity Traversal)`);
 
-                const HIGH_WATER_MARK = 256 * 1024; // 256KB per channel (2MB total)
-                const LOW_WATER_MARK = 64 * 1024;   // 64KB per channel
+                // 1MB per channel High Water (8MB total flight) to saturate high-latency LTE/5G
+                const HIGH_WATER_MARK = 1024 * 1024; 
+                const LOW_WATER_MARK = 256 * 1024;   // 256KB low watermark
                 const sectorSize = Math.ceil(file.size / numChannels);
                 
                 const workers = [];
@@ -603,15 +605,15 @@ function InstantDropContent() {
                             if (dc.readyState !== 'open') {
                                 // v02.0.10: Patient Workers - wait for channel to open instead of breaking.
                                 // This ensures all 8 channels eventually join the transfer.
-                                await new Promise(res => setTimeout(res, 100));
+                                await new Promise(res => setTimeout(res, 50));
                                 continue;
                             }
                             dc.send(chunk);
                             offset += chunkLen;
                             totalSentBytesRef.current += chunkLen;
 
-                            // v02.0.3: Rapid Yielding - Pauses every 4 chunks (256KB) to satisfy mobile NAT timing
-                            if (offset % (CHUNK_SIZE * 4) === 0) {
+                            // v02.0.21: Infinity Traversal - Relax yielding to 1MB bounds to push cellular limits
+                            if (offset % (CHUNK_SIZE * 16) === 0) {
                                 await new Promise(res => setTimeout(res, 0));
                             }
                             
@@ -1023,7 +1025,7 @@ function InstantDropContent() {
                         <Smartphone className="w-12 h-12 text-indigo-500" />
                     </div>
                     <h1 className="text-4xl md:text-5xl font-bold text-foreground mb-4">Turbo Drop</h1>
-                    <p className="text-xs text-muted-foreground font-medium tracking-widest uppercase mb-2">v02.0.20 Universal Traversal (NAT Engine)</p>
+                    <p className="text-xs text-muted-foreground font-medium tracking-widest uppercase mb-2">v02.0.21 Infinity Traversal (Cellular BDP Fix)</p>
                     <p className="text-lg text-muted-foreground max-w-2xl mx-auto">
                         The ultimate high-speed file sharing app. Transfer photos and large files (up to 200MB) from desktop to mobile or mobile to mobile instantly.
                     </p>
