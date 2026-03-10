@@ -12,7 +12,7 @@ import { useUsage } from "@/hooks/useUsage";
 import { PaywallModal } from "@/components/layout/PaywallModal";
 
 // Strict WebRTC cross-browser compatible Chunk size (64KB - Reverted for Legacy-Refined)
-const CHUNK_SIZE = 64 * 1024;
+const CHUNK_SIZE = 160 * 1024; // v02.0.24: Increased for BDP Saturation (Safely under 256KB limit)
 const MAX_IN_FLIGHT = 32;
 const getBackendUrls = () => {
     let rawUrl = (process.env.NEXT_PUBLIC_API_URL || "").trim().replace(/\/$/, "");
@@ -407,8 +407,10 @@ function InstantDropContent() {
                     lastBytesRef.current = 0;
                     if (speedTimerRef.current) clearInterval(speedTimerRef.current);
                     speedTimerRef.current = setInterval(() => {
-                        const bytesSinceLast = totalSentBytesRef.current + totalReceivedBytesRef.current - lastBytesRef.current;
-                        lastBytesRef.current = totalSentBytesRef.current + totalReceivedBytesRef.current;
+                        // v02.0.24: Rolling 1-second delta (Realistic Peak Throughput)
+                        const currentTotal = totalSentBytesRef.current + totalReceivedBytesRef.current;
+                        const bytesSinceLast = currentTotal - lastBytesRef.current;
+                        lastBytesRef.current = currentTotal;
                         setTransferSpeed(parseFloat((bytesSinceLast / 1024 / 1024).toFixed(1)));
                     }, 1000);
                     startFileTransfer();
@@ -495,8 +497,8 @@ function InstantDropContent() {
             // v02.0.22: PIPELINED ADAPTIVE STREAM (Zero-Buffer Fast Path)
             logDebug(`Sender: v02.0.22 Paced Stream Start (Pipelined Engine)`);
 
-            const HIGH_WATER_MARK = 1024 * 1024; 
-            const LOW_WATER_MARK = 256 * 1024;
+            const HIGH_WATER_MARK = 16 * 1024 * 1024; // v02.0.24: 16MB for 800ms Latency bridging
+            const LOW_WATER_MARK = 4 * 1024 * 1024;  // v02.0.24: 4MB for SCTP window stability
             const sectorSize = Math.ceil(file.size / numChannels);
             
             const promises = [];
@@ -941,7 +943,7 @@ function InstantDropContent() {
                         <Smartphone className="w-12 h-12 text-indigo-500" />
                     </div>
                     <h1 className="text-4xl md:text-5xl font-bold text-foreground mb-4">Turbo Drop</h1>
-                    <p className="text-xs text-muted-foreground font-medium tracking-widest uppercase mb-2">v02.0.23 Ultra-Flow (5MB/s Target)</p>
+                    <p className="text-xs text-muted-foreground font-medium tracking-widest uppercase mb-2">v02.0.24 Saturation Engine (5MB/s Target)</p>
                     <p className="text-lg text-muted-foreground max-w-2xl mx-auto">
                         The ultimate high-speed file sharing app. Transfer photos and large files (up to 200MB) from desktop to mobile or mobile to mobile instantly.
                     </p>
