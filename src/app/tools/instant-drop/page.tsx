@@ -11,13 +11,13 @@ import { Footer } from "@/components/layout/Footer";
 import { useUsage } from "@/hooks/useUsage";
 import { PaywallModal } from "@/components/layout/PaywallModal";
 
-// v02.1.9 Turbo-Blast Throughput
-const VERSION = "v02.1.9 Build: 8901";
+// v02.1.10 Hyper-Drive Breakthrough
+const VERSION = "v02.1.10 Build: 9912";
 const CHANNELS = 12; // Stable Sweet Spot from v02.1.8
 const CHUNK_SIZE = 128 * 1024; // 128KB Chunks (Standardized)
-const HIGH_WATER_MARK = 2 * 1024 * 1024; // Extreme pressure (2MB) for 5MB/s target
-const PACER_THRESHOLD = 256 * 1024; // Hot engine pacing (256KB)
-const MAX_IN_FLIGHT = 128; // Maximized concurrency
+const HIGH_WATER_MARK = 4 * 1024 * 1024; // Extreme saturation (4MB) for 5MB/s target
+const PACER_THRESHOLD = 512 * 1024; // Hyper pacing (512KB)
+const MAX_IN_FLIGHT = 256; // Maximized concurrency for unordered blasting
 const getBackendUrls = () => {
     let rawUrl = (process.env.NEXT_PUBLIC_API_URL || "").trim().replace(/\/$/, "");
     
@@ -317,7 +317,9 @@ function InstantDropContent() {
                 logDebug(`Creating ${CHANNELS} Parallel DataChannels (Ordered)...`);
                 for (let i = 0; i < CHANNELS; i++) {
                     const dc = peer.createDataChannel(`data-${i}`, {
-                        ordered: true,
+                        // v02.1.10: Unordered Blasting - eliminating Head-of-Line blocking
+                        // We use our own indexing to reassemble, so ordered is not needed.
+                        ordered: false,
                         // @ts-ignore: RTCDataChannelPriority is experimental but supported in Chromium
                         priority: 'high'
                     });
@@ -954,7 +956,7 @@ function InstantDropContent() {
                         <Smartphone className="w-12 h-12 text-indigo-500" />
                     </div>
                     <h1 className="text-4xl md:text-5xl font-bold text-foreground mb-4">Turbo Drop</h1>
-                    <p className="text-xs text-muted-foreground font-medium tracking-widest uppercase mb-2">v02.1.9 Turbo-Blast (Build: 8901)</p>
+                    <p className="text-xs text-muted-foreground font-medium tracking-widest uppercase mb-2">v02.1.10 Hyper-Drive (Build: 9912)</p>
                     <p className="text-lg text-muted-foreground max-w-2xl mx-auto">
                         The ultimate high-speed file sharing app. Transfer photos and large files (up to 200MB) from desktop to mobile or mobile to mobile instantly.
                     </p>
