@@ -775,6 +775,14 @@ function InstantDropContent() {
             const view = new DataView(data);
             const fileIdx = view.getUint32(0, true);
             const chunkIdx = view.getUint32(4, true);
+            
+            // v02.1.13: Nitro-Ignition Guard
+            // Ignore dummy Nitro-Blast warm-up packets
+            if (chunkIdx === 0xFFFFFFFF) {
+                logDebug(`Receiver: Nitro-Ignition warm-up received. Prime ACK triggered.`);
+                return;
+            }
+            
             const pureData = data.slice(8);
 
             if (!fileBuffers.current.has(fileIdx)) fileBuffers.current.set(fileIdx, []);
