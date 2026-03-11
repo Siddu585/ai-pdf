@@ -558,7 +558,8 @@ function InstantDropContent() {
                 }
 
                 if (dc.bufferedAmount < HIGH_WATER_MARK) {
-                    const chunkSize = Math.min(262144, file.size - offset);
+                    const MAX_CHUNK_PAYLOAD = 262144 - 8; // Accommodate 8-byte metadata header
+                    const chunkSize = Math.min(MAX_CHUNK_PAYLOAD, file.size - offset);
                     const chunk = await file.slice(offset, offset + chunkSize).arrayBuffer();
                     
                     // Prepend 8-byte Sequence Header
@@ -568,7 +569,14 @@ function InstantDropContent() {
                     view.setUint32(4, chunkSequenceNumber, true); // Little endian: Chunk Sequence
                     new Uint8Array(payload, 8).set(new Uint8Array(chunk));
 
-                    dc.send(payload);
+                    try {
+                        dc.send(payload);
+                    } catch (sendErr: any) {
+                        logDebug(`❌ Send error on CH${channelIndex % 8}: ${sendErr.message}`);
+                        await new Promise(res => setTimeout(res, 10));
+                        continue; // Let the loop retry sending this offset later
+                    }
+
                     offset += chunkSize;
                     channelIndex++;
                     chunkSequenceNumber++;
