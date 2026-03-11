@@ -11,13 +11,13 @@ import { Footer } from "@/components/layout/Footer";
 import { useUsage } from "@/hooks/useUsage";
 import { PaywallModal } from "@/components/layout/PaywallModal";
 
-// v02.1.11 Adaptive-Flux Flow
-const VERSION = "v02.1.11 Build: 1045";
-const CHANNELS = 12; // Stable Sweet Spot from v02.1.8
+// v02.1.12 Sonic-Boom Baseline
+const VERSION = "v02.1.12 Build: 1120";
+const CHANNELS = 16; // Extreme parallelism (Unordered mode)
 const CHUNK_SIZE = 128 * 1024; // 128KB Chunks (Standardized)
-const HIGH_WATER_MARK = 1 * 1024 * 1024; // Balanced pressure (1MB) to prevent bufferbloat
+const HIGH_WATER_MARK = 1 * 1024 * 1024; // Balanced pressure (1MB)
 const PACER_THRESHOLD = 256 * 1024; // High-frequency pacing (256KB)
-const MAX_IN_FLIGHT = 128; // Balanced concurrency for sustained flow
+const MAX_IN_FLIGHT = 160; // Tuned for 16-channel flow
 const getBackendUrls = () => {
     let rawUrl = (process.env.NEXT_PUBLIC_API_URL || "").trim().replace(/\/$/, "");
     
@@ -956,7 +956,7 @@ function InstantDropContent() {
                         <Smartphone className="w-12 h-12 text-indigo-500" />
                     </div>
                     <h1 className="text-4xl md:text-5xl font-bold text-foreground mb-4">Turbo Drop</h1>
-                    <p className="text-xs text-muted-foreground font-medium tracking-widest uppercase mb-2">v02.1.11 Adaptive-Flux (Build: 1045)</p>
+                    <p className="text-xs text-muted-foreground font-medium tracking-widest uppercase mb-2">v02.1.12 Sonic-Boom (Build: 1120)</p>
                     <p className="text-lg text-muted-foreground max-w-2xl mx-auto">
                         The ultimate high-speed file sharing app. Transfer photos and large files (up to 200MB) from desktop to mobile or mobile to mobile instantly.
                     </p>
