@@ -11,10 +11,10 @@ import { Footer } from "@/components/layout/Footer";
 import { useUsage } from "@/hooks/useUsage";
 import { PaywallModal } from "@/components/layout/PaywallModal";
 
-// v02.1.2 Turbo-Indexed-Core Fix
-const VERSION = "v02.1.2";
+// v02.1.3 Turbo-Calibration
+const VERSION = "v02.1.3";
 const CHANNELS = 8;
-const CHUNK_SIZE = 120 * 1024; // Lowered slightly to fit 8-byte header in 128KB buffer safely
+const CHUNK_SIZE = 128 * 1024; // 128KB Chunks (Standardized)
 const HIGH_WATER_MARK = 256 * 1024; // v02.0.3 baseline
 const PACER_THRESHOLD = 256 * 1024; // Frequent yields
 const MAX_IN_FLIGHT = 32;
@@ -315,14 +315,18 @@ function InstantDropContent() {
 
             if (isSender) {
                 logDebug(`Creating ${CHANNELS} Parallel DataChannels (Ordered)...`);
-                for (let i = 0; i < CHANNELS; i++) {
-                    const dc = peer.createDataChannel(`data-${i}`, {
-                        ordered: true // v02.1.0: Back to stable ordering
-                    });
-                    dataChannelsRef.current[i] = dc;
-                    setupDataChannel(dc, i);
-                    dc.bufferedAmountLowThreshold = 256 * 1024;
-                }
+                (async () => {
+                    for (let i = 0; i < CHANNELS; i++) {
+                        const dc = peer.createDataChannel(`data-${i}`, {
+                            ordered: true
+                        });
+                        dataChannelsRef.current[i] = dc;
+                        setupDataChannel(dc, i);
+                        dc.bufferedAmountLowThreshold = 256 * 1024;
+                        // v02.1.3: 50ms delay between channel creation to stabilize SCTP negotiation
+                        await new Promise(r => setTimeout(r, 50));
+                    }
+                })();
             } else {
                 logDebug("Awaiting Ordered Parallel DataChannels...");
                 peer.ondatachannel = (e) => {
@@ -945,7 +949,7 @@ function InstantDropContent() {
                         <Smartphone className="w-12 h-12 text-indigo-500" />
                     </div>
                     <h1 className="text-4xl md:text-5xl font-bold text-foreground mb-4">Turbo Drop</h1>
-                    <p className="text-xs text-muted-foreground font-medium tracking-widest uppercase mb-2">v02.1.2 Turbo-Indexed Scaling (5MB/s Goal)</p>
+                    <p className="text-xs text-muted-foreground font-medium tracking-widest uppercase mb-2">v02.1.3 Turbo-Calibration (5MB/s Goal)</p>
                     <p className="text-lg text-muted-foreground max-w-2xl mx-auto">
                         The ultimate high-speed file sharing app. Transfer photos and large files (up to 200MB) from desktop to mobile or mobile to mobile instantly.
                     </p>
