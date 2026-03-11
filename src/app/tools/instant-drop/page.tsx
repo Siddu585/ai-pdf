@@ -11,8 +11,12 @@ import { Footer } from "@/components/layout/Footer";
 import { useUsage } from "@/hooks/useUsage";
 import { PaywallModal } from "@/components/layout/PaywallModal";
 
-// Strict WebRTC cross-browser compatible Chunk size (64KB - Reverted for Legacy-Refined)
-const CHUNK_SIZE = 256 * 1024; // v02.0.25: Maxed out for Hammer Engine payload efficiency
+// v02.1.0 Turbo-Dynamic Pivot Configuration
+const VERSION = "v02.1.0";
+const CHANNELS = 4;
+const CHUNK_SIZE = 128 * 1024; // 128KB Chunks
+const HIGH_WATER_MARK = 1024 * 1024; // 1MB per channel pressure
+const PACER_THRESHOLD = 512 * 1024; // Yield every 512KB
 const MAX_IN_FLIGHT = 32;
 const getBackendUrls = () => {
     let rawUrl = (process.env.NEXT_PUBLIC_API_URL || "").trim().replace(/\/$/, "");
@@ -310,22 +314,17 @@ function InstantDropContent() {
             peerRef.current = peer;
 
             if (isSender) {
-                const chLimit = 8; // v02.0.28: 8 Parallel Channels Unordered
-                logDebug(`Creating ${chLimit} Parallel DataChannels (Sender) pre-negotiation...`);
-                for (let i = 0; i < chLimit; i++) {
-                    const isControl = i < 2; // CH0 & CH1 are reliable, CH2-7 are UNORDERED
-                    // By removing maxRetransmits, WebRTC defaults to RELIABLE unordered delivery.
-                    // This prevents the 98% packet loss seen when blasting the network with pure UDP.
-                    const dc = peer.createDataChannel(`file-transfer-${i}`, {
-                        ordered: isControl
+                logDebug(`Creating ${CHANNELS} Parallel DataChannels (Ordered)...`);
+                for (let i = 0; i < CHANNELS; i++) {
+                    const dc = peer.createDataChannel(`data-${i}`, {
+                        ordered: true // v02.1.0: Back to stable ordering
                     });
-                    dataChannelsRef.current.push(dc);
+                    dataChannelsRef.current[i] = dc;
                     setupDataChannel(dc, i);
-                    // v02.0.21 Infinity Traversal: Increase low watermark to 256KB for cellular BDP
                     dc.bufferedAmountLowThreshold = 256 * 1024;
                 }
             } else {
-                logDebug("Awaiting Parallel DataChannels (Receiver)");
+                logDebug("Awaiting Ordered Parallel DataChannels...");
                 peer.ondatachannel = (e) => {
                     const label = e.channel.label;
                     const index = parseInt(label.split('-').pop() || '0');
@@ -428,9 +427,9 @@ function InstantDropContent() {
         dc.onopen = () => {
             logDebug(`✅ DataChannel ${channelIdx} OPEN (Mode: ${modeRef.current})`);
             // v02.0.8: Start transfer as soon as ANY channel is open (resilient to slow index-0)
-            const openCount = dataChannelsRef.current.filter(c => c.readyState === 'open').length;
+            const openCount = dataChannelsRef.current.filter(c => c && c.readyState === 'open').length;
             if (openCount >= 1 && modeRef.current === 'send' && !isActive.current) {
-                logDebug(`DataChannel(s) OPEN (${openCount}/8) - Waiting 500ms Stability Breath...`);
+                logDebug(`DataChannel(s) OPEN (${openCount}/${CHANNELS}) - Stability Breath...`);
                 isActive.current = true; // Guard immediately to prevent double-trigger
                 setTimeout(() => {
                     logDebug("Starting Ultimate-Gold parallel transfer...");
@@ -521,7 +520,7 @@ function InstantDropContent() {
                 parallelChannels: dataChannelsRef.current.length
             });
 
-            await transferFileP2PParallel(currentFiles[i], i, currentFiles.length);
+            await transferFileP2PParallel(currentFiles[i], i);
         }
         
         sendControlMsg({ type: 'batch-eof', totalFiles: currentFiles.length });
@@ -529,113 +528,101 @@ function InstantDropContent() {
         isActive.current = false;
     };
 
-    const transferFileP2PParallel = (file: File, index: number, total: number) => {
-        return new Promise<void>(async (resolve) => {
-            const numChannels = dataChannelsRef.current.length;
-            if (numChannels === 0) return resolve();
+    const transferFileP2PParallel = async (file: File, index: number) => {
+        const buffer = await file.arrayBuffer();
+        const numChunks = Math.ceil(buffer.byteLength / CHUNK_SIZE);
+        let offset = 0;
+        let chunkIdx = 0;
+        let pacerAccumulator = 0;
 
-            // v02.0.28: Quantum Unordered Flow
-            logDebug(`Sender: v02.0.28 Quantum Unordered Flow Start (8-Channel Engine)`);
+        logDebug(`Sender: ${VERSION} Start for ${file.name} (${numChunks} chunks)`);
 
-            const HIGH_WATER_MARK = 1 * 1024 * 1024; // 1MB per channel for perfect lean UDP queues
-            isReceiverReadyRef.current = true; // Start assuming receiver is ready
-            
-            let offset = 0;
-            let channelIndex = 0;
-            let chunkSequenceNumber = 0;
-
-            while (isActive.current && offset < file.size) {
-                // Flow control check
-                if (!isReceiverReadyRef.current) {
-                    await new Promise(res => setTimeout(res, 10));
-                    continue;
-                }
-
-                const dc = dataChannelsRef.current[channelIndex % 8];
-                if (!dc || dc.readyState !== 'open') {
-                    channelIndex++;
-                    await new Promise(res => setTimeout(res, 5));
-                    continue;
-                }
-
-                if (dc.bufferedAmount < HIGH_WATER_MARK) {
-                    const MAX_CHUNK_PAYLOAD = 65536 - 8; // 64KB: Safest limit for SCTP Unordered retransmission
-                    const chunkSize = Math.min(MAX_CHUNK_PAYLOAD, file.size - offset);
-                    const chunk = await file.slice(offset, offset + chunkSize).arrayBuffer();
-                    
-                    // Prepend 8-byte Sequence Header
-                    const payload = new ArrayBuffer(8 + chunk.byteLength);
-                    const view = new DataView(payload);
-                    view.setUint32(0, index, true); // Little endian: File Index
-                    view.setUint32(4, chunkSequenceNumber, true); // Little endian: Chunk Sequence
-                    new Uint8Array(payload, 8).set(new Uint8Array(chunk));
-
-                    try {
-                        dc.send(payload);
-                    } catch (sendErr: any) {
-                        logDebug(`❌ Send error on CH${channelIndex % 8}: ${sendErr.message}`);
-                        channelIndex++; // Try a different channel
-                        await new Promise(res => setTimeout(res, 5));
-                        continue; // Let the loop retry sending this offset later
-                    }
-
-                    offset += chunkSize;
-                    channelIndex++;
-                    chunkSequenceNumber++;
-                    totalSentBytesRef.current += chunkSize;
-
-                    // generic progress calculation
-                    if (chunkSequenceNumber % 200 === 0 || offset === file.size) {
-                         const estimatedSent = Math.max(0, offset - (8 * HIGH_WATER_MARK));
-                         setProgress(Math.round((Math.max(0, estimatedSent) / file.size) * 100));
-                         await new Promise(res => setTimeout(res, 0)); // Micro yield
-                    }
-                } else {
-                    channelIndex++; // True Round-Robin: Skip blocked channels instantly to prevent head-of-line blocking
-                    await new Promise(res => setTimeout(res, 0)); // yield, no artificial delay
-                }
+        while (offset < buffer.byteLength) {
+            const dc = dataChannelsRef.current[chunkIdx % CHANNELS];
+            if (!dc || dc.readyState !== 'open') {
+                chunkIdx++;
+                await new Promise(r => setTimeout(r, 10));
+                continue;
             }
 
-            // Send EOF over reliable channel 0
-            dataChannelsRef.current[0].send(JSON.stringify({ 
-                type: 'sector-eof', 
-                fileIndex: index,
-                totalChunks: chunkSequenceNumber
-            }));
-            
-            await new Promise(res => setTimeout(res, 50)); // Wait briefly for pipe clear
-            logDebug(`Sender: Data pipelined for ${file.name}.`);
-            
-            // v02.0.22: Drained-State Wait
-            const finishPipelining = async () => {
+            if (dc.bufferedAmount < HIGH_WATER_MARK) {
+                const chunk = buffer.slice(offset, offset + CHUNK_SIZE);
+                
+                // v02.1.0: 4-byte FileIdx header (Ordered handles sequence)
+                const packet = new Uint8Array(4 + chunk.byteLength);
+                new DataView(packet.buffer).setUint32(0, index, true);
+                packet.set(new Uint8Array(chunk), 4);
+
+                try {
+                    dc.send(packet);
+                    offset += CHUNK_SIZE;
+                    chunkIdx++;
+                    pacerAccumulator += packet.byteLength;
+                    totalSentBytesRef.current += chunk.byteLength;
+
+                    // Power Pacer Yield
+                    if (pacerAccumulator >= PACER_THRESHOLD) {
+                        pacerAccumulator = 0;
+                        await new Promise(r => setTimeout(r, 0)); // Yield to event loop
+                    }
+
+                    if (chunkIdx % 100 === 0) {
+                        setProgress(Math.min(99, Math.round((offset / buffer.byteLength) * 100)));
+                    }
+                } catch (e) {
+                    await new Promise(r => setTimeout(r, 50));
+                }
+            } else {
+                chunkIdx++;
+                await new Promise(r => setTimeout(r, 10));
+            }
+        }
+        
+        // Final Sync for progress
+        setProgress(100);
+
+        // Send EOF over reliable channel 0
+        dataChannelsRef.current[0].send(JSON.stringify({ 
+            type: 'sector-eof', 
+            fileIndex: index,
+            totalChunks: numChunks
+        }));
+        
+        await new Promise(res => setTimeout(res, 50)); // Wait briefly for pipe clear
+        logDebug(`Sender: Data pipelined for ${file.name}.`);
+        
+        // v02.0.22: Drained-State Wait
+        const finishPipelining = async () => {
+            return new Promise<void>(resolve => {
                 const checkDrain = () => {
                     const totalBuffered = dataChannelsRef.current.reduce(
                         (acc, c) => acc + (c.readyState === 'open' ? c.bufferedAmount : 0), 0
                     );
-                    if (totalBuffered < 1024 * 1024) { 
+                    if (totalBuffered < 1024 * 1024) { // Wait until less than 1MB buffered
                         resolve();
                     } else {
-                        setTimeout(checkDrain, 30);
+                        setTimeout(checkDrain, 100);
                     }
                 };
                 checkDrain();
-            };
-            finishPipelining();
-        });
+            });
+        };
+        await finishPipelining();
     };
 
     // --- RECEIVER LOGIC (Turbo Drop 2.0) ---
-    const joinRoom = (code: string) => {
-        disconnectEverything(); // v02.0.12: Atomic session reset before joining new room
-        setRoomId(code);
+    const joinRoom = (id: string) => {
+        disconnectEverything();
+        setRoomId(id);
+        roomRef.current = id;
         setMode('receive');
         setStatus('connecting');
 
-        const ws = new WebSocket(`${BACKEND_WS_URL}/ws/drop/${code}/receiver`);
+        const ws = new WebSocket(`${BACKEND_WS_URL}/ws/drop/${id}/receiver`);
         wsRef.current = ws;
 
         ws.onopen = () => {
-            logDebug("Receiver WS Opened - Signaling READY");
+            logDebug("Receiver WS Opened. Signaling Ready...");
             ws.send(JSON.stringify({ type: 'receiver-ready' }));
             const heartbeat = setInterval(() => {
                 if (ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify({ type: 'ping' }));
@@ -644,52 +631,29 @@ function InstantDropContent() {
         };
 
         ws.onmessage = async (event) => {
-            logDebug("Receiver WS Message: " + event.data);
             try {
                 const data = JSON.parse(event.data);
                 if (data.type === 'offer') {
-                    logDebug("Received offer, setting up WebRTC and creating answer");
-                    const processOffer = async (useFallback = false) => {
-                        try {
-                            await setupWebRTC(ws, false, useFallback);
-                            logDebug(`Awaiting remote description...`);
-                            await peerRef.current?.setRemoteDescription(new RTCSessionDescription(data.sdp));
-                            remoteDescriptionSet.current = true;
-                            
-                            // Handle potential buffered candidates AFTER setting remote description
-                            for (const candidate of iceBuffer.current) {
-                                try {
-                                    await peerRef.current?.addIceCandidate(new RTCIceCandidate(candidate));
-                                } catch (e) { logDebug("Receiver buffered ICE warning: " + e); }
-                            }
-                            iceBuffer.current = [];
+                    logDebug("Received offer, setting remote and creating answer");
+                    await setupWebRTC(ws, false);
+                    await peerRef.current?.setRemoteDescription(new RTCSessionDescription(data.sdp));
+                    remoteDescriptionSet.current = true;
+                    
+                    for (const candidate of iceBuffer.current) {
+                        try { await peerRef.current?.addIceCandidate(new RTCIceCandidate(candidate)); } catch (e) {}
+                    }
+                    iceBuffer.current = [];
 
-                            logDebug(`Awaiting createAnswer...`);
-                            const answer = await peerRef.current?.createAnswer();
-                            logDebug(`Setting local description (answer)...`);
-                            await peerRef.current?.setLocalDescription(answer);
-                            ws.send(JSON.stringify({ type: 'answer', sdp: answer }));
-                        } catch (err: any) {
-                            logDebug(`❌ CRITICAL RECEIVER ERROR: ${err.message || err}`);
-                            if (!useFallback) {
-                                logDebug(`⚠️ Triggering Receiver Fallback Engine...`);
-                                await processOffer(true);
-                            } else {
-                                setStatus('error');
-                            }
-                        }
-                    };
-                    processOffer();
+                    const answer = await peerRef.current?.createAnswer();
+                    await peerRef.current?.setLocalDescription(answer);
+                    ws.send(JSON.stringify({ type: 'answer', sdp: peerRef.current?.localDescription }));
                 } else if (data.type === 'ice-candidate') {
                     if (!remoteDescriptionSet.current) {
                         iceBuffer.current.push(data.candidate);
                     } else {
-                        try {
-                            await peerRef.current?.addIceCandidate(new RTCIceCandidate(data.candidate));
-                        } catch (e) { logDebug("Receiver live ICE warning: " + e); }
+                        try { await peerRef.current?.addIceCandidate(new RTCIceCandidate(data.candidate)); } catch (e) {}
                     }
                 } else if (data.type === 'metadata' || data.type === 'sector-eof' || data.type === 'batch-eof') {
-                    // v01.5.0: Process Out-of-Band signals
                     handleIncomingData(data, 0);
                 }
             } catch (err: any) {
@@ -698,7 +662,7 @@ function InstantDropContent() {
         };
     };
 
-    const handleIncomingData = (data: any, channelIdx: number) => {
+    const handleIncomingData = (data: any, _channelIdx: number) => {
         const checkReassembly = (fileIdx: number) => {
             const meta = fileMetas.current.get(fileIdx);
             const expected = expectedTotalChunks.current.get(fileIdx);
@@ -713,103 +677,80 @@ function InstantDropContent() {
                 }
                 
                 const blob = new Blob(allChunks, { type: meta.fileType || 'application/octet-stream' });
-                allChunks.length = 0; // GC Help
-                
                 if (blob.size > 0 || meta.size === 0) {
                     setReceivedFiles(prev => [...prev, { blob, name: meta.name }]);
-                    logDebug(`Receiver: Reassembly complete for ${meta.name} (${blob.size} bytes).`);
-                    setCurrentFileIndex(fileIdx);
-                } else {
-                    logDebug(`Receiver: CRITICAL ERROR - Reassembled 0 bytes for ${meta.name}.`);
-                    setStatus('error');
+                    logDebug(`Receiver: Reassembly complete for ${meta.name}.`);
                 }
                 
-                // Aggressive Cleanup
                 fileBuffers.current.delete(fileIdx);
                 expectedTotalChunks.current.delete(fileIdx);
                 receivedChunksCount.current.delete(fileIdx);
-                
                 reassembledCount.current++;
-                checkFinish();
-            }
-        };
 
-        const checkFinish = () => {
-            if (expectedTotalFiles.current !== -1 && reassembledCount.current >= expectedTotalFiles.current) {
-                logDebug("Receiver: Transfer Complete. All pipelined files reassembled!");
-                setStatus('done-waiting');
-                statusRef.current = 'done';
-                setTimeout(disconnectEverything, 500); 
-            }
-        };
-
-        if (typeof data === 'string') {
-            try {
-                const msg = JSON.parse(data);
-                if (msg.type === 'metadata') {
-                    logDebug(`Receiver: Received Pipelined Metadata for ${msg.name}`);
-                    fileMetas.current.set(msg.currentIdx, msg);
-                    setIncomingMeta(msg);
-                    setCurrentFileIndex(msg.currentIdx || 0);
-                    setStatus('transferring');
-                    checkReassembly(msg.currentIdx);
-                } else if (msg.type === 'sector-eof') {
-                    const fileIdx = msg.fileIndex;
-                    logDebug(`Receiver: Received EOF for FileIdx ${fileIdx} with ${msg.totalChunks} chunks expected.`);
-                    expectedTotalChunks.current.set(fileIdx, msg.totalChunks);
-                    checkReassembly(fileIdx);
-                } else if (msg.type === 'batch-eof') {
-                    logDebug(`Receiver: Batch EOF via WS. Expecting ${msg.totalFiles} files.`);
-                    expectedTotalFiles.current = msg.totalFiles || 0;
-                    checkFinish();
+                if (expectedTotalFiles.current !== -1 && reassembledCount.current >= expectedTotalFiles.current) {
+                    setStatus('done');
+                    setTimeout(disconnectEverything, 1000);
                 }
-            } catch (err) { logDebug(`Receiver Parse Error: ${err}`); }
-        } else if (typeof data === 'object' && data !== null && data.type) {
-             if (data.type === 'sector-eof') {
-                const fileIdx = data.fileIndex;
-                expectedTotalChunks.current.set(fileIdx, data.totalChunks);
-                checkReassembly(fileIdx);
             }
-        } else {
-            // Binary sector chunk with 8-byte header
+        };
+
+        let msg: any = null;
+        if (typeof data === 'string') {
+            try { msg = JSON.parse(data); } catch (e) {}
+        } else if (typeof data === 'object' && data !== null && data.type) {
+            msg = data;
+        }
+
+        if (msg) {
+            if (msg.type === 'metadata') {
+                logDebug(`Receiver: Metadata for ${msg.name}`);
+                fileMetas.current.set(msg.currentIdx, msg);
+                setIncomingMeta(msg);
+                setStatus('transferring');
+                checkReassembly(msg.currentIdx);
+            } else if (msg.type === 'sector-eof') {
+                expectedTotalChunks.current.set(msg.fileIndex, msg.totalChunks);
+                checkReassembly(msg.fileIndex);
+            } else if (msg.type === 'batch-eof') {
+                expectedTotalFiles.current = msg.totalFiles;
+                if (reassembledCount.current >= msg.totalFiles) setStatus('done');
+            }
+        } else if (data instanceof ArrayBuffer) {
             const view = new DataView(data);
             const fileIdx = view.getUint32(0, true);
-            const seqNum = view.getUint32(4, true);
-            const pureData = data.slice(8);
+            const pureData = data.slice(4);
 
             if (!fileBuffers.current.has(fileIdx)) fileBuffers.current.set(fileIdx, []);
             const chunkArray = fileBuffers.current.get(fileIdx)!;
+            
+            const seqNum = chunkArray.length;
             chunkArray[seqNum] = pureData;
             
             const currentReceived = (receivedChunksCount.current.get(fileIdx) || 0) + 1;
             receivedChunksCount.current.set(fileIdx, currentReceived);
+            totalReceivedBytesRef.current += pureData.byteLength;
 
             const expected = expectedTotalChunks.current.get(fileIdx);
             if (expected !== undefined && currentReceived === expected) {
                 checkReassembly(fileIdx);
             }
 
-            totalReceivedBytesRef.current += pureData.byteLength;
-            const currentRcvdBytes = (currentFileReceivedRef.current.get(fileIdx) || 0) + pureData.byteLength;
-            currentFileReceivedRef.current.set(fileIdx, currentRcvdBytes);
-            
-            if (currentReceived % 200 === 0) { // Throttled progress update
-                 const meta = fileMetas.current.get(fileIdx);
-                 if (meta?.size) setProgress(Math.round((currentRcvdBytes / meta.size) * 100));
+            if (currentReceived % 100 === 0) {
+                const meta = fileMetas.current.get(fileIdx);
+                if (meta?.size) setProgress(Math.round(((currentReceived * CHUNK_SIZE) / meta.size) * 100));
             }
         }
     };
 
     const disconnectEverything = () => {
-        logDebug("v02.0.13: Performing Obsidian-Gold Full Session Reset...");
+        logDebug("v02.1.0: Full Session Reset...");
         if (wsRef.current) { wsRef.current.close(); wsRef.current = null; }
         if (peerRef.current) { peerRef.current.close(); peerRef.current = null; }
         isActive.current = false;
-        isInitializingRef.current = false; // Release lock
+        isInitializingRef.current = false;
         remoteDescriptionSet.current = false;
         iceBuffer.current = [];
         dataChannelsRef.current = [];
-        channelFileIndex.current = new Array(8).fill(0);
         fileBuffers.current.clear();
         expectedTotalChunks.current.clear();
         receivedChunksCount.current.clear();
@@ -995,7 +936,7 @@ function InstantDropContent() {
                         <Smartphone className="w-12 h-12 text-indigo-500" />
                     </div>
                     <h1 className="text-4xl md:text-5xl font-bold text-foreground mb-4">Turbo Drop</h1>
-                    <p className="text-xs text-muted-foreground font-medium tracking-widest uppercase mb-2">v02.0.28 Quantum Unordered Flow (5MB/s Max)</p>
+                    <p className="text-xs text-muted-foreground font-medium tracking-widest uppercase mb-2">v02.1.0 Turbo-Dynamic Pivot (5MB/s Goal)</p>
                     <p className="text-lg text-muted-foreground max-w-2xl mx-auto">
                         The ultimate high-speed file sharing app. Transfer photos and large files (up to 200MB) from desktop to mobile or mobile to mobile instantly.
                     </p>
@@ -1142,7 +1083,7 @@ function InstantDropContent() {
                                     <div className="mt-4 flex flex-wrap justify-center gap-3">
                                         <div className="bg-muted/50 backdrop-blur-sm rounded-lg px-3 py-1.5 border border-border/50 flex flex-col items-center min-w-[100px]">
                                             <span className="text-[10px] text-muted-foreground uppercase tracking-widest font-bold">Pistons</span>
-                                            <span className="text-sm font-black text-indigo-600 dark:text-indigo-400">8 Channels</span>
+                                            <span className="text-sm font-black text-indigo-600 dark:text-indigo-400">{CHANNELS} Channels</span>
                                         </div>
                                         <div className="bg-muted/50 backdrop-blur-sm rounded-lg px-3 py-1.5 border border-border/50 flex flex-col items-center min-w-[100px]">
                                             <span className="text-[10px] text-muted-foreground uppercase tracking-widest font-bold">Shield</span>
@@ -1150,7 +1091,7 @@ function InstantDropContent() {
                                         </div>
                                         <div className="bg-muted/50 backdrop-blur-sm rounded-lg px-3 py-1.5 border border-border/50 flex flex-col items-center min-w-[100px]">
                                             <span className="text-[10px] text-muted-foreground uppercase tracking-widest font-bold">Logic</span>
-                                            <span className="text-sm font-black text-amber-600 dark:text-amber-500 text-center">TURBO PIPELINED</span>
+                                            <span className="text-sm font-black text-amber-600 dark:text-amber-500 text-center">DYNAMIC POWER PACER</span>
                                         </div>
                                     </div>
 
