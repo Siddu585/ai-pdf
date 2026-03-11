@@ -559,6 +559,30 @@ function InstantDropContent() {
         });
         logDebug(`Sender: Nitro-Ignition sequence triggered (2MB Blast)`);
 
+        // v02.1.13 Lead-In Cluster: Rapid-Fire first 16 chunks
+        // Triggering ACK-acceleration by saturating all pipes with real data immediately
+        const leadInCount = Math.min(CHANNELS, numChunks);
+        for (let i = 0; i < leadInCount; i++) {
+            if (!isActive.current) return;
+            const dc = dataChannelsRef.current[i % CHANNELS];
+            if (dc?.readyState === 'open') {
+                const chunk = buffer.slice(offset, offset + CHUNK_SIZE);
+                const pieceIdx = Math.floor(offset / CHUNK_SIZE);
+                const packet = new Uint8Array(8 + chunk.byteLength);
+                const view = new DataView(packet.buffer);
+                view.setUint32(0, index, true);
+                view.setUint32(4, pieceIdx, true);
+                packet.set(new Uint8Array(chunk), 8);
+                try {
+                    dc.send(packet);
+                    offset += CHUNK_SIZE;
+                    chunkIdx++;
+                    totalSentBytesRef.current += chunk.byteLength;
+                } catch (e) {}
+            }
+        }
+        logDebug(`Sender: Lead-In Cluster (${leadInCount} chunks) launched.`);
+
         while (offset < buffer.byteLength) {
             if (!isActive.current) return;
 
