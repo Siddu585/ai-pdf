@@ -11,13 +11,13 @@ import { Footer } from "@/components/layout/Footer";
 import { useUsage } from "@/hooks/useUsage";
 import { PaywallModal } from "@/components/layout/PaywallModal";
 
-// v02.1.6 Turbo-Stream Fix
-const VERSION = "v02.1.6 Build: 5502";
-const CHANNELS = 8;
+// v02.1.7 16-Piston-Power Scaling
+const VERSION = "v02.1.7 Build: 6712";
+const CHANNELS = 16;
 const CHUNK_SIZE = 128 * 1024; // 128KB Chunks (Standardized)
-const HIGH_WATER_MARK = 1024 * 1024; // 1MB HWM for 5MB/s target
-const PACER_THRESHOLD = 2 * 1024 * 1024; // 2MB Pacer pressure
-const MAX_IN_FLIGHT = 32;
+const HIGH_WATER_MARK = 256 * 1024; // Optimized for 16 channels (4MB total)
+const PACER_THRESHOLD = 512 * 1024; // Smooth continuous flow
+const MAX_IN_FLIGHT = 64; // Increased for 16 channels
 const getBackendUrls = () => {
     let rawUrl = (process.env.NEXT_PUBLIC_API_URL || "").trim().replace(/\/$/, "");
     
@@ -610,12 +610,12 @@ function InstantDropContent() {
                     const totalBuffered = dataChannelsRef.current.reduce(
                         (acc, c) => acc + (c.readyState === 'open' ? c.bufferedAmount : 0), 0
                     );
-                    // v02.1.6: Relaxed to 4MB (50% of 8x1MB HWM) to prevent transition stalls
-                    if (totalBuffered < 4 * 1024 * 1024) { 
+                    // v02.1.7: Scaled for 16 pistons. 1MB drain is safe for 5MB/s transitions.
+                    if (totalBuffered < 1024 * 1024) { 
                         resolve();
                     } else {
                         if (Math.random() < 0.1) logDebug(`Sender: Transition Waiting... Buffer at ${Math.round(totalBuffered/1024/1024)}MB`);
-                        setTimeout(checkDrain, 50); // Faster check cycle
+                        setTimeout(checkDrain, 40); // v02.1.7: Even faster check
                     }
                 };
                 checkDrain();
@@ -952,7 +952,7 @@ function InstantDropContent() {
                         <Smartphone className="w-12 h-12 text-indigo-500" />
                     </div>
                     <h1 className="text-4xl md:text-5xl font-bold text-foreground mb-4">Turbo Drop</h1>
-                    <p className="text-xs text-muted-foreground font-medium tracking-widest uppercase mb-2">v02.1.6 Turbo-Stream Fix (Build: 5502)</p>
+                    <p className="text-xs text-muted-foreground font-medium tracking-widest uppercase mb-2">v02.1.7 16-Piston-Power (Build: 6712)</p>
                     <p className="text-lg text-muted-foreground max-w-2xl mx-auto">
                         The ultimate high-speed file sharing app. Transfer photos and large files (up to 200MB) from desktop to mobile or mobile to mobile instantly.
                     </p>
