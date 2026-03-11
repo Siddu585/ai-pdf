@@ -11,8 +11,8 @@ import { Footer } from "@/components/layout/Footer";
 import { useUsage } from "@/hooks/useUsage";
 import { PaywallModal } from "@/components/layout/PaywallModal";
 
-// v02.1.3 Turbo-Calibration
-const VERSION = "v02.1.3";
+// v02.1.4 Turbo-Pulse Sync
+const VERSION = "v02.1.4 Build: 2315";
 const CHANNELS = 8;
 const CHUNK_SIZE = 128 * 1024; // 128KB Chunks (Standardized)
 const HIGH_WATER_MARK = 256 * 1024; // v02.0.3 baseline
@@ -315,18 +315,16 @@ function InstantDropContent() {
 
             if (isSender) {
                 logDebug(`Creating ${CHANNELS} Parallel DataChannels (Ordered)...`);
-                (async () => {
-                    for (let i = 0; i < CHANNELS; i++) {
-                        const dc = peer.createDataChannel(`data-${i}`, {
-                            ordered: true
-                        });
-                        dataChannelsRef.current[i] = dc;
-                        setupDataChannel(dc, i);
-                        dc.bufferedAmountLowThreshold = 256 * 1024;
-                        // v02.1.3: 50ms delay between channel creation to stabilize SCTP negotiation
-                        await new Promise(r => setTimeout(r, 50));
-                    }
-                })();
+                for (let i = 0; i < CHANNELS; i++) {
+                    const dc = peer.createDataChannel(`data-${i}`, {
+                        ordered: true
+                    });
+                    dataChannelsRef.current[i] = dc;
+                    setupDataChannel(dc, i);
+                    dc.bufferedAmountLowThreshold = 256 * 1024;
+                    // v02.1.4: Sync wait ensures they are in the SDP Offer
+                    await new Promise(r => setTimeout(r, 50));
+                }
             } else {
                 logDebug("Awaiting Ordered Parallel DataChannels...");
                 peer.ondatachannel = (e) => {
@@ -385,7 +383,9 @@ function InstantDropContent() {
             peer.onicecandidate = (e) => {
                 if (e.candidate) {
                     logDebug("Generated local ICE candidate");
-                    ws.send(JSON.stringify({ type: 'ice-candidate', candidate: e.candidate }));
+                    // v02.1.4: Stringify or toJSON for robust cross-browser signaling
+                    const cand = e.candidate.toJSON ? e.candidate.toJSON() : e.candidate;
+                    ws.send(JSON.stringify({ type: 'ice-candidate', candidate: cand }));
                 } else {
                     logDebug("Native ICE Gathering COMPLETED (null candidate).");
                 }
@@ -949,7 +949,7 @@ function InstantDropContent() {
                         <Smartphone className="w-12 h-12 text-indigo-500" />
                     </div>
                     <h1 className="text-4xl md:text-5xl font-bold text-foreground mb-4">Turbo Drop</h1>
-                    <p className="text-xs text-muted-foreground font-medium tracking-widest uppercase mb-2">v02.1.3 Turbo-Calibration (5MB/s Goal)</p>
+                    <p className="text-xs text-muted-foreground font-medium tracking-widest uppercase mb-2">v02.1.4 Turbo-Pulse Sync (Build: 2315)</p>
                     <p className="text-lg text-muted-foreground max-w-2xl mx-auto">
                         The ultimate high-speed file sharing app. Transfer photos and large files (up to 200MB) from desktop to mobile or mobile to mobile instantly.
                     </p>
