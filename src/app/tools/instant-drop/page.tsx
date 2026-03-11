@@ -11,13 +11,13 @@ import { Footer } from "@/components/layout/Footer";
 import { useUsage } from "@/hooks/useUsage";
 import { PaywallModal } from "@/components/layout/PaywallModal";
 
-// v02.1.7 16-Piston-Power Scaling
-const VERSION = "v02.1.7 Build: 6712";
-const CHANNELS = 16;
+// v02.1.8 Turbo-Titan Stability
+const VERSION = "v02.1.8 Build: 7823";
+const CHANNELS = 12; // Proven Sweet Spot (Between 8 and 16)
 const CHUNK_SIZE = 128 * 1024; // 128KB Chunks (Standardized)
-const HIGH_WATER_MARK = 256 * 1024; // Optimized for 16 channels (4MB total)
-const PACER_THRESHOLD = 512 * 1024; // Smooth continuous flow
-const MAX_IN_FLIGHT = 64; // Increased for 16 channels
+const HIGH_WATER_MARK = 512 * 1024; // Balanced pressure for 12 channels (6MB total)
+const PACER_THRESHOLD = 1024 * 1024; // 1MB Pacer pressure
+const MAX_IN_FLIGHT = 48; // Scaled for 12 channels
 const getBackendUrls = () => {
     let rawUrl = (process.env.NEXT_PUBLIC_API_URL || "").trim().replace(/\/$/, "");
     
@@ -296,7 +296,7 @@ function InstantDropContent() {
             isActive.current = false;
 
             // v02.0.28 Pipeline State Reset
-            channelFileIndex.current = new Array(8).fill(0);
+            channelFileIndex.current = new Array(CHANNELS).fill(0);
             fileBuffers.current.clear();
             expectedTotalChunks.current.clear();
             receivedChunksCount.current.clear();
@@ -322,8 +322,8 @@ function InstantDropContent() {
                     dataChannelsRef.current[i] = dc;
                     setupDataChannel(dc, i);
                     dc.bufferedAmountLowThreshold = 256 * 1024;
-                    // v02.1.4: Sync wait ensures they are in the SDP Offer
-                    await new Promise(r => setTimeout(r, 50));
+                    // v02.1.8: Increased to 100ms for Titanium-Handshake stability
+                    await new Promise(r => setTimeout(r, 100));
                 }
             } else {
                 logDebug("Awaiting Ordered Parallel DataChannels...");
@@ -952,7 +952,7 @@ function InstantDropContent() {
                         <Smartphone className="w-12 h-12 text-indigo-500" />
                     </div>
                     <h1 className="text-4xl md:text-5xl font-bold text-foreground mb-4">Turbo Drop</h1>
-                    <p className="text-xs text-muted-foreground font-medium tracking-widest uppercase mb-2">v02.1.7 16-Piston-Power (Build: 6712)</p>
+                    <p className="text-xs text-muted-foreground font-medium tracking-widest uppercase mb-2">v02.1.8 Turbo-Titan (Build: 7823)</p>
                     <p className="text-lg text-muted-foreground max-w-2xl mx-auto">
                         The ultimate high-speed file sharing app. Transfer photos and large files (up to 200MB) from desktop to mobile or mobile to mobile instantly.
                     </p>
