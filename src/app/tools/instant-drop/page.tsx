@@ -327,7 +327,7 @@ function InstantDropContent() {
                     setupDataChannel(e.channel, index);
                 };
 
-                // v02.0.26: Receiver Flow Control Telemetry
+                // v02.0.27: Receiver Flow Control Telemetry (800ms loop)
                 setInterval(() => {
                     if (statusRef.current === 'transferring') {
                         // Check if memory queues are getting bloated
@@ -345,8 +345,11 @@ function InstantDropContent() {
                             // Recover
                             sendControlMsg({ type: 'flow', status: 'ready' });
                         }
+                    } else {
+                        // Send flow-ready even when idle to keep sender unlocked
+                        sendControlMsg({ type: 'flow', status: 'ready' });
                     }
-                }, 1000);
+                }, 800);
             }
 
             peer.oniceconnectionstatechange = () => {
@@ -459,7 +462,7 @@ function InstantDropContent() {
                                 });
                             }
                         } else if (msg.type === 'flow') {
-                            // v02.0.26: Receiver Flow Control
+                            // v02.0.27 Unshackled Flow (5MB/s Max)ow Control
                             if (msg.status === 'slow') {
                                 isReceiverReadyRef.current = false;
                                 logDebug("Receiver struggling, paused pacing...");
@@ -523,10 +526,10 @@ function InstantDropContent() {
             const numChannels = dataChannelsRef.current.length;
             if (numChannels === 0) return resolve();
 
-            // v02.0.22: PIPELINED ADAPTIVE STREAM (Zero-Buffer Fast Path)
-            logDebug(`Sender: v02.0.26 Sync-Flow Start (8-Channel Engine)`);
+            // v02.0.27: UNSHACKLED ADAPTIVE STREAM (Zero-Yield Fast Path)
+            logDebug(`Sender: v02.0.27 Unshackled Flow Start (8-Channel Engine)`);
 
-            const HIGH_WATER_MARK = 16 * 1024 * 1024; // v02.0.26: Restored to 16MB for max saturation
+            const HIGH_WATER_MARK = 16 * 1024 * 1024; // 16MB
             const LOW_WATER_MARK = 4 * 1024 * 1024; // 4MB
             isReceiverReadyRef.current = true; // Start assuming receiver is ready
             const sectorSize = Math.ceil(file.size / numChannels);
@@ -544,17 +547,17 @@ function InstantDropContent() {
                     let fileSentBytes = 0;
 
                     while (isActive.current && offset < end) {
-                        // v02.0.26: Check Receiver Flow Control
+                        // v02.0.27: Unshackled Flow Control check with micro-yield
                         if (!isReceiverReadyRef.current) {
-                            await new Promise(res => setTimeout(res, 50));
+                            await new Promise(res => setTimeout(res, 10));
                             continue;
                         }
 
-                        if (dc.bufferedAmount > HIGH_WATER_MARK) {
+                        if (dc.bufferedAmount >= HIGH_WATER_MARK) {
                             await new Promise<void>(res => {
                                 dc.onbufferedamountlow = () => { 
                                     dc.onbufferedamountlow = null; 
-                                    res(); // v02.0.23: Removed 30ms latency anchor
+                                    res();
                                 };
                             });
                         }
@@ -563,7 +566,7 @@ function InstantDropContent() {
                         const chunk = await file.slice(offset, offset + chunkLen).arrayBuffer();
 
                         if (dc.readyState !== 'open') {
-                            await new Promise(res => setTimeout(res, 50));
+                            await new Promise(res => setTimeout(res, 10));
                             continue;
                         }
                         dc.send(chunk);
@@ -571,17 +574,15 @@ function InstantDropContent() {
                         fileSentBytes += chunkLen;
                         totalSentBytesRef.current += chunkLen;
 
-                        if (offset % (CHUNK_SIZE * 64) === 0) { // v02.0.23: Reduced yield frequency
-                            await new Promise(res => setTimeout(res, 0));
-                        }
-                        
-                        // Per-file generic progress calculation
-                        if (offset % (1024 * 1024) === 0) {
+                        // Per-file generic progress calculation (Update every 2MB to save CPU loops)
+                        if (offset % (1024 * 1024 * 2) === 0 || offset === end) {
                              const totalBuffered = dataChannelsRef.current.reduce(
                                 (acc, c) => acc + (c.readyState === 'open' ? c.bufferedAmount : 0), 0
                             );
                             const estimatedSent = Math.max(0, fileSentBytes - (totalBuffered / numChannels));
                             setProgress(Math.round((estimatedSent / (file.size / numChannels)) * 100));
+                            // Allow UI render micro-yield
+                            await new Promise(res => setTimeout(res, 0));
                         }
                     }
                     
@@ -992,7 +993,7 @@ function InstantDropContent() {
                         <Smartphone className="w-12 h-12 text-indigo-500" />
                     </div>
                     <h1 className="text-4xl md:text-5xl font-bold text-foreground mb-4">Turbo Drop</h1>
-                    <p className="text-xs text-muted-foreground font-medium tracking-widest uppercase mb-2">v02.0.26 Sync-Flow Engine (5MB/s Scale)</p>
+                    <p className="text-xs text-muted-foreground font-medium tracking-widest uppercase mb-2">v02.0.27 Unshackled Flow (5MB/s Max)</p>
                     <p className="text-lg text-muted-foreground max-w-2xl mx-auto">
                         The ultimate high-speed file sharing app. Transfer photos and large files (up to 200MB) from desktop to mobile or mobile to mobile instantly.
                     </p>
