@@ -11,10 +11,10 @@ import { Footer } from "@/components/layout/Footer";
 import { useUsage } from "@/hooks/useUsage";
 import { PaywallModal } from "@/components/layout/PaywallModal";
 
-// v02.1.1 Turbo-Safe Optimization
-const VERSION = "v02.1.1";
-const CHANNELS = 4;
-const CHUNK_SIZE = 128 * 1024; // 128KB Chunks
+// v02.1.2 Turbo-Indexed-Core Fix
+const VERSION = "v02.1.2";
+const CHANNELS = 8;
+const CHUNK_SIZE = 120 * 1024; // Lowered slightly to fit 8-byte header in 128KB buffer safely
 const HIGH_WATER_MARK = 256 * 1024; // v02.0.3 baseline
 const PACER_THRESHOLD = 256 * 1024; // Frequent yields
 const MAX_IN_FLIGHT = 32;
@@ -552,11 +552,14 @@ function InstantDropContent() {
 
             if (dc.bufferedAmount < HIGH_WATER_MARK) {
                 const chunk = buffer.slice(offset, offset + CHUNK_SIZE);
+                const currentChunkIdx = Math.floor(offset / CHUNK_SIZE);
                 
-                // v02.1.0: 4-byte FileIdx header (Ordered handles sequence)
-                const packet = new Uint8Array(4 + chunk.byteLength);
-                new DataView(packet.buffer).setUint32(0, index, true);
-                packet.set(new Uint8Array(chunk), 4);
+                // v02.1.2: 8-byte header [FileIndex(4B)][ChunkIndex(4B)]
+                const packet = new Uint8Array(8 + chunk.byteLength);
+                const view = new DataView(packet.buffer);
+                view.setUint32(0, index, true);
+                view.setUint32(4, currentChunkIdx, true);
+                packet.set(new Uint8Array(chunk), 8);
 
                 try {
                     dc.send(packet);
@@ -723,13 +726,14 @@ function InstantDropContent() {
         } else if (data instanceof ArrayBuffer) {
             const view = new DataView(data);
             const fileIdx = view.getUint32(0, true);
-            const pureData = data.slice(4);
+            const chunkIdx = view.getUint32(4, true);
+            const pureData = data.slice(8);
 
             if (!fileBuffers.current.has(fileIdx)) fileBuffers.current.set(fileIdx, []);
             const chunkArray = fileBuffers.current.get(fileIdx)!;
             
-            const seqNum = chunkArray.length;
-            chunkArray[seqNum] = pureData;
+            // v02.1.2: Place at absolute index (Critical for cross-channel merging)
+            chunkArray[chunkIdx] = pureData;
             
             const currentReceived = (receivedChunksCount.current.get(fileIdx) || 0) + 1;
             receivedChunksCount.current.set(fileIdx, currentReceived);
@@ -941,7 +945,7 @@ function InstantDropContent() {
                         <Smartphone className="w-12 h-12 text-indigo-500" />
                     </div>
                     <h1 className="text-4xl md:text-5xl font-bold text-foreground mb-4">Turbo Drop</h1>
-                    <p className="text-xs text-muted-foreground font-medium tracking-widest uppercase mb-2">v02.1.1 Turbo-Safe Optimization (5MB/s Target)</p>
+                    <p className="text-xs text-muted-foreground font-medium tracking-widest uppercase mb-2">v02.1.2 Turbo-Indexed Scaling (5MB/s Goal)</p>
                     <p className="text-lg text-muted-foreground max-w-2xl mx-auto">
                         The ultimate high-speed file sharing app. Transfer photos and large files (up to 200MB) from desktop to mobile or mobile to mobile instantly.
                     </p>
