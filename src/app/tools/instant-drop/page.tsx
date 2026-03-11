@@ -314,9 +314,10 @@ function InstantDropContent() {
                 logDebug(`Creating ${chLimit} Parallel DataChannels (Sender) pre-negotiation...`);
                 for (let i = 0; i < chLimit; i++) {
                     const isControl = i < 2; // CH0 & CH1 are reliable, CH2-7 are UNORDERED
+                    // By removing maxRetransmits, WebRTC defaults to RELIABLE unordered delivery.
+                    // This prevents the 98% packet loss seen when blasting the network with pure UDP.
                     const dc = peer.createDataChannel(`file-transfer-${i}`, {
-                        ordered: isControl,
-                        maxRetransmits: isControl ? 3 : 0
+                        ordered: isControl
                     });
                     dataChannelsRef.current.push(dc);
                     setupDataChannel(dc, i);
