@@ -537,7 +537,7 @@ function InstantDropContent() {
             // v02.0.28: Quantum Unordered Flow
             logDebug(`Sender: v02.0.28 Quantum Unordered Flow Start (8-Channel Engine)`);
 
-            const HIGH_WATER_MARK = 2 * 1024 * 1024; // 2MB Cure Bufferbloat
+            const HIGH_WATER_MARK = 1 * 1024 * 1024; // 1MB per channel for perfect lean UDP queues
             isReceiverReadyRef.current = true; // Start assuming receiver is ready
             
             let offset = 0;
@@ -554,12 +554,12 @@ function InstantDropContent() {
                 const dc = dataChannelsRef.current[channelIndex % 8];
                 if (!dc || dc.readyState !== 'open') {
                     channelIndex++;
-                    await new Promise(res => setTimeout(res, 10));
+                    await new Promise(res => setTimeout(res, 5));
                     continue;
                 }
 
                 if (dc.bufferedAmount < HIGH_WATER_MARK) {
-                    const MAX_CHUNK_PAYLOAD = 262144 - 8; // Accommodate 8-byte metadata header
+                    const MAX_CHUNK_PAYLOAD = 65536 - 8; // 64KB: Safest limit for SCTP Unordered retransmission
                     const chunkSize = Math.min(MAX_CHUNK_PAYLOAD, file.size - offset);
                     const chunk = await file.slice(offset, offset + chunkSize).arrayBuffer();
                     
@@ -574,7 +574,8 @@ function InstantDropContent() {
                         dc.send(payload);
                     } catch (sendErr: any) {
                         logDebug(`❌ Send error on CH${channelIndex % 8}: ${sendErr.message}`);
-                        await new Promise(res => setTimeout(res, 10));
+                        channelIndex++; // Try a different channel
+                        await new Promise(res => setTimeout(res, 5));
                         continue; // Let the loop retry sending this offset later
                     }
 
@@ -590,6 +591,7 @@ function InstantDropContent() {
                          await new Promise(res => setTimeout(res, 0)); // Micro yield
                     }
                 } else {
+                    channelIndex++; // True Round-Robin: Skip blocked channels instantly to prevent head-of-line blocking
                     await new Promise(res => setTimeout(res, 0)); // yield, no artificial delay
                 }
             }
