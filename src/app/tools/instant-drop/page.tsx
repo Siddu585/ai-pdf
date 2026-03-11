@@ -11,12 +11,12 @@ import { Footer } from "@/components/layout/Footer";
 import { useUsage } from "@/hooks/useUsage";
 import { PaywallModal } from "@/components/layout/PaywallModal";
 
-// v02.1.13 Nitro-Ignition Acceleration
-const VERSION = "v02.1.13 Build: 2024";
+// v02.1.14 Kinetic-Stream Acceleration
+const VERSION = "v02.1.14 Build: 3105";
 const CHANNELS = 16; // 16-Piston Core (Stable in Unordered mode)
 const CHUNK_SIZE = 128 * 1024; // 128KB Chunks (Standardized)
 const HIGH_WATER_MARK = 1 * 1024 * 1024; // Balanced pressure (1MB)
-const PACER_THRESHOLD = 256 * 1024; // High-frequency pacing (256KB)
+const PACER_THRESHOLD = 0; // Infinite Pacer (Continuous Pressure)
 const MAX_IN_FLIGHT = 160; // Tuned for 16-channel flow
 const getBackendUrls = () => {
     let rawUrl = (process.env.NEXT_PUBLIC_API_URL || "").trim().replace(/\/$/, "");
@@ -546,22 +546,9 @@ function InstantDropContent() {
 
         logDebug(`Sender: ${VERSION} Start for ${file.name} (${numChunks} chunks)`);
         
-        // v02.1.13 Nitro-Ignition: Ultra-Aggressive Warm-up (128KB Nitro Blast)
-        // Prime the SCTP congestion window on all 16 channels with a full chunk equivalent
-        const nitroPacket = new Uint8Array(8 + 128 * 1024); // 128KB dummy payload
-        const nitroView = new DataView(nitroPacket.buffer);
-        nitroView.setUint32(0, index, true);
-        nitroView.setUint32(4, 0xFFFFFFFF, true); // Special index for Nitro Blast
-        dataChannelsRef.current.forEach(dc => {
-            if (dc.readyState === 'open') {
-                try { dc.send(nitroPacket); } catch (e) {}
-            }
-        });
-        logDebug(`Sender: Nitro-Ignition sequence triggered (2MB Blast)`);
-
-        // v02.1.13 Lead-In Cluster: Rapid-Fire first 16 chunks
-        // Triggering ACK-acceleration by saturating all pipes with real data immediately
-        const leadInCount = Math.min(CHANNELS, numChunks);
+        // v02.1.14 Kinetic-Stream: Rapid-Fire Hybrid Lead-In (32 Chunks)
+        // Saturating all pipes with real data immediately (4MB surge)
+        const leadInCount = Math.min(CHANNELS * 2, numChunks);
         for (let i = 0; i < leadInCount; i++) {
             if (!isActive.current) return;
             const dc = dataChannelsRef.current[i % CHANNELS];
@@ -1001,7 +988,7 @@ function InstantDropContent() {
                         <Smartphone className="w-12 h-12 text-indigo-500" />
                     </div>
                     <h1 className="text-4xl md:text-5xl font-bold text-foreground mb-4">Turbo Drop</h1>
-                    <p className="text-xs text-muted-foreground font-medium tracking-widest uppercase mb-2">v02.1.13 Nitro-Ignition (Build: 2024)</p>
+                    <p className="text-xs text-muted-foreground font-medium tracking-widest uppercase mb-2">v02.1.14 Kinetic-Stream (Build: 3105)</p>
                     <p className="text-lg text-muted-foreground max-w-2xl mx-auto">
                         The ultimate high-speed file sharing app. Transfer photos and large files (up to 200MB) from desktop to mobile or mobile to mobile instantly.
                     </p>
