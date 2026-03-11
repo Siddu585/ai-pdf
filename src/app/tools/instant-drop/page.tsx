@@ -11,13 +11,13 @@ import { Footer } from "@/components/layout/Footer";
 import { useUsage } from "@/hooks/useUsage";
 import { PaywallModal } from "@/components/layout/PaywallModal";
 
-// v02.1.8 Turbo-Titan Stability
-const VERSION = "v02.1.8 Build: 7823";
-const CHANNELS = 12; // Proven Sweet Spot (Between 8 and 16)
+// v02.1.9 Turbo-Blast Throughput
+const VERSION = "v02.1.9 Build: 8901";
+const CHANNELS = 12; // Stable Sweet Spot from v02.1.8
 const CHUNK_SIZE = 128 * 1024; // 128KB Chunks (Standardized)
-const HIGH_WATER_MARK = 512 * 1024; // Balanced pressure for 12 channels (6MB total)
-const PACER_THRESHOLD = 1024 * 1024; // 1MB Pacer pressure
-const MAX_IN_FLIGHT = 48; // Scaled for 12 channels
+const HIGH_WATER_MARK = 2 * 1024 * 1024; // Extreme pressure (2MB) for 5MB/s target
+const PACER_THRESHOLD = 256 * 1024; // Hot engine pacing (256KB)
+const MAX_IN_FLIGHT = 128; // Maximized concurrency
 const getBackendUrls = () => {
     let rawUrl = (process.env.NEXT_PUBLIC_API_URL || "").trim().replace(/\/$/, "");
     
@@ -317,7 +317,9 @@ function InstantDropContent() {
                 logDebug(`Creating ${CHANNELS} Parallel DataChannels (Ordered)...`);
                 for (let i = 0; i < CHANNELS; i++) {
                     const dc = peer.createDataChannel(`data-${i}`, {
-                        ordered: true
+                        ordered: true,
+                        // @ts-ignore: RTCDataChannelPriority is experimental but supported in Chromium
+                        priority: 'high'
                     });
                     dataChannelsRef.current[i] = dc;
                     setupDataChannel(dc, i);
@@ -610,12 +612,12 @@ function InstantDropContent() {
                     const totalBuffered = dataChannelsRef.current.reduce(
                         (acc, c) => acc + (c.readyState === 'open' ? c.bufferedAmount : 0), 0
                     );
-                    // v02.1.7: Scaled for 16 pistons. 1MB drain is safe for 5MB/s transitions.
-                    if (totalBuffered < 1024 * 1024) { 
+                    // v02.1.9: Zero-Wait Transition (256KB) for near-instant switching
+                    if (totalBuffered < 256 * 1024) { 
                         resolve();
                     } else {
                         if (Math.random() < 0.1) logDebug(`Sender: Transition Waiting... Buffer at ${Math.round(totalBuffered/1024/1024)}MB`);
-                        setTimeout(checkDrain, 40); // v02.1.7: Even faster check
+                        setTimeout(checkDrain, 30); // v02.1.9: Maximized check cycle
                     }
                 };
                 checkDrain();
@@ -952,7 +954,7 @@ function InstantDropContent() {
                         <Smartphone className="w-12 h-12 text-indigo-500" />
                     </div>
                     <h1 className="text-4xl md:text-5xl font-bold text-foreground mb-4">Turbo Drop</h1>
-                    <p className="text-xs text-muted-foreground font-medium tracking-widest uppercase mb-2">v02.1.8 Turbo-Titan (Build: 7823)</p>
+                    <p className="text-xs text-muted-foreground font-medium tracking-widest uppercase mb-2">v02.1.9 Turbo-Blast (Build: 8901)</p>
                     <p className="text-lg text-muted-foreground max-w-2xl mx-auto">
                         The ultimate high-speed file sharing app. Transfer photos and large files (up to 200MB) from desktop to mobile or mobile to mobile instantly.
                     </p>
