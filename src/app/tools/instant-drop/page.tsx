@@ -11,9 +11,9 @@ import { Footer } from "@/components/layout/Footer";
 import { useUsage } from "@/hooks/useUsage";
 import { PaywallModal } from "@/components/layout/PaywallModal";
 
-// v02.1.12 Sonic-Boom Baseline
-const VERSION = "v02.1.12 Build: 1120";
-const CHANNELS = 16; // Extreme parallelism (Unordered mode)
+// v02.1.13 Nitro-Ignition Acceleration
+const VERSION = "v02.1.13 Build: 2024";
+const CHANNELS = 16; // 16-Piston Core (Stable in Unordered mode)
 const CHUNK_SIZE = 128 * 1024; // 128KB Chunks (Standardized)
 const HIGH_WATER_MARK = 1 * 1024 * 1024; // Balanced pressure (1MB)
 const PACER_THRESHOLD = 256 * 1024; // High-frequency pacing (256KB)
@@ -546,15 +546,18 @@ function InstantDropContent() {
 
         logDebug(`Sender: ${VERSION} Start for ${file.name} (${numChunks} chunks)`);
         
-        // v02.1.12 Sonic-Boom: Metadata Warm-up Burst
-        // Prime the SCTP congestion window on all 16 channels simultaneously
-        const primePacket = new Uint8Array(8 + 1024); // 1KB dummy payload
-        const primeView = new DataView(primePacket.buffer);
-        primeView.setUint32(0, index, true);
-        primeView.setUint32(4, 0xFFFFFFFF, true); // Special index for warm-up
+        // v02.1.13 Nitro-Ignition: Ultra-Aggressive Warm-up (128KB Nitro Blast)
+        // Prime the SCTP congestion window on all 16 channels with a full chunk equivalent
+        const nitroPacket = new Uint8Array(8 + 128 * 1024); // 128KB dummy payload
+        const nitroView = new DataView(nitroPacket.buffer);
+        nitroView.setUint32(0, index, true);
+        nitroView.setUint32(4, 0xFFFFFFFF, true); // Special index for Nitro Blast
         dataChannelsRef.current.forEach(dc => {
-            if (dc.readyState === 'open') dc.send(primePacket);
+            if (dc.readyState === 'open') {
+                try { dc.send(nitroPacket); } catch (e) {}
+            }
         });
+        logDebug(`Sender: Nitro-Ignition sequence triggered (2MB Blast)`);
 
         while (offset < buffer.byteLength) {
             if (!isActive.current) return;
@@ -966,7 +969,7 @@ function InstantDropContent() {
                         <Smartphone className="w-12 h-12 text-indigo-500" />
                     </div>
                     <h1 className="text-4xl md:text-5xl font-bold text-foreground mb-4">Turbo Drop</h1>
-                    <p className="text-xs text-muted-foreground font-medium tracking-widest uppercase mb-2">v02.1.12 Sonic-Boom (Build: 1120)</p>
+                    <p className="text-xs text-muted-foreground font-medium tracking-widest uppercase mb-2">v02.1.13 Nitro-Ignition (Build: 2024)</p>
                     <p className="text-lg text-muted-foreground max-w-2xl mx-auto">
                         The ultimate high-speed file sharing app. Transfer photos and large files (up to 200MB) from desktop to mobile or mobile to mobile instantly.
                     </p>
