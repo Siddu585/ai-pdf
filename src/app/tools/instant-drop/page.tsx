@@ -11,8 +11,8 @@ import { Footer } from "@/components/layout/Footer";
 import { useUsage } from "@/hooks/useUsage";
 import { PaywallModal } from "@/components/layout/PaywallModal";
 
-// v02.1.5 Turbo-Full-Throttle
-const VERSION = "v02.1.5 Build: 4501";
+// v02.1.6 Turbo-Stream Fix
+const VERSION = "v02.1.6 Build: 5502";
 const CHANNELS = 8;
 const CHUNK_SIZE = 128 * 1024; // 128KB Chunks (Standardized)
 const HIGH_WATER_MARK = 1024 * 1024; // 1MB HWM for 5MB/s target
@@ -600,26 +600,29 @@ function InstantDropContent() {
             totalChunks: numChunks
         }));
         
-        await new Promise(res => setTimeout(res, 50)); // Wait briefly for pipe clear
-        logDebug(`Sender: Data pipelined for ${file.name}.`);
+        await new Promise(res => setTimeout(res, 20)); // v02.1.6: Reduced from 50ms
         
-        // v02.0.22: Drained-State Wait
+        // v02.1.6: Drained-State Wait (Optimized for 8MB pipe)
         const finishPipelining = async () => {
             return new Promise<void>(resolve => {
                 const checkDrain = () => {
+                    if (!isActive.current) return resolve();
                     const totalBuffered = dataChannelsRef.current.reduce(
                         (acc, c) => acc + (c.readyState === 'open' ? c.bufferedAmount : 0), 0
                     );
-                    if (totalBuffered < 1024 * 1024) { // Wait until less than 1MB buffered
+                    // v02.1.6: Relaxed to 4MB (50% of 8x1MB HWM) to prevent transition stalls
+                    if (totalBuffered < 4 * 1024 * 1024) { 
                         resolve();
                     } else {
-                        setTimeout(checkDrain, 100);
+                        if (Math.random() < 0.1) logDebug(`Sender: Transition Waiting... Buffer at ${Math.round(totalBuffered/1024/1024)}MB`);
+                        setTimeout(checkDrain, 50); // Faster check cycle
                     }
                 };
                 checkDrain();
             });
         };
         await finishPipelining();
+        logDebug(`Sender: Data pipelined for ${file.name}. Pipe Drained.`);
     };
 
     // --- RECEIVER LOGIC (Turbo Drop 2.0) ---
@@ -949,7 +952,7 @@ function InstantDropContent() {
                         <Smartphone className="w-12 h-12 text-indigo-500" />
                     </div>
                     <h1 className="text-4xl md:text-5xl font-bold text-foreground mb-4">Turbo Drop</h1>
-                    <p className="text-xs text-muted-foreground font-medium tracking-widest uppercase mb-2">v02.1.5 Full Throttle (Build: 4501)</p>
+                    <p className="text-xs text-muted-foreground font-medium tracking-widest uppercase mb-2">v02.1.6 Turbo-Stream Fix (Build: 5502)</p>
                     <p className="text-lg text-muted-foreground max-w-2xl mx-auto">
                         The ultimate high-speed file sharing app. Transfer photos and large files (up to 200MB) from desktop to mobile or mobile to mobile instantly.
                     </p>
