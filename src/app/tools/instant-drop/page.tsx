@@ -11,12 +11,12 @@ import { Footer } from "@/components/layout/Footer";
 import { useUsage } from "@/hooks/useUsage";
 import { PaywallModal } from "@/components/layout/PaywallModal";
 
-// v02.1.0 Turbo-Dynamic Pivot Configuration
-const VERSION = "v02.1.0";
+// v02.1.1 Turbo-Safe Optimization
+const VERSION = "v02.1.1";
 const CHANNELS = 4;
 const CHUNK_SIZE = 128 * 1024; // 128KB Chunks
-const HIGH_WATER_MARK = 1024 * 1024; // 1MB per channel pressure
-const PACER_THRESHOLD = 512 * 1024; // Yield every 512KB
+const HIGH_WATER_MARK = 256 * 1024; // v02.0.3 baseline
+const PACER_THRESHOLD = 256 * 1024; // Frequent yields
 const MAX_IN_FLIGHT = 32;
 const getBackendUrls = () => {
     let rawUrl = (process.env.NEXT_PUBLIC_API_URL || "").trim().replace(/\/$/, "");
@@ -504,6 +504,7 @@ function InstantDropContent() {
         isActive.current = true;
         
         for (let i = 0; i < currentFiles.length; i++) {
+            if (!isActive.current) break; // v02.1.1: Catch disconnection
             totalSentBytesRef.current = 0;
             setCurrentFileIndex(i);
             
@@ -538,6 +539,10 @@ function InstantDropContent() {
         logDebug(`Sender: ${VERSION} Start for ${file.name} (${numChunks} chunks)`);
 
         while (offset < buffer.byteLength) {
+            if (!isActive.current) {
+                logDebug("Sender: Transfer ABORTED - Peer disconnected.");
+                return;
+            }
             const dc = dataChannelsRef.current[chunkIdx % CHANNELS];
             if (!dc || dc.readyState !== 'open') {
                 chunkIdx++;
@@ -743,7 +748,7 @@ function InstantDropContent() {
     };
 
     const disconnectEverything = () => {
-        logDebug("v02.1.0: Full Session Reset...");
+        logDebug("v02.1.1: Full Session Reset...");
         if (wsRef.current) { wsRef.current.close(); wsRef.current = null; }
         if (peerRef.current) { peerRef.current.close(); peerRef.current = null; }
         isActive.current = false;
@@ -936,7 +941,7 @@ function InstantDropContent() {
                         <Smartphone className="w-12 h-12 text-indigo-500" />
                     </div>
                     <h1 className="text-4xl md:text-5xl font-bold text-foreground mb-4">Turbo Drop</h1>
-                    <p className="text-xs text-muted-foreground font-medium tracking-widest uppercase mb-2">v02.1.0 Turbo-Dynamic Pivot (5MB/s Goal)</p>
+                    <p className="text-xs text-muted-foreground font-medium tracking-widest uppercase mb-2">v02.1.1 Turbo-Safe Optimization (5MB/s Target)</p>
                     <p className="text-lg text-muted-foreground max-w-2xl mx-auto">
                         The ultimate high-speed file sharing app. Transfer photos and large files (up to 200MB) from desktop to mobile or mobile to mobile instantly.
                     </p>
