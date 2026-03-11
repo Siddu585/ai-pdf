@@ -545,6 +545,16 @@ function InstantDropContent() {
         let pacerAccumulator = 0;
 
         logDebug(`Sender: ${VERSION} Start for ${file.name} (${numChunks} chunks)`);
+        
+        // v02.1.12 Sonic-Boom: Metadata Warm-up Burst
+        // Prime the SCTP congestion window on all 16 channels simultaneously
+        const primePacket = new Uint8Array(8 + 1024); // 1KB dummy payload
+        const primeView = new DataView(primePacket.buffer);
+        primeView.setUint32(0, index, true);
+        primeView.setUint32(4, 0xFFFFFFFF, true); // Special index for warm-up
+        dataChannelsRef.current.forEach(dc => {
+            if (dc.readyState === 'open') dc.send(primePacket);
+        });
 
         while (offset < buffer.byteLength) {
             if (!isActive.current) return;
