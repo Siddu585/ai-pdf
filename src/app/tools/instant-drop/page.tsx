@@ -11,12 +11,12 @@ import { Footer } from "@/components/layout/Footer";
 import { useUsage } from "@/hooks/useUsage";
 import { PaywallModal } from "@/components/layout/PaywallModal";
 
-// v02.1.4 Turbo-Pulse Sync
-const VERSION = "v02.1.4 Build: 2315";
+// v02.1.5 Turbo-Full-Throttle
+const VERSION = "v02.1.5 Build: 4501";
 const CHANNELS = 8;
 const CHUNK_SIZE = 128 * 1024; // 128KB Chunks (Standardized)
-const HIGH_WATER_MARK = 256 * 1024; // v02.0.3 baseline
-const PACER_THRESHOLD = 256 * 1024; // Frequent yields
+const HIGH_WATER_MARK = 1024 * 1024; // 1MB HWM for 5MB/s target
+const PACER_THRESHOLD = 2 * 1024 * 1024; // 2MB Pacer pressure
 const MAX_IN_FLIGHT = 32;
 const getBackendUrls = () => {
     let rawUrl = (process.env.NEXT_PUBLIC_API_URL || "").trim().replace(/\/$/, "");
@@ -543,50 +543,50 @@ function InstantDropContent() {
         logDebug(`Sender: ${VERSION} Start for ${file.name} (${numChunks} chunks)`);
 
         while (offset < buffer.byteLength) {
-            if (!isActive.current) {
-                logDebug("Sender: Transfer ABORTED - Peer disconnected.");
-                return;
-            }
-            const dc = dataChannelsRef.current[chunkIdx % CHANNELS];
-            if (!dc || dc.readyState !== 'open') {
-                chunkIdx++;
-                await new Promise(r => setTimeout(r, 10));
-                continue;
-            }
+            if (!isActive.current) return;
 
-            if (dc.bufferedAmount < HIGH_WATER_MARK) {
-                const chunk = buffer.slice(offset, offset + CHUNK_SIZE);
-                const currentChunkIdx = Math.floor(offset / CHUNK_SIZE);
-                
-                // v02.1.2: 8-byte header [FileIndex(4B)][ChunkIndex(4B)]
-                const packet = new Uint8Array(8 + chunk.byteLength);
-                const view = new DataView(packet.buffer);
-                view.setUint32(0, index, true);
-                view.setUint32(4, currentChunkIdx, true);
-                packet.set(new Uint8Array(chunk), 8);
+            let sentThisLoop = false;
+            // v02.1.5: Greedy Sweep - Check all channels for capacity before yielding
+            for (let i = 0; i < CHANNELS; i++) {
+                const dcIdx = (chunkIdx + i) % CHANNELS;
+                const dc = dataChannelsRef.current[dcIdx];
 
-                try {
-                    dc.send(packet);
-                    offset += CHUNK_SIZE;
-                    chunkIdx++;
-                    pacerAccumulator += packet.byteLength;
-                    totalSentBytesRef.current += chunk.byteLength;
+                if (dc?.readyState === 'open' && dc.bufferedAmount < HIGH_WATER_MARK) {
+                    const chunk = buffer.slice(offset, offset + CHUNK_SIZE);
+                    const pieceIdx = Math.floor(offset / CHUNK_SIZE);
+                    
+                    const packet = new Uint8Array(8 + chunk.byteLength);
+                    const view = new DataView(packet.buffer);
+                    view.setUint32(0, index, true);
+                    view.setUint32(4, pieceIdx, true);
+                    packet.set(new Uint8Array(chunk), 8);
 
-                    // Power Pacer Yield
-                    if (pacerAccumulator >= PACER_THRESHOLD) {
-                        pacerAccumulator = 0;
-                        await new Promise(r => setTimeout(r, 0)); // Yield to event loop
+                    try {
+                        dc.send(packet);
+                        offset += CHUNK_SIZE;
+                        chunkIdx = (dcIdx + 1) % CHANNELS; // Rotate starting channel
+                        pacerAccumulator += packet.byteLength;
+                        totalSentBytesRef.current += chunk.byteLength;
+                        sentThisLoop = true;
+
+                        if (pacerAccumulator >= PACER_THRESHOLD) {
+                            pacerAccumulator = 0;
+                            await new Promise(r => setTimeout(r, 0)); // Yield
+                        }
+                        
+                        if (pieceIdx % 100 === 0) {
+                            setProgress(Math.min(99, Math.round((offset / buffer.byteLength) * 100)));
+                        }
+                        break; // successfully sent a chunk, move to while() head for next chunk
+                    } catch (e) {
+                         // Fall through to next channel sweep
                     }
-
-                    if (chunkIdx % 100 === 0) {
-                        setProgress(Math.min(99, Math.round((offset / buffer.byteLength) * 100)));
-                    }
-                } catch (e) {
-                    await new Promise(r => setTimeout(r, 50));
                 }
-            } else {
-                chunkIdx++;
-                await new Promise(r => setTimeout(r, 10));
+            }
+
+            if (!sentThisLoop) {
+                // All channels throttled - wait 5ms (Pulsed recovery)
+                await new Promise(r => setTimeout(r, 5));
             }
         }
         
@@ -949,7 +949,7 @@ function InstantDropContent() {
                         <Smartphone className="w-12 h-12 text-indigo-500" />
                     </div>
                     <h1 className="text-4xl md:text-5xl font-bold text-foreground mb-4">Turbo Drop</h1>
-                    <p className="text-xs text-muted-foreground font-medium tracking-widest uppercase mb-2">v02.1.4 Turbo-Pulse Sync (Build: 2315)</p>
+                    <p className="text-xs text-muted-foreground font-medium tracking-widest uppercase mb-2">v02.1.5 Full Throttle (Build: 4501)</p>
                     <p className="text-lg text-muted-foreground max-w-2xl mx-auto">
                         The ultimate high-speed file sharing app. Transfer photos and large files (up to 200MB) from desktop to mobile or mobile to mobile instantly.
                     </p>
