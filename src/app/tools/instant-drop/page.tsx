@@ -88,6 +88,7 @@ function InstantDropContent() {
     const emailRef = useRef(email);
     const deviceIdRef = useRef(deviceId);
     const isInitializingRef = useRef(false); // v02.0.13: Obsidian initialization lock
+    const isReceiverReadyRef = useRef(true); // v02.0.26: Tracking receiver flow control status
     const relayServersRef = useRef<any[]>([...ICE_SERVERS.iceServers]); // v02.0.14: Pre-fetched relay cache
 
     useEffect(() => {
