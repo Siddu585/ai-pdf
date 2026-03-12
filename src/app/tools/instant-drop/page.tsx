@@ -11,8 +11,8 @@ import { Footer } from "@/components/layout/Footer";
 import { useUsage } from "@/hooks/useUsage";
 import { PaywallModal } from "@/components/layout/PaywallModal";
 
-// v02.1.18 Safe-Baseline Recovery
-const VERSION = "v02.1.18 Build: 7712";
+// v02.1.19 Ghost-Piston (Privacy & Fix)
+const VERSION = "v02.1.19 Build: 8840";
 const CHANNELS = 16; // 16-Piston Core (Stable sweet spot)
 const CHUNK_SIZE = 128 * 1024; // 128KB Chunks (Safe Standard)
 const HIGH_WATER_MARK = 1 * 1024 * 1024; // Balanced pressure (1MB/channel)
@@ -77,8 +77,12 @@ function InstantDropContent() {
     const wsRef = useRef<WebSocket | null>(null);
     const capturedLogsRef = useRef<string[]>([]);
     const logDebug = (msg: string) => {
+        // v02.1.19: Privacy Masking for emails in logs
+        const maskedMsg = msg.replace(/([a-zA-Z0-0._-]+)@([a-zA-Z0-9._-]+\.[a-zA-Z0-9_-]+)/g, (match, p1, p2) => {
+            return p1.charAt(0) + "***@" + p2;
+        });
         const time = new Date().toISOString();
-        const formattedMsg = `[${time}] ${msg}`;
+        const formattedMsg = `[${time}] ${maskedMsg}`;
         console.log(formattedMsg);
         capturedLogsRef.current.push(formattedMsg);
         if (capturedLogsRef.current.length > 2000) capturedLogsRef.current.shift(); // Cap at 2k lines
@@ -225,20 +229,21 @@ function InstantDropContent() {
         setRoomId(newRoomId);
         roomRef.current = newRoomId;
 
-        const ws = new WebSocket(`${BACKEND_WS_URL}/ws/drop/${newRoomId}/sender`);
-        wsRef.current = ws;
+        const ws = new WebSocket(`${BACKEND_WS_URL}/ws/drop/${newRoomId}/sender`);        wsRef.current = ws;
+        
+        ws.onerror = (e) => logDebug("Sender WS Connection Error: Signaling server unreachable or refused connection.");
+        ws.onclose = (e) => {
+            logDebug(`Sender WS Closed (Code: ${e.code}, Reason: ${e.reason || 'None'}).`);
+            if (heartbeatIntervalRef.current) clearInterval(heartbeatIntervalRef.current);
+        };
 
         ws.onopen = () => {
             logDebug("Sender WS Opened. Waiting for peer...");
             // Heartbeat
             const heartbeat = setInterval(() => {
                 if (ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify({ type: 'ping' }));
-            }, 10000);
-            ws.onclose = () => {
-                logDebug("Sender WS Closed.");
-                clearInterval(heartbeat);
-            };
-            ws.onerror = (e) => logDebug("Sender WS Error: " + (e as any).message || "Unknown");
+            }, 5000); // v02.1.19: Aggressive 5s ping
+            heartbeatIntervalRef.current = heartbeat;
         };
 
         ws.onmessage = async (event) => {
@@ -300,7 +305,7 @@ function InstantDropContent() {
             isActive.current = false;
 
             // v02.0.28 Pipeline State Reset
-            channelFileIndex.current = new Array(CHANNELS).fill(0);
+            channelFileIndex.current = new Array(8).fill(0);
             fileBuffers.current.clear();
             expectedTotalChunks.current.clear();
             receivedChunksCount.current.clear();
@@ -667,18 +672,20 @@ function InstantDropContent() {
 
         const ws = new WebSocket(`${BACKEND_WS_URL}/ws/drop/${id}/receiver`);
         wsRef.current = ws;
+        
+        ws.onerror = (e) => logDebug("Receiver WS Connection Error: Signaling server unreachable or refused connection.");
+        ws.onclose = (e) => {
+            logDebug(`Receiver WS Closed (Code: ${e.code}, Reason: ${e.reason || 'None'}).`);
+            if (heartbeatIntervalRef.current) clearInterval(heartbeatIntervalRef.current);
+        };
 
         ws.onopen = () => {
             logDebug("Receiver WS Opened. Signaling Ready...");
             ws.send(JSON.stringify({ type: 'receiver-ready' }));
             const heartbeat = setInterval(() => {
                 if (ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify({ type: 'ping' }));
-            }, 10000);
-            ws.onclose = () => {
-                logDebug("Receiver WS Closed.");
-                clearInterval(heartbeat);
-            };
-            ws.onerror = (e) => logDebug("Receiver WS Error: " + (e as any).message || "Unknown");
+            }, 5000); // v02.1.19: Aggressive 5s ping
+            heartbeatIntervalRef.current = heartbeat;
         };
 
         ws.onmessage = async (event) => {
@@ -996,7 +1003,7 @@ function InstantDropContent() {
                         <Smartphone className="w-12 h-12 text-indigo-500" />
                     </div>
                     <h1 className="text-4xl md:text-5xl font-bold text-foreground mb-4">Turbo Drop</h1>
-                    <p className="text-xs text-muted-foreground font-medium tracking-widest uppercase mb-2">v02.1.18 Safe-Baseline (Build: 7712)</p>
+                    <p className="text-xs text-muted-foreground font-medium tracking-widest uppercase mb-2">v02.1.19 Ghost-Piston (Build: 8840)</p>
                     <p className="text-lg text-muted-foreground max-w-2xl mx-auto">
                         The ultimate high-speed file sharing app. Transfer photos and large files (up to 200MB) from desktop to mobile or mobile to mobile instantly.
                     </p>
