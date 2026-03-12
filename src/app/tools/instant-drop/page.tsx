@@ -11,11 +11,11 @@ import { Footer } from "@/components/layout/Footer";
 import { useUsage } from "@/hooks/useUsage";
 import { PaywallModal } from "@/components/layout/PaywallModal";
 
-// v02.1.16 Safe-Piston Hotfix
-const VERSION = "v02.1.16 Build: 5520";
-const CHANNELS = 16; // 16-Piston Core (Stable in Unordered mode)
-const CHUNK_SIZE = 252 * 1024; // 252KB Safe Chunks (Fits within 256KB SCTP limit)
-const HIGH_WATER_MARK = 2 * 1024 * 1024; // Deep Reservoir (2MB/channel)
+// v02.1.17 Velocity-Piston Scaling
+const VERSION = "v02.1.17 Build: 6601";
+const CHANNELS = 24; // 24-Piston Engine (High-Parallel Safe-Packets)
+const CHUNK_SIZE = 128 * 1024; // 128KB Chunks (Safe Standard)
+const HIGH_WATER_MARK = 1 * 1024 * 1024; // Balanced pressure (1MB/channel)
 const PACER_THRESHOLD = 0; // Infinite Pacer (Continuous Pressure)
 const MAX_IN_FLIGHT = 160; // Tuned for 16-channel flow
 const getBackendUrls = () => {
@@ -546,8 +546,8 @@ function InstantDropContent() {
 
         logDebug(`Sender: ${VERSION} Start for ${file.name} (${numChunks} chunks)`);
         
-        // v02.1.14 Kinetic-Stream: Rapid-Fire Hybrid Lead-In (32 Chunks)
-        // Saturating all pipes with real data immediately (4MB surge)
+        // v02.1.17 Velocity-Piston: High-Parallel Lead-In (48 Chunks)
+        // Saturating all 24 pipes with real data immediately (6MB surge)
         const leadInCount = Math.min(CHANNELS * 2, numChunks);
         for (let i = 0; i < leadInCount; i++) {
             if (!isActive.current) return;
@@ -795,7 +795,7 @@ function InstantDropContent() {
     };
 
     const disconnectEverything = () => {
-        logDebug("v02.1.1: Full Session Reset...");
+        logDebug(`${VERSION}: Full Session Reset...`);
         if (wsRef.current) { wsRef.current.close(); wsRef.current = null; }
         if (peerRef.current) { peerRef.current.close(); peerRef.current = null; }
         isActive.current = false;
@@ -988,7 +988,7 @@ function InstantDropContent() {
                         <Smartphone className="w-12 h-12 text-indigo-500" />
                     </div>
                     <h1 className="text-4xl md:text-5xl font-bold text-foreground mb-4">Turbo Drop</h1>
-                    <p className="text-xs text-muted-foreground font-medium tracking-widest uppercase mb-2">v02.1.16 Safe-Piston (Build: 5520)</p>
+                    <p className="text-xs text-muted-foreground font-medium tracking-widest uppercase mb-2">v02.1.17 Velocity-Piston (Build: 6601)</p>
                     <p className="text-lg text-muted-foreground max-w-2xl mx-auto">
                         The ultimate high-speed file sharing app. Transfer photos and large files (up to 200MB) from desktop to mobile or mobile to mobile instantly.
                     </p>
