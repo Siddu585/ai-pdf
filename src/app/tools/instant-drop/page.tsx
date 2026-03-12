@@ -11,11 +11,11 @@ import { Footer } from "@/components/layout/Footer";
 import { useUsage } from "@/hooks/useUsage";
 import { PaywallModal } from "@/components/layout/PaywallModal";
 
-// v02.1.14 Kinetic-Stream Acceleration
-const VERSION = "v02.1.14 Build: 3105";
+// v02.1.15 Oversized-Load Optimization
+const VERSION = "v02.1.15 Build: 4512";
 const CHANNELS = 16; // 16-Piston Core (Stable in Unordered mode)
-const CHUNK_SIZE = 128 * 1024; // 128KB Chunks (Standardized)
-const HIGH_WATER_MARK = 1 * 1024 * 1024; // Balanced pressure (1MB)
+const CHUNK_SIZE = 256 * 1024; // 256KB Oversized Chunks (Efficiency 2x)
+const HIGH_WATER_MARK = 2 * 1024 * 1024; // Deep Reservoir (2MB/channel)
 const PACER_THRESHOLD = 0; // Infinite Pacer (Continuous Pressure)
 const MAX_IN_FLIGHT = 160; // Tuned for 16-channel flow
 const getBackendUrls = () => {
@@ -988,7 +988,7 @@ function InstantDropContent() {
                         <Smartphone className="w-12 h-12 text-indigo-500" />
                     </div>
                     <h1 className="text-4xl md:text-5xl font-bold text-foreground mb-4">Turbo Drop</h1>
-                    <p className="text-xs text-muted-foreground font-medium tracking-widest uppercase mb-2">v02.1.14 Kinetic-Stream (Build: 3105)</p>
+                    <p className="text-xs text-muted-foreground font-medium tracking-widest uppercase mb-2">v02.1.15 Oversized-Load (Build: 4512)</p>
                     <p className="text-lg text-muted-foreground max-w-2xl mx-auto">
                         The ultimate high-speed file sharing app. Transfer photos and large files (up to 200MB) from desktop to mobile or mobile to mobile instantly.
                     </p>
