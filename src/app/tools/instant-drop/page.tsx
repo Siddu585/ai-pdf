@@ -11,8 +11,8 @@ import { Footer } from "@/components/layout/Footer";
 import { useUsage } from "@/hooks/useUsage";
 import { PaywallModal } from "@/components/layout/PaywallModal";
 
-// v02.1.19 Ghost-Piston (Privacy & Fix)
-const VERSION = "v02.1.19 Build: 8840";
+// v02.1.20 Omega-Piston (Robustness)
+const VERSION = "v02.1.20 Build: 9915";
 const CHANNELS = 16; // 16-Piston Core (Stable sweet spot)
 const CHUNK_SIZE = 128 * 1024; // 128KB Chunks (Safe Standard)
 const HIGH_WATER_MARK = 1 * 1024 * 1024; // Balanced pressure (1MB/channel)
@@ -77,8 +77,8 @@ function InstantDropContent() {
     const wsRef = useRef<WebSocket | null>(null);
     const capturedLogsRef = useRef<string[]>([]);
     const logDebug = (msg: string) => {
-        // v02.1.19: Privacy Masking for emails in logs
-        const maskedMsg = msg.replace(/([a-zA-Z0-0._-]+)@([a-zA-Z0-9._-]+\.[a-zA-Z0-9_-]+)/g, (match, p1, p2) => {
+        // v02.1.20: Privacy Masking fixed [0-0] -> [0-9]
+        const maskedMsg = msg.replace(/([a-zA-Z0-9._-]+)@([a-zA-Z0-9._-]+\.[a-zA-Z0-9_-]+)/g, (match, p1, p2) => {
             return p1.charAt(0) + "***@" + p2;
         });
         const time = new Date().toISOString();
@@ -211,62 +211,6 @@ function InstantDropContent() {
         // Fallback: DataChannel (If WS is down)
         if (dataChannelsRef.current[0]?.readyState === 'open') {
             dataChannelsRef.current[0].send(msgStr);
-            return true;
-        }
-        return false;
-    };
-
-    // --- SENDER LOGIC (Turbo Drop 2.0) ---
-    const startSending = (selectedFiles: FileList | File[]) => {
-        disconnectEverything(); // v02.0.12: Atomic session reset before new room
-        const fileList = Array.from(selectedFiles);
-        setFiles(fileList);
-        filesRef.current = fileList;
-        setMode('send');
-        setStatus('waiting');
-
-        const newRoomId = Math.floor(100000 + Math.random() * 900000).toString();
-        setRoomId(newRoomId);
-        roomRef.current = newRoomId;
-
-        const ws = new WebSocket(`${BACKEND_WS_URL}/ws/drop/${newRoomId}/sender`);        wsRef.current = ws;
-        
-        ws.onerror = (e) => logDebug("Sender WS Connection Error: Signaling server unreachable or refused connection.");
-        ws.onclose = (e) => {
-            logDebug(`Sender WS Closed (Code: ${e.code}, Reason: ${e.reason || 'None'}).`);
-            if (heartbeatIntervalRef.current) clearInterval(heartbeatIntervalRef.current);
-        };
-
-        ws.onopen = () => {
-            logDebug("Sender WS Opened. Waiting for peer...");
-            // Heartbeat
-            const heartbeat = setInterval(() => {
-                if (ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify({ type: 'ping' }));
-            }, 5000); // v02.1.19: Aggressive 5s ping
-            heartbeatIntervalRef.current = heartbeat;
-        };
-
-        ws.onmessage = async (event) => {
-            logDebug("Sender WS Message: " + event.data);
-            try {
-                const data = JSON.parse(event.data);
-                if (data.type === 'peer-connected') {
-                    logDebug("Peer joined, waiting for receiver-ready signal...");
-                } else if (data.type === 'receiver-ready') {
-                    logDebug("Receiver is READY. Initializing WebRTC Offer...");
-                    setupWebRTC(ws, true).catch(err => {
-                        logDebug(`❌ Unhandled Sender Setup Error: ${err.message || err}`);
-                    });
-                } else if (data.type === 'answer') {
-                    logDebug("Received answer, setting remote description");
-                    try {
-                        await peerRef.current?.setRemoteDescription(new RTCSessionDescription(data.sdp));
-                        remoteDescriptionSet.current = true;
-                        logDebug("✅ Remote Description Set. Flushing " + iceBuffer.current.length + " buffered candidates");
-                        // Flush buffered candidates
-                        for (const candidate of iceBuffer.current) {
-                            try {
-                                await peerRef.current?.addIceCandidate(new RTCIceCandidate(candidate));
                             } catch (e) { logDebug("Sender buffered ICE warning: " + e); }
                         }
                         iceBuffer.current = [];
@@ -663,61 +607,79 @@ function InstantDropContent() {
     };
 
     // --- RECEIVER LOGIC (Turbo Drop 2.0) ---
-    const joinRoom = (id: string) => {
+    const joinRoom = async (id: string) => {
         disconnectEverything();
         setRoomId(id);
         roomRef.current = id;
         setMode('receive');
         setStatus('connecting');
 
-        const ws = new WebSocket(`${BACKEND_WS_URL}/ws/drop/${id}/receiver`);
-        wsRef.current = ws;
-        
-        ws.onerror = (e) => logDebug("Receiver WS Connection Error: Signaling server unreachable or refused connection.");
-        ws.onclose = (e) => {
-            logDebug(`Receiver WS Closed (Code: ${e.code}, Reason: ${e.reason || 'None'}).`);
-            if (heartbeatIntervalRef.current) clearInterval(heartbeatIntervalRef.current);
-        };
+        // v02.1.20: Backend Wake-Up Pre-flight
+        logDebug("Attempting to wake up signaling server...");
+        try { await fetch(`${BACKEND_HTTP_URL}/api/health`).catch(() => {}); } catch (e) {}
 
-        ws.onopen = () => {
-            logDebug("Receiver WS Opened. Signaling Ready...");
-            ws.send(JSON.stringify({ type: 'receiver-ready' }));
-            const heartbeat = setInterval(() => {
-                if (ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify({ type: 'ping' }));
-            }, 5000); // v02.1.19: Aggressive 5s ping
-            heartbeatIntervalRef.current = heartbeat;
-        };
-
-        ws.onmessage = async (event) => {
-            try {
-                const data = JSON.parse(event.data);
-                if (data.type === 'offer') {
-                    logDebug("Received offer, setting remote and creating answer");
-                    await setupWebRTC(ws, false);
-                    await peerRef.current?.setRemoteDescription(new RTCSessionDescription(data.sdp));
-                    remoteDescriptionSet.current = true;
-                    
-                    for (const candidate of iceBuffer.current) {
-                        try { await peerRef.current?.addIceCandidate(new RTCIceCandidate(candidate)); } catch (e) {}
-                    }
-                    iceBuffer.current = [];
-
-                    const answer = await peerRef.current?.createAnswer();
-                    await peerRef.current?.setLocalDescription(answer);
-                    ws.send(JSON.stringify({ type: 'answer', sdp: peerRef.current?.localDescription }));
-                } else if (data.type === 'ice-candidate') {
-                    if (!remoteDescriptionSet.current) {
-                        iceBuffer.current.push(data.candidate);
-                    } else {
-                        try { await peerRef.current?.addIceCandidate(new RTCIceCandidate(data.candidate)); } catch (e) {}
-                    }
-                } else if (data.type === 'metadata' || data.type === 'sector-eof' || data.type === 'batch-eof') {
-                    handleIncomingData(data, 0);
+        let attempts = 0;
+        const connect = () => {
+            attempts++;
+            logDebug(`Connecting to signaling server (Attempt ${attempts}/3)...`);
+            const ws = new WebSocket(`${BACKEND_WS_URL}/ws/drop/${id}/receiver`);
+            wsRef.current = ws;
+            
+            ws.onerror = () => logDebug(`Receiver WS Connection Error (Attempt ${attempts})`);
+            ws.onclose = (e) => {
+                logDebug(`Receiver WS Closed (Code: ${e.code}, Reason: ${e.reason || 'None'}).`);
+                if (heartbeatIntervalRef.current) clearInterval(heartbeatIntervalRef.current);
+                if (attempts < 3 && statusRef.current === 'connecting') {
+                    logDebug("Retrying connection in 2s...");
+                    setTimeout(connect, 2000);
+                } else if (attempts >= 3) {
+                    setStatus('error');
+                    logDebug("❌ Persistent Signaling Failure after 3 attempts.");
                 }
-            } catch (err: any) {
-                logDebug("❌ Receiver WS Error: " + err.message);
-            }
+            };
+
+            ws.onopen = () => {
+                logDebug("Receiver WS Opened. Signaling Ready...");
+                ws.send(JSON.stringify({ type: 'receiver-ready' }));
+                const heartbeat = setInterval(() => {
+                    if (ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify({ type: 'ping' }));
+                }, 5000);
+                heartbeatIntervalRef.current = heartbeat;
+            };
+
+            ws.onmessage = async (event) => {
+                try {
+                    const data = JSON.parse(event.data);
+                    if (data.type === 'offer') {
+                        logDebug("Received offer, setting remote and creating answer");
+                        await setupWebRTC(ws, false);
+                        await peerRef.current?.setRemoteDescription(new RTCSessionDescription(data.sdp));
+                        remoteDescriptionSet.current = true;
+                        
+                        for (const candidate of iceBuffer.current) {
+                            try { await peerRef.current?.addIceCandidate(new RTCIceCandidate(candidate)); } catch (e) {}
+                        }
+                        iceBuffer.current = [];
+
+                        const answer = await peerRef.current?.createAnswer();
+                        await peerRef.current?.setLocalDescription(answer);
+                        ws.send(JSON.stringify({ type: 'answer', sdp: peerRef.current?.localDescription }));
+                    } else if (data.type === 'ice-candidate') {
+                        if (!remoteDescriptionSet.current) {
+                            iceBuffer.current.push(data.candidate);
+                        } else {
+                            try { await peerRef.current?.addIceCandidate(new RTCIceCandidate(data.candidate)); } catch (e) {}
+                        }
+                    } else if (data.type === 'metadata' || data.type === 'sector-eof' || data.type === 'batch-eof') {
+                        handleIncomingData(data, 0);
+                    }
+                } catch (err: any) {
+                    logDebug("❌ Receiver WS Error: " + err.message);
+                }
+            };
         };
+
+        connect();
     };
 
     const handleIncomingData = (data: any, _channelIdx: number) => {
@@ -1003,7 +965,7 @@ function InstantDropContent() {
                         <Smartphone className="w-12 h-12 text-indigo-500" />
                     </div>
                     <h1 className="text-4xl md:text-5xl font-bold text-foreground mb-4">Turbo Drop</h1>
-                    <p className="text-xs text-muted-foreground font-medium tracking-widest uppercase mb-2">v02.1.19 Ghost-Piston (Build: 8840)</p>
+                    <p className="text-xs text-muted-foreground font-medium tracking-widest uppercase mb-2">v02.1.20 Omega-Piston (Build: 9915)</p>
                     <p className="text-lg text-muted-foreground max-w-2xl mx-auto">
                         The ultimate high-speed file sharing app. Transfer photos and large files (up to 200MB) from desktop to mobile or mobile to mobile instantly.
                     </p>
