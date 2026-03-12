@@ -11,9 +11,9 @@ import { Footer } from "@/components/layout/Footer";
 import { useUsage } from "@/hooks/useUsage";
 import { PaywallModal } from "@/components/layout/PaywallModal";
 
-// v02.1.17 Velocity-Piston Scaling
-const VERSION = "v02.1.17 Build: 6601";
-const CHANNELS = 24; // 24-Piston Engine (High-Parallel Safe-Packets)
+// v02.1.18 Safe-Baseline Recovery
+const VERSION = "v02.1.18 Build: 7712";
+const CHANNELS = 16; // 16-Piston Core (Stable sweet spot)
 const CHUNK_SIZE = 128 * 1024; // 128KB Chunks (Safe Standard)
 const HIGH_WATER_MARK = 1 * 1024 * 1024; // Balanced pressure (1MB/channel)
 const PACER_THRESHOLD = 0; // Infinite Pacer (Continuous Pressure)
@@ -229,12 +229,16 @@ function InstantDropContent() {
         wsRef.current = ws;
 
         ws.onopen = () => {
-            console.log("Sender WS Opened");
+            logDebug("Sender WS Opened. Waiting for peer...");
             // Heartbeat
             const heartbeat = setInterval(() => {
                 if (ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify({ type: 'ping' }));
             }, 10000);
-            ws.onclose = () => clearInterval(heartbeat);
+            ws.onclose = () => {
+                logDebug("Sender WS Closed.");
+                clearInterval(heartbeat);
+            };
+            ws.onerror = (e) => logDebug("Sender WS Error: " + (e as any).message || "Unknown");
         };
 
         ws.onmessage = async (event) => {
@@ -326,8 +330,8 @@ function InstantDropContent() {
                     dataChannelsRef.current[i] = dc;
                     setupDataChannel(dc, i);
                     dc.bufferedAmountLowThreshold = 256 * 1024;
-                    // v02.1.8: Increased to 100ms for Titanium-Handshake stability
-                    await new Promise(r => setTimeout(r, 100));
+                    // v02.1.18: Reduced to 50ms for faster handshakes
+                    await new Promise(r => setTimeout(r, 50));
                 }
             } else {
                 logDebug("Awaiting Ordered Parallel DataChannels...");
@@ -670,7 +674,11 @@ function InstantDropContent() {
             const heartbeat = setInterval(() => {
                 if (ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify({ type: 'ping' }));
             }, 10000);
-            ws.onclose = () => clearInterval(heartbeat);
+            ws.onclose = () => {
+                logDebug("Receiver WS Closed.");
+                clearInterval(heartbeat);
+            };
+            ws.onerror = (e) => logDebug("Receiver WS Error: " + (e as any).message || "Unknown");
         };
 
         ws.onmessage = async (event) => {
@@ -988,7 +996,7 @@ function InstantDropContent() {
                         <Smartphone className="w-12 h-12 text-indigo-500" />
                     </div>
                     <h1 className="text-4xl md:text-5xl font-bold text-foreground mb-4">Turbo Drop</h1>
-                    <p className="text-xs text-muted-foreground font-medium tracking-widest uppercase mb-2">v02.1.17 Velocity-Piston (Build: 6601)</p>
+                    <p className="text-xs text-muted-foreground font-medium tracking-widest uppercase mb-2">v02.1.18 Safe-Baseline (Build: 7712)</p>
                     <p className="text-lg text-muted-foreground max-w-2xl mx-auto">
                         The ultimate high-speed file sharing app. Transfer photos and large files (up to 200MB) from desktop to mobile or mobile to mobile instantly.
                     </p>
