@@ -305,7 +305,7 @@ function InstantDropContent() {
             isActive.current = false;
 
             // v02.0.28 Pipeline State Reset
-            channelFileIndex.current = new Array(8).fill(0);
+            channelFileIndex.current = new Array(CHANNELS).fill(0);
             fileBuffers.current.clear();
             expectedTotalChunks.current.clear();
             receivedChunksCount.current.clear();
