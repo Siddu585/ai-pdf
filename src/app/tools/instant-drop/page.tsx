@@ -180,7 +180,7 @@ function InstantDropContent() {
     const iceBuffer = useRef<RTCIceCandidateInit[]>([]);
 
     // --- PIPELINED IN-BAND REASSEMBLY STATE (v02.0.28 Quantum Flow) ---
-    const channelFileIndex = useRef<number[]>(new Array(8).fill(0));
+    const channelFileIndex = useRef<number[]>(new Array(CHANNELS).fill(0));
     const fileBuffers = useRef<Map<number, ArrayBuffer[]>>(new Map());
     const expectedTotalChunks = useRef<Map<number, number>>(new Map());
     const receivedChunksCount = useRef<Map<number, number>>(new Map());
@@ -211,31 +211,100 @@ function InstantDropContent() {
         // Fallback: DataChannel (If WS is down)
         if (dataChannelsRef.current[0]?.readyState === 'open') {
             dataChannelsRef.current[0].send(msgStr);
-                            } catch (e) { logDebug("Sender buffered ICE warning: " + e); }
-                        }
-                        iceBuffer.current = [];
-                    } catch (e: any) {
-                        logDebug("❌ Failed to set remote description: " + e.message);
-                    }
-                } else if (data.type === 'ice-candidate') {
-                    if (!remoteDescriptionSet.current) {
-                        iceBuffer.current.push(data.candidate);
-                    } else {
-                        try {
-                            await peerRef.current?.addIceCandidate(new RTCIceCandidate(data.candidate));
-                        } catch (e) { logDebug("Sender live ICE warning: " + e); }
-                    }
-                } else if (data.type === 'heartbeat') {
-                    // v02.0.0: Ignore heartbeat, purely for NAT keep-alive
-                    return;
-                } else if (data.type === 'metadata' || data.type === 'ready' || data.type === 'file-ack' || data.type === 'sector-eof') {
-                    // v01.5.0: Process Out-of-Band Control Messages
-                    window.dispatchEvent(new CustomEvent('webrtc-sender-msg', { detail: data }));
+            return true;
+        }
+        return false;
+    };
+
+    // --- SENDER LOGIC (Turbo Drop 2.0) ---
+    const startSending = async (selectedFiles: FileList | File[]) => {
+        disconnectEverything();
+        const fileList = Array.from(selectedFiles);
+        setFiles(fileList);
+        filesRef.current = fileList;
+        setMode('send');
+        setStatus('connecting');
+
+        const newRoomId = Math.floor(100000 + Math.random() * 900000).toString();
+        setRoomId(newRoomId);
+        roomRef.current = newRoomId;
+
+        // v02.1.20: Backend Wake-Up Pre-flight
+        logDebug("Attempting to wake up signaling server...");
+        try { await fetch(`${BACKEND_HTTP_URL}/api/health`).catch(() => {}); } catch (e) {}
+
+        let attempts = 0;
+        const connect = () => {
+            attempts++;
+            logDebug(`Connecting to signaling server (Attempt ${attempts}/3)...`);
+            const ws = new WebSocket(`${BACKEND_WS_URL}/ws/drop/${newRoomId}/sender`);
+            wsRef.current = ws;
+            
+            ws.onerror = () => logDebug(`Sender WS Connection Error (Attempt ${attempts})`);
+            ws.onclose = (e) => {
+                logDebug(`Sender WS Closed (Code: ${e.code}, Reason: ${e.reason || 'None'}).`);
+                if (heartbeatIntervalRef.current) clearInterval(heartbeatIntervalRef.current);
+                if (attempts < 3 && statusRef.current === 'connecting') {
+                    logDebug("Retrying connection in 2s...");
+                    setTimeout(connect, 2000);
+                } else if (attempts >= 3) {
+                    setStatus('error');
+                    logDebug("❌ Persistent Signaling Failure after 3 attempts.");
                 }
-            } catch (err: any) {
-                logDebug("❌ Sender WS Error: " + err.message);
-            }
+            };
+
+            ws.onopen = () => {
+                logDebug("Sender WS Opened. Waiting for peer...");
+                const heartbeat = setInterval(() => {
+                    if (ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify({ type: 'ping' }));
+                }, 5000);
+                heartbeatIntervalRef.current = heartbeat;
+            };
+
+            ws.onmessage = async (event) => {
+                logDebug("Sender WS Message: " + event.data);
+                try {
+                    const data = JSON.parse(event.data);
+                    if (data.type === 'peer-connected') {
+                        logDebug("Peer joined, waiting for receiver-ready signal...");
+                    } else if (data.type === 'receiver-ready') {
+                        logDebug("Receiver is READY. Initializing WebRTC Offer...");
+                        setupWebRTC(ws, true).catch(err => {
+                            logDebug(`❌ Unhandled Sender Setup Error: ${err.message || err}`);
+                        });
+                    } else if (data.type === 'answer') {
+                        logDebug("Received answer, setting remote description");
+                        try {
+                            await peerRef.current?.setRemoteDescription(new RTCSessionDescription(data.sdp));
+                            remoteDescriptionSet.current = true;
+                            logDebug("✅ Remote Description Set. Flushing " + iceBuffer.current.length + " buffered candidates");
+                            for (const candidate of iceBuffer.current) {
+                                try { await peerRef.current?.addIceCandidate(new RTCIceCandidate(candidate)); } catch (e) {}
+                            }
+                            iceBuffer.current = [];
+                        } catch (e: any) {
+                            logDebug("❌ Failed to set remote description: " + e.message);
+                        }
+                    } else if (data.type === 'ice-candidate') {
+                        if (!remoteDescriptionSet.current) {
+                            iceBuffer.current.push(data.candidate);
+                        } else {
+                            try { await peerRef.current?.addIceCandidate(new RTCIceCandidate(data.candidate)); } catch (e) {}
+                        }
+                    } else if (data.type === 'flow' && data.status === 'slow') {
+                        isReceiverReadyRef.current = false;
+                    } else if (data.type === 'flow' && data.status === 'ready') {
+                        isReceiverReadyRef.current = true;
+                    } else if (data.type === 'metadata' || data.type === 'sector-eof' || data.type === 'batch-eof') {
+                        window.dispatchEvent(new CustomEvent('webrtc-sender-msg', { detail: data }));
+                    }
+                } catch (err: any) {
+                    logDebug("❌ Sender WS Msg Error: " + err.message);
+                }
+            };
         };
+
+        connect();
     };
 
     const setupWebRTC = async (ws: WebSocket, isSender: boolean, useFallback = false) => {
