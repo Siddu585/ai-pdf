@@ -11,8 +11,8 @@ import { Footer } from "@/components/layout/Footer";
 import { useUsage } from "@/hooks/useUsage";
 import { PaywallModal } from "@/components/layout/PaywallModal";
 
-// v02.1.32 Titan-Pulse (16MB Ceiling + 128KB High-Freq Pacing)
-const VERSION = "v02.1.32";
+// v02.1.33 Titan-Omni (Safe-Indexing + Screen Wake-Lock)
+const VERSION = "v02.1.33";
 const CHANNELS = 12; // 12-Piston Core (Scaling Champion)
 const CHUNK_SIZE = 128 * 1024; // 128KB (High Volume)
 const HIGH_WATER_MARK = 1024 * 1024; // 1MB per channel (12MB total active)
@@ -199,6 +199,7 @@ function InstantDropContent() {
     const fileInputRef = useRef<HTMLInputElement>(null);
     const roomRef = useRef<string | null>(null);
     const heartbeatIntervalRef = useRef<any>(null); // v02.0.0: NAT Heartbeat
+    const wakeLockRef = useRef<any>(null); // v02.1.33: Anti-Throttling Lock
     const workerRef = useRef<Worker | null>(null); // v02.1.32 Titan-Pulse Worker
     // v02.1.32: Inline Hydra Worker Script (Zero-Copy Reassembly)
     useEffect(() => {
@@ -255,7 +256,9 @@ function InstantDropContent() {
                  setReceivedFiles(prev => [...prev, { blob, name }]);
                  logDebug(`Receiver: Worker reassembly complete for ${name}.`);
             } else if (e.data.type === 'all-done') {
+                 logDebug("Receiver: Data fully reassembled. Verifying...");
                  setStatus('done');
+                 sendControlMsg({ type: 'batch-ack' }); // v02.1.33 Final Wave
             }
         };
 
@@ -265,6 +268,26 @@ function InstantDropContent() {
             URL.revokeObjectURL(url);
         };
     }, []);
+
+    // v02.1.33 Anti-Throttling Screen Wake Lock
+    const requestWakeLock = async () => {
+        if (typeof window !== 'undefined' && 'wakeLock' in navigator) {
+            try {
+                wakeLockRef.current = await (navigator as any).wakeLock.request('screen');
+                logDebug("✅ Screen Wake Lock Active (v02.1.33)");
+            } catch (err: any) {
+                logDebug(`⚠️ Wake Lock failed: ${err.message}`);
+            }
+        }
+    };
+    const releaseWakeLock = () => {
+        if (wakeLockRef.current) {
+            wakeLockRef.current.release().then(() => {
+                wakeLockRef.current = null;
+                logDebug("🔓 Screen Wake Lock Released");
+            }).catch(() => {});
+        }
+    };
 
     // --- SIGNALING HELPER (v01.5.0 Out-of-Band) ---
     const sendControlMsg = (payload: any) => {
@@ -294,6 +317,9 @@ function InstantDropContent() {
         const newRoomId = Math.floor(100000 + Math.random() * 900000).toString();
         setRoomId(newRoomId);
         roomRef.current = newRoomId;
+
+        // v02.1.33: Lockdown screen to prevent background throttling
+        await requestWakeLock();
 
         // v02.1.20: Backend Wake-Up Pre-flight
         logDebug("Attempting to wake up signaling server...");
@@ -624,6 +650,25 @@ function InstantDropContent() {
         }
         
         sendControlMsg({ type: 'batch-eof', totalFiles: currentFiles.length });
+        
+        // v02.1.33 Finalization Handshake: Wait for receiver to confirm local save
+        logDebug("Sender: Batch sent. Awaiting receiver verification...");
+        const waitForAck = () => new Promise<void>((resolve) => {
+            const handler = (e: any) => {
+                if (e.detail.type === 'batch-ack') {
+                    window.removeEventListener('webrtc-sender-msg', handler);
+                    resolve();
+                }
+            };
+            window.addEventListener('webrtc-sender-msg', handler);
+            // Safety timeout
+            setTimeout(() => {
+                window.removeEventListener('webrtc-sender-msg', handler);
+                resolve();
+            }, 5000);
+        });
+        await waitForAck();
+
         setStatus('done');
         isActive.current = false;
     };
@@ -751,6 +796,9 @@ function InstantDropContent() {
         setMode('receive');
         setStatus('connecting');
 
+        // v02.1.33: Receiver Wake Lock
+        await requestWakeLock();
+
         // v02.1.20: Backend Wake-Up Pre-flight
         logDebug("Attempting to wake up signaling server...");
         try { await fetch(`${BACKEND_HTTP_URL}/api/health`).catch(() => {}); } catch (e) {}
@@ -877,6 +925,7 @@ function InstantDropContent() {
         reassembledCount.current = 0;
         expectedTotalFiles.current = -1;
         currentFileReceivedRef.current.clear();
+        releaseWakeLock(); // v02.1.33
     };
 
     useEffect(() => {
@@ -1055,8 +1104,8 @@ function InstantDropContent() {
                         <Smartphone className="w-12 h-12 text-indigo-500" />
                     </div>
                     <h1 className="text-4xl md:text-5xl font-bold text-foreground mb-4">Turbo Drop</h1>
-                    <p className="text-xs text-muted-foreground font-medium tracking-widest uppercase mb-2">v02.1.32 
-Titan-Pulse (Build: 2300)</p>
+                    <p className="text-xs text-muted-foreground font-medium tracking-widest uppercase mb-2">v02.1.33 
+Titan-Omni (Build: 2400)</p>
                     <p className="text-lg text-muted-foreground max-w-2xl mx-auto">
                         The ultimate high-speed file sharing app. Transfer photos and large files (up to 200MB) from desktop to mobile or mobile to mobile instantly.
                     </p>
@@ -1284,7 +1333,7 @@ Titan-Pulse (Build: 2300)</p>
                                 <>
                                     <h2 className="text-2xl font-bold">Receiving File</h2>
                                     <p className="mt-2 text-indigo-600 dark:text-indigo-400 font-bold tracking-widest text-[10px] animate-pulse">
-                                        {VERSION} TITAN-PULSE (BUILD: 2300)
+                                        {VERSION} TITAN-OMNI (BUILD: 2400)
                                     </p>
 
                                     {status === 'connecting' && (

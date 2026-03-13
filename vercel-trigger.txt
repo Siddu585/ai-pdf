@@ -1,2 +1,5 @@
-Deploying Titan-Pulse (v02.1.32): 2026-03-14T00:42:00Z
-Speed King (128KB Pacing) + Buffer King (16MB Ceiling)
+Deploying TurboDrop v02.1.33 "Titan-Omni"
+- Build 2400
+- Screen Wake-Lock (Anti-Throttling)
+- Finalization Handshake (Fixed Missing Download Button)
+- Safe Chunk Indexing
