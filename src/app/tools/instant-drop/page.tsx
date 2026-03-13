@@ -11,13 +11,13 @@ import { Footer } from "@/components/layout/Footer";
 import { useUsage } from "@/hooks/useUsage";
 import { PaywallModal } from "@/components/layout/PaywallModal";
 
-// v02.1.21 Hyper-Piston (Optimized Flow)
-const VERSION = "v02.1.21";
-const CHANNELS = 24; // 24-Piston Core (Hyper-Piston)
-const CHUNK_SIZE = 64 * 1024; // 64KB optimized for 24 pistons
-const HIGH_WATER_MARK = 1 * 1024 * 1024; // Balanced pressure (1MB/channel)
-const PACER_THRESHOLD = 128 * 1024; // Yield every 128KB (approx 2 chunks)
-const MAX_IN_FLIGHT = 240; // Tuned for 24-channel flow (10 chunks/channel)
+// v02.1.22 SCTP-Lean (Efficiency Pivot)
+const VERSION = "v02.1.22";
+const CHANNELS = 8; // 8-Piston Core (Lean Efficiency)
+const CHUNK_SIZE = 64 * 1024; // 64KB optimized for throughput
+const HIGH_WATER_MARK = 1 * 1024 * 1024; // 1MB/channel
+const PACER_THRESHOLD = 64 * 1024; // Yield every chunk for maximum smoothness
+const MAX_IN_FLIGHT = 64; // Tuned for 8-channel lean flow
 const getBackendUrls = () => {
     let rawUrl = (process.env.NEXT_PUBLIC_API_URL || "").trim().replace(/\/$/, "");
     
@@ -569,9 +569,9 @@ function InstantDropContent() {
 
         logDebug(`Sender: ${VERSION} Start for ${file.name} (${numChunks} chunks)`);
         
-        // v02.1.17 Velocity-Piston: High-Parallel Lead-In (48 Chunks)
-        // Saturating all 24 pipes with real data immediately (6MB surge)
-        const leadInCount = Math.min(CHANNELS * 2, numChunks);
+        // v02.1.22 SCTP-Lean: Reduced Lead-In (16 Chunks)
+        // Saturating 8 pipes with 2 chunks each immediately (1MB total surge)
+        const leadInCount = Math.min(16, numChunks);
         for (let i = 0; i < leadInCount; i++) {
             if (!isActive.current) return;
             const dc = dataChannelsRef.current[i % CHANNELS];
@@ -1035,7 +1035,7 @@ function InstantDropContent() {
                         <Smartphone className="w-12 h-12 text-indigo-500" />
                     </div>
                     <h1 className="text-4xl md:text-5xl font-bold text-foreground mb-4">Turbo Drop</h1>
-                    <p className="text-xs text-muted-foreground font-medium tracking-widest uppercase mb-2">v02.1.21 Hyper-Piston (Build: 1105)</p>
+                    <p className="text-xs text-muted-foreground font-medium tracking-widest uppercase mb-2">v02.1.22 SCTP-Lean (Build: 1210)</p>
                     <p className="text-lg text-muted-foreground max-w-2xl mx-auto">
                         The ultimate high-speed file sharing app. Transfer photos and large files (up to 200MB) from desktop to mobile or mobile to mobile instantly.
                     </p>
@@ -1263,7 +1263,7 @@ function InstantDropContent() {
                                 <>
                                     <h2 className="text-2xl font-bold">Receiving File</h2>
                                     <p className="mt-2 text-indigo-600 dark:text-indigo-400 font-bold tracking-widest text-[10px] animate-pulse">
-                                        {VERSION} HYPER-PISTON (BUILD: 1105)
+                                        {VERSION} SCTP-LEAN (BUILD: 1210)
                                     </p>
 
                                     {status === 'connecting' && (
