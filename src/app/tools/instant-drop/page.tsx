@@ -223,7 +223,7 @@ function InstantDropContent() {
         setFiles(fileList);
         filesRef.current = fileList;
         setMode('send');
-        setStatus('connecting');
+        setStatus('waiting');
 
         const newRoomId = Math.floor(100000 + Math.random() * 900000).toString();
         setRoomId(newRoomId);
@@ -269,6 +269,7 @@ function InstantDropContent() {
                         logDebug("Peer joined, waiting for receiver-ready signal...");
                     } else if (data.type === 'receiver-ready') {
                         logDebug("Receiver is READY. Initializing WebRTC Offer...");
+                        setStatus('connecting');
                         setupWebRTC(ws, true).catch(err => {
                             logDebug(`❌ Unhandled Sender Setup Error: ${err.message || err}`);
                         });
