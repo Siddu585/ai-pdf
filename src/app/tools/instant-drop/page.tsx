@@ -11,14 +11,14 @@ import { Footer } from "@/components/layout/Footer";
 import { useUsage } from "@/hooks/useUsage";
 import { PaywallModal } from "@/components/layout/PaywallModal";
 
-// v02.1.37 Titan-Pulsar (Tachyon Pacing + Full-Duplex Binary Handshake)
-const VERSION = "v02.1.37";
+// v02.1.38 Titan-Quasar (Strict Global Quota + Heartbeat Handshake)
+const VERSION = "v02.1.38";
 const CHANNELS = 12;
 const CHUNK_SIZE = 124 * 1024;
-const HIGH_WATER_MARK_MAX = 1536 * 1024; // 1.5MB per channel
-const PACER_THRESHOLD = 1024 * 1024;
-const MAX_IN_FLIGHT = 512;
-const DRAIN_THRESHOLD = 20 * 1024 * 1024; 
+const HIGH_WATER_MARK_MAX = 1024 * 1024; // Lowered for Quasar Smoothness
+const PACER_THRESHOLD = 512 * 1024;
+const MAX_IN_FLIGHT = 256;
+const DRAIN_THRESHOLD = 8 * 1024 * 1024; // 8MB Strict Global Quota
 const getBackendUrls = () => {
     let rawUrl = (process.env.NEXT_PUBLIC_API_URL || "").trim().replace(/\/$/, "");
     
@@ -273,15 +273,21 @@ function InstantDropContent() {
                  logDebug("Receiver: Data fully reassembled. Verifying...");
                  setStatus('done');
                  
-                 // v02.1.36: Redundant Handshake (Binary + Signal)
-                 if (dataChannelsRef.current[0]?.readyState === 'open') {
-                     const ackPkt = new Uint8Array(8);
-                     const ackView = new DataView(ackPkt.buffer);
-                     ackView.setUint32(0, 0, true);
-                     ackView.setUint32(4, 0xFFFFFFFB, true); // Batch-ACK binary constant
-                     dataChannelsRef.current[0].send(ackPkt);
-                 }
-                 sendControlMsg({ type: 'batch-ack' }); 
+                 // v02.1.38: Heartbeat Handshake (Repeated Broadcast)
+                 const sendAck = () => {
+                     if (statusRef.current === 'done') {
+                         const ackPkt = new Uint8Array(12);
+                         const ackView = new DataView(ackPkt.buffer);
+                         ackView.setUint32(0, 0, true);
+                         ackView.setUint32(4, 0xFFFFFFFB, true); // Batch-ACK Pulsar
+                         dataChannelsRef.current.forEach(dc => {
+                             if (dc?.readyState === 'open') dc.send(ackPkt);
+                         });
+                         sendControlMsg({ type: 'batch-ack' });
+                         setTimeout(sendAck, 2000); 
+                     }
+                 };
+                 sendAck();
             }
         };
 
@@ -721,122 +727,84 @@ function InstantDropContent() {
     const transferFileP2PParallel = async (file: File, index: number) => {
         const buffer = await file.arrayBuffer();
         const numChunks = Math.ceil(buffer.byteLength / CHUNK_SIZE);
-        let offset = 0;
         let chunkIdx = 0;
-        let pacerAccumulator = 0;
 
-        logDebug(`Sender: ${VERSION} Start for ${file.name} (${numChunks} chunks)`);
+        logDebug(`Sender: ${VERSION} Quasar Start for ${file.name} (${numChunks} chunks)`);
         
-        // v02.1.27: 32-chunk Lead-In (4 chunks per pipe saturation)
-        const leadInCount = Math.min(32, numChunks);
-        for (let i = 0; i < leadInCount; i++) {
-            if (!isActive.current) return;
-            const dc = dataChannelsRef.current[i % CHANNELS];
-            if (dc?.readyState === 'open') {
-                const pieceIdx = Math.floor(offset / CHUNK_SIZE);
-                // v02.1.34: Zero-Copy View Construction
-                const chunkData = new Uint8Array(buffer, offset, Math.min(CHUNK_SIZE, buffer.byteLength - offset));
-                const packet = new Uint8Array(8 + chunkData.byteLength);
-                const view = new DataView(packet.buffer);
-                view.setUint32(0, index, true);
-                view.setUint32(4, pieceIdx, true);
-                packet.set(chunkData, 8);
-                try {
-                    dc.send(packet);
-                    offset += chunkData.byteLength;
-                    chunkIdx++;
-                    totalSentBytesRef.current += chunkData.byteLength;
-                } catch (e) {}
-            }
-        }
-        logDebug(`Sender: Lead-In Cluster (${leadInCount} chunks) launched.`);
-
-        while (offset < buffer.byteLength) {
+        // v02.1.38: Strict Global Quota - DELETED Lead-In Cluster (Zero-Discard entry)
+        while (chunkIdx < numChunks) {
             if (!isActive.current) return;
 
-            let sentThisLoop = false;
-            // v02.1.5: Greedy Sweep - Check all channels for capacity before yielding
-            for (let i = 0; i < CHANNELS; i++) {
-                const dcIdx = (chunkIdx + i) % CHANNELS;
+            const totalBuffered = dataChannelsRef.current.reduce(
+                (acc, c) => acc + (c?.readyState === 'open' ? c.bufferedAmount : 0), 0
+            );
+
+            if (totalBuffered < DRAIN_THRESHOLD) {
+                const dcIdx = chunkIdx % CHANNELS;
                 const dc = dataChannelsRef.current[dcIdx];
 
-                if (dc?.readyState === 'open' && dc.bufferedAmount < HIGH_WATER_MARK_MAX) {
-                    const pieceIdx = Math.floor(offset / CHUNK_SIZE);
-                    // v02.1.34: Zero-Copy View
+                if (dc?.readyState === 'open') {
+                    const offset = chunkIdx * CHUNK_SIZE;
                     const chunkData = new Uint8Array(buffer, offset, Math.min(CHUNK_SIZE, buffer.byteLength - offset));
-                    const packet = new Uint8Array(8 + chunkData.byteLength);
+                    
+                    // v02.1.38: 12-byte Rich Header (index, chunkIdx, totalChunks)
+                    const packet = new Uint8Array(12 + chunkData.byteLength);
                     const view = new DataView(packet.buffer);
                     view.setUint32(0, index, true);
-                    view.setUint32(4, pieceIdx, true);
-                    packet.set(chunkData, 8);
+                    view.setUint32(4, chunkIdx, true);
+                    view.setUint32(8, numChunks, true);
+                    packet.set(chunkData, 12);
 
                     try {
                         dc.send(packet);
-                        offset += chunkData.byteLength;
-                        chunkIdx = (dcIdx + 1) % CHANNELS; // Rotate starting channel
-                        pacerAccumulator += packet.byteLength;
-                        totalSentBytesRef.current += chunkData.byteLength;
-                        sentThisLoop = true;
+                        totalSentBytesRef.current += packet.byteLength;
+                        chunkIdx++;
 
-                        if (pacerAccumulator >= PACER_THRESHOLD) {
-                            pacerAccumulator = 0;
-                            await new Promise(r => setTimeout(r, 0)); // Yield
+                        if (chunkIdx % 20 === 0) {
+                            setProgress(Math.floor((chunkIdx / numChunks) * 100));
                         }
-                        
-                        if (pieceIdx % 100 === 0) {
-                            setProgress(Math.min(99, Math.round((offset / buffer.byteLength) * 100)));
-                        }
-                        break; // successfully sent a chunk, move to while() head for next chunk
                     } catch (e) {
-                         // Fall through to next channel sweep
+                        // Channel slammed, loop will retry
                     }
+                } else {
+                    // Channel closed, try next in rotation
+                    chunkIdx++;
                 }
-            }
-
-            if (!sentThisLoop) {
-                // All channels throttled - wait 5ms (Pulsed recovery)
-                await new Promise(r => setTimeout(r, 5));
+            } else {
+                // Throttle: v02.1.38 Pulse Pacing (Background Resilient)
+                if (Math.random() < 0.01) logDebug(`Sender: Quasar Wait... Buffer at ${Math.round(totalBuffered/1024/1024)}MB`);
+                await new Promise(res => {
+                    requestAnimationFrame(() => res(null)); // UI-friendly yield
+                    setTimeout(res, 5); // Background fallback
+                });
             }
         }
         
-        // Final Sync for progress
         setProgress(100);
 
-        // v02.1.37: 12-Channel Sector EOF Broadcast
+        // v02.1.38: Multi-Path EOF Broadcast
         const eofPacket = new Uint8Array(12);
         const eofView = new DataView(eofPacket.buffer);
         eofView.setUint32(0, index, true);
         eofView.setUint32(4, 0xFFFFFFFE, true); 
         eofView.setUint32(8, numChunks, true); 
         dataChannelsRef.current.forEach(dc => {
-            if (dc.readyState === 'open') dc.send(eofPacket);
+            if (dc?.readyState === 'open') dc.send(eofPacket);
+        });
+
+        // Pipeline Drain Wait
+        await new Promise<void>(resolve => {
+            const check = () => {
+                if (!isActive.current) return resolve();
+                const buffered = dataChannelsRef.current.reduce(
+                    (acc, c) => acc + (c?.readyState === 'open' ? c.bufferedAmount : 0), 0
+                );
+                if (buffered < 1024 * 1024) resolve(); // Flush to last 1MB
+                else setTimeout(check, 100);
+            };
+            check();
         });
         
-        await new Promise(res => setTimeout(res, 20)); // v02.1.6: Reduced from 50ms
-        
-        // v02.1.6: Drained-State Wait (Optimized for 8MB pipe)
-        const finishPipelining = async () => {
-            return new Promise<void>(resolve => {
-                const checkDrain = () => {
-                    if (!isActive.current) return resolve();
-                    const totalBuffered = dataChannelsRef.current.reduce(
-                        (acc, c) => acc + (c.readyState === 'open' ? c.bufferedAmount : 0), 0
-                    );
-                    
-                    // v02.1.37: Tachyon Pacer (1ms High-Freq Resolution)
-                    const dynamicBarrier = (totalBuffered > 16 * 1024 * 1024) ? DRAIN_THRESHOLD / 2 : DRAIN_THRESHOLD;
-
-                    if (totalBuffered < dynamicBarrier) { 
-                        resolve();
-                    } else {
-                        if (Math.random() < 0.1) logDebug(`Sender: Tachyon Wait... Buffer at ${Math.round(totalBuffered/1024/1024)}MB`);
-                        setTimeout(checkDrain, totalBuffered > 20000000 ? 5 : 1); 
-                    }
-                };
-                checkDrain();
-            });
-        };
-        await finishPipelining();
         logDebug(`Sender: Data pipelined for ${file.name}. Pipe Drained.`);
     };
 
@@ -1174,8 +1142,8 @@ function InstantDropContent() {
                         <Smartphone className="w-12 h-12 text-indigo-500" />
                     </div>
                     <h1 className="text-4xl md:text-5xl font-bold text-foreground mb-4">Turbo Drop</h1>
-                    <p className="text-xs text-muted-foreground font-medium tracking-widest uppercase mb-2">v02.1.37 
-Titan-Pulsar (Build: 2800)</p>
+                    <p className="text-xs text-muted-foreground font-medium tracking-widest uppercase mb-2">v02.1.38 
+Titan-Quasar (Build: 2900)</p>
                     <p className="text-lg text-muted-foreground max-w-2xl mx-auto">
                         The ultimate high-speed file sharing app. Transfer photos and large files (up to 200MB) from desktop to mobile or mobile to mobile instantly.
                     </p>
@@ -1409,7 +1377,7 @@ Titan-Pulsar (Build: 2800)</p>
                                 <>
                                     <h2 className="text-2xl font-bold">Receiving File</h2>
                                     <p className="mt-2 text-indigo-600 dark:text-indigo-400 font-bold tracking-widest text-[10px] animate-pulse">
-                                        {VERSION} TITAN-PULSAR (BUILD: 2800)
+                                        {VERSION} TITAN-QUASAR (BUILD: 2900)
                                     </p>
 
                                     {status === 'connecting' && (
