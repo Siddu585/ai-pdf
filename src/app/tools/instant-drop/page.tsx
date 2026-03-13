@@ -11,13 +11,13 @@ import { Footer } from "@/components/layout/Footer";
 import { useUsage } from "@/hooks/useUsage";
 import { PaywallModal } from "@/components/layout/PaywallModal";
 
-// v02.1.22 SCTP-Lean (Efficiency Pivot)
-const VERSION = "v02.1.22";
-const CHANNELS = 8; // 8-Piston Core (Lean Efficiency)
+// v02.1.23 SCTP-Pulse (Backpressure Flush)
+const VERSION = "v02.1.23";
+const CHANNELS = 8; // 8-Piston Core (Titanium Stability)
 const CHUNK_SIZE = 64 * 1024; // 64KB optimized for throughput
-const HIGH_WATER_MARK = 1 * 1024 * 1024; // 1MB/channel
+const HIGH_WATER_MARK = 128 * 1024; // 128KB (Critical: Prevents browser buffer saturation)
 const PACER_THRESHOLD = 64 * 1024; // Yield every chunk for maximum smoothness
-const MAX_IN_FLIGHT = 64; // Tuned for 8-channel lean flow
+const MAX_IN_FLIGHT = 128; // Increased for higher pulse throughput
 const getBackendUrls = () => {
     let rawUrl = (process.env.NEXT_PUBLIC_API_URL || "").trim().replace(/\/$/, "");
     
@@ -1035,7 +1035,7 @@ function InstantDropContent() {
                         <Smartphone className="w-12 h-12 text-indigo-500" />
                     </div>
                     <h1 className="text-4xl md:text-5xl font-bold text-foreground mb-4">Turbo Drop</h1>
-                    <p className="text-xs text-muted-foreground font-medium tracking-widest uppercase mb-2">v02.1.22 SCTP-Lean (Build: 1210)</p>
+                    <p className="text-xs text-muted-foreground font-medium tracking-widest uppercase mb-2">v02.1.23 SCTP-Pulse (Build: 1300)</p>
                     <p className="text-lg text-muted-foreground max-w-2xl mx-auto">
                         The ultimate high-speed file sharing app. Transfer photos and large files (up to 200MB) from desktop to mobile or mobile to mobile instantly.
                     </p>
@@ -1263,7 +1263,7 @@ function InstantDropContent() {
                                 <>
                                     <h2 className="text-2xl font-bold">Receiving File</h2>
                                     <p className="mt-2 text-indigo-600 dark:text-indigo-400 font-bold tracking-widest text-[10px] animate-pulse">
-                                        {VERSION} SCTP-LEAN (BUILD: 1210)
+                                        {VERSION} SCTP-PULSE (BUILD: 1300)
                                     </p>
 
                                     {status === 'connecting' && (
