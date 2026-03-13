@@ -11,14 +11,14 @@ import { Footer } from "@/components/layout/Footer";
 import { useUsage } from "@/hooks/useUsage";
 import { PaywallModal } from "@/components/layout/PaywallModal";
 
-// v02.1.36 Titan-Nova (Elastic Window + 12-byte Rich Signaling)
-const VERSION = "v02.1.36";
-const CHANNELS = 12; // 12-Piston Core
-const CHUNK_SIZE = 124 * 1024; // 124KB (Reserved for 12-byte header/payload)
-const HIGH_WATER_MARK_MAX = 1536 * 1024; // 1.5MB per channel (18MB total)
-const PACER_THRESHOLD = 1024 * 1024; // 1MB Blocks
+// v02.1.37 Titan-Pulsar (Tachyon Pacing + Full-Duplex Binary Handshake)
+const VERSION = "v02.1.37";
+const CHANNELS = 12;
+const CHUNK_SIZE = 124 * 1024;
+const HIGH_WATER_MARK_MAX = 1536 * 1024; // 1.5MB per channel
+const PACER_THRESHOLD = 1024 * 1024;
 const MAX_IN_FLIGHT = 512;
-const DRAIN_THRESHOLD = 20 * 1024 * 1024; // 20MB Sync
+const DRAIN_THRESHOLD = 20 * 1024 * 1024; 
 const getBackendUrls = () => {
     let rawUrl = (process.env.NEXT_PUBLIC_API_URL || "").trim().replace(/\/$/, "");
     
@@ -600,6 +600,16 @@ function InstantDropContent() {
             if (modeRef.current === 'receive') {
                 handleIncomingData(e.data, channelIdx);
             } else {
+                // v02.1.37: Binary-Speed Handshake
+                if (e.data instanceof ArrayBuffer && e.data.byteLength >= 8) {
+                    const view = new DataView(e.data);
+                    const chunkIdx = view.getUint32(4, true);
+                    if (chunkIdx === 0xFFFFFFFB) { // Batch-ACK Pulsar
+                        logDebug("Sender: Tachyon Handshake received! Closing loop.");
+                        setStatus('done');
+                        return;
+                    }
+                }
                 try {
                     if (typeof e.data === 'string') {
                         const msg = JSON.parse(e.data);
@@ -672,13 +682,15 @@ function InstantDropContent() {
             await transferFileP2PParallel(currentFiles[i], i);
         }
         
-        // v02.1.36 Payload-Rich Binary Signaling: Carry counts
+        // v02.1.37: 12-Channel EOF Broadcast (Redundancy)
         const batchEofPkt = new Uint8Array(12);
         const batchView = new DataView(batchEofPkt.buffer);
         batchView.setUint32(0, 0, true);
         batchView.setUint32(4, 0xFFFFFFFD, true);
-        batchView.setUint32(8, currentFiles.length, true); // Payload: Total Files
-        dataChannelsRef.current[0].send(batchEofPkt);
+        batchView.setUint32(8, currentFiles.length, true);
+        dataChannelsRef.current.forEach(dc => {
+            if (dc.readyState === 'open') dc.send(batchEofPkt);
+        });
         
         // v02.1.33 Finalization Handshake: Wait for receiver to confirm local save
         logDebug("Sender: Batch sent. Awaiting receiver verification...");
@@ -790,13 +802,15 @@ function InstantDropContent() {
         // Final Sync for progress
         setProgress(100);
 
-        // v02.1.36: 12-byte Rich EOF
+        // v02.1.37: 12-Channel Sector EOF Broadcast
         const eofPacket = new Uint8Array(12);
         const eofView = new DataView(eofPacket.buffer);
         eofView.setUint32(0, index, true);
         eofView.setUint32(4, 0xFFFFFFFE, true); 
-        eofView.setUint32(8, numChunks, true); // Payload: Total Chunks
-        dataChannelsRef.current[0].send(eofPacket);
+        eofView.setUint32(8, numChunks, true); 
+        dataChannelsRef.current.forEach(dc => {
+            if (dc.readyState === 'open') dc.send(eofPacket);
+        });
         
         await new Promise(res => setTimeout(res, 20)); // v02.1.6: Reduced from 50ms
         
@@ -809,15 +823,14 @@ function InstantDropContent() {
                         (acc, c) => acc + (c.readyState === 'open' ? c.bufferedAmount : 0), 0
                     );
                     
-                    // v02.1.36: Elastic Window (Congestion Avoidance)
-                    // If buffer is slammed (>16MB), we wait for it to clear much more before pushing next file
+                    // v02.1.37: Tachyon Pacer (1ms High-Freq Resolution)
                     const dynamicBarrier = (totalBuffered > 16 * 1024 * 1024) ? DRAIN_THRESHOLD / 2 : DRAIN_THRESHOLD;
 
                     if (totalBuffered < dynamicBarrier) { 
                         resolve();
                     } else {
-                        if (Math.random() < 0.1) logDebug(`Sender: Elastic Wait... Buffer at ${Math.round(totalBuffered/1024/1024)}MB`);
-                        setTimeout(checkDrain, totalBuffered > 20000000 ? 50 : 20); 
+                        if (Math.random() < 0.1) logDebug(`Sender: Tachyon Wait... Buffer at ${Math.round(totalBuffered/1024/1024)}MB`);
+                        setTimeout(checkDrain, totalBuffered > 20000000 ? 5 : 1); 
                     }
                 };
                 checkDrain();
@@ -1161,8 +1174,8 @@ function InstantDropContent() {
                         <Smartphone className="w-12 h-12 text-indigo-500" />
                     </div>
                     <h1 className="text-4xl md:text-5xl font-bold text-foreground mb-4">Turbo Drop</h1>
-                    <p className="text-xs text-muted-foreground font-medium tracking-widest uppercase mb-2">v02.1.36 
-Titan-Nova (Build: 2700)</p>
+                    <p className="text-xs text-muted-foreground font-medium tracking-widest uppercase mb-2">v02.1.37 
+Titan-Pulsar (Build: 2800)</p>
                     <p className="text-lg text-muted-foreground max-w-2xl mx-auto">
                         The ultimate high-speed file sharing app. Transfer photos and large files (up to 200MB) from desktop to mobile or mobile to mobile instantly.
                     </p>
@@ -1396,7 +1409,7 @@ Titan-Nova (Build: 2700)</p>
                                 <>
                                     <h2 className="text-2xl font-bold">Receiving File</h2>
                                     <p className="mt-2 text-indigo-600 dark:text-indigo-400 font-bold tracking-widest text-[10px] animate-pulse">
-                                        {VERSION} TITAN-NOVA (BUILD: 2700)
+                                        {VERSION} TITAN-PULSAR (BUILD: 2800)
                                     </p>
 
                                     {status === 'connecting' && (
