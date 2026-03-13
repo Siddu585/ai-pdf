@@ -11,13 +11,13 @@ import { Footer } from "@/components/layout/Footer";
 import { useUsage } from "@/hooks/useUsage";
 import { PaywallModal } from "@/components/layout/PaywallModal";
 
-// v02.1.26 Precision-Pulse (Baseline Restoration)
-const VERSION = "v02.1.26";
-const CHANNELS = 8; // Reverted to 8-Piston Core (Titanium Stability)
-const CHUNK_SIZE = 64 * 1024; // 64KB (The Stability Champion)
-const HIGH_WATER_MARK = 128 * 1024; // 128KB (Minimizes backpressure)
-const PACER_THRESHOLD = 64 * 1024; // Yield every chunk
-const MAX_IN_FLIGHT = 128; // Restored pulse depth
+// v02.1.27 Titanium-Flow (Predictive Pacing)
+const VERSION = "v02.1.27";
+const CHANNELS = 8; // 8-Piston Core (Stability Anchor)
+const CHUNK_SIZE = 64 * 1024; // 64KB (Optimal ACK granularity)
+const HIGH_WATER_MARK = 256 * 1024; // 256KB (Increased for in-flight volume)
+const PACER_THRESHOLD = 256 * 1024; // Yield every 4 chunks (Reduce event loop lag)
+const MAX_IN_FLIGHT = 256; // 16MB potential window
 const getBackendUrls = () => {
     let rawUrl = (process.env.NEXT_PUBLIC_API_URL || "").trim().replace(/\/$/, "");
     
@@ -569,8 +569,8 @@ function InstantDropContent() {
 
         logDebug(`Sender: ${VERSION} Start for ${file.name} (${numChunks} chunks)`);
         
-        // v02.1.26: Restored Lead-In (16 Chunks)
-        const leadInCount = Math.min(16, numChunks);
+        // v02.1.27: 32-chunk Lead-In (4 chunks per pipe saturation)
+        const leadInCount = Math.min(32, numChunks);
         for (let i = 0; i < leadInCount; i++) {
             if (!isActive.current) return;
             const dc = dataChannelsRef.current[i % CHANNELS];
@@ -660,8 +660,8 @@ function InstantDropContent() {
                     const totalBuffered = dataChannelsRef.current.reduce(
                         (acc, c) => acc + (c.readyState === 'open' ? c.bufferedAmount : 0), 0
                     );
-                    // v02.1.9: Zero-Wait Transition (256KB) for near-instant switching
-                    if (totalBuffered < 256 * 1024) { 
+                    // v02.1.27: Predictive Transition (1MB) - Start next file while pipe is 50% full
+                    if (totalBuffered < 1024 * 1024) { 
                         resolve();
                     } else {
                         if (Math.random() < 0.1) logDebug(`Sender: Transition Waiting... Buffer at ${Math.round(totalBuffered/1024/1024)}MB`);
@@ -1034,7 +1034,7 @@ function InstantDropContent() {
                         <Smartphone className="w-12 h-12 text-indigo-500" />
                     </div>
                     <h1 className="text-4xl md:text-5xl font-bold text-foreground mb-4">Turbo Drop</h1>
-                    <p className="text-xs text-muted-foreground font-medium tracking-widest uppercase mb-2">v02.1.26 Precision-Pulse (Build: 1600)</p>
+                    <p className="text-xs text-muted-foreground font-medium tracking-widest uppercase mb-2">v02.1.27 Titanium-Flow (Build: 1700)</p>
                     <p className="text-lg text-muted-foreground max-w-2xl mx-auto">
                         The ultimate high-speed file sharing app. Transfer photos and large files (up to 200MB) from desktop to mobile or mobile to mobile instantly.
                     </p>
@@ -1262,7 +1262,7 @@ function InstantDropContent() {
                                 <>
                                     <h2 className="text-2xl font-bold">Receiving File</h2>
                                     <p className="mt-2 text-indigo-600 dark:text-indigo-400 font-bold tracking-widest text-[10px] animate-pulse">
-                                        {VERSION} PRECISION-PULSE (BUILD: 1600)
+                                        {VERSION} TITANIUM-FLOW (BUILD: 1700)
                                     </p>
 
                                     {status === 'connecting' && (
