@@ -1,6 +1,5 @@
-Deploying TurboDrop v02.1.39 "Titan-Singularity"
+Deploying TurboDrop v02.1.39 "Titan-Singularity" (Patch 1)
+- FIX: Critical Data Discard bug (Zero-Loss Pipeline)
+- FIX: Parallel Setup race condition (DataChannel Stability)
 - Breakthrough: Sustaining 5MB/s+ throughput
-- Architecture: Triple-Pipe Multiplexing (3x Parallel WebRTC)
-- Jumbo Chunks: 256KB block size for reduced overhead
 - Active Singularity Probe: Guaranteed handshake resolution
-- Global Quota: Increased to 16MB for high-velocity streams

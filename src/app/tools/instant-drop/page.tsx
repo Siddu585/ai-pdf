@@ -450,9 +450,10 @@ function InstantDropContent() {
             iceBuffersRef.current[pipeIdx] = [];
 
             // v02.1.39: Parallel Signaling reset
-            if (pipeIdx === 0) {
+            // v02.1.39 (Patch 1): Parallel Signaling reset - Only clear if this is the start of a fresh session
+            if (pipeIdx === 0 && !isActive.current) {
                 dataChannelsRef.current = [];
-                isActive.current = false;
+                capturedLogsRef.current = [];
                 channelFileIndex.current = new Array(CHANNELS).fill(0);
                 fileBuffers.current.clear();
                 expectedTotalChunks.current.clear();
@@ -730,8 +731,8 @@ function InstantDropContent() {
                         // Channel slammed, loop will retry
                     }
                 } else {
-                    // Channel closed, try next in rotation
-                    chunkIdx++;
+                    // v02.1.39 (Patch 1): DO NOT increment chunkIdx if channel is closed.
+                    // Wait for reconnect or next rotation.
                 }
             } else {
                 // Throttle: v02.1.38 Pulse Pacing (Background Resilient)
