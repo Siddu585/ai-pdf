@@ -12,7 +12,7 @@ import { useUsage } from "@/hooks/useUsage";
 import { PaywallModal } from "@/components/layout/PaywallModal";
 
 // v02.1.39 Titan-Singularity (Triple-Pipe Multiplexing + Jumbo Chunks)
-const VERSION = "v02.1.39 (Patch 2)";
+const VERSION = "v02.1.39 (Patch 3)";
 const PIPES = 3; 
 const CHANNELS = 12;
 const CHANNELS_PER_PIPE = 4;
@@ -617,10 +617,13 @@ function InstantDropContent() {
         };
         dc.onclose = () => {
             console.log("DataChannel Closed");
-            if (statusRef.current !== 'done') {
+            // v02.1.39 (Patch 3): Do NOT set isActive=false on channel close.
+            // A mid-batch channel close (e.g. pipe ICE restart) was killing
+            // the for-loop after the first file, preventing remaining files from sending.
+            // isActive is only set false at the end of startFileTransfer().
+            if (statusRef.current !== 'done' && statusRef.current !== 'done-waiting' && statusRef.current !== 'transferring') {
                 setStatus('disconnected');
             }
-            isActive.current = false;
             // Stop speed timer
             if (speedTimerRef.current) { clearInterval(speedTimerRef.current); speedTimerRef.current = null; }
             setTransferSpeed(null);
@@ -674,11 +677,12 @@ function InstantDropContent() {
                 }
             };
             window.addEventListener('webrtc-sender-msg', handler);
-            // v02.1.34: Increased to 10s for large batches
+            // v02.1.39 (Patch 3): Extended to 5 min — never show 'done' before receiver ACKs
             setTimeout(() => {
                 window.removeEventListener('webrtc-sender-msg', handler);
+                logDebug('Sender: ACK timeout (5min). Forcing done state.');
                 resolve();
-            }, 10000);
+            }, 5 * 60 * 1000);
         });
 
         // symmetry-pacing trigger: Send one final pulse
@@ -763,10 +767,11 @@ function InstantDropContent() {
         probeView.setUint32(4, 0xFFFFFFF9, true); // Active Singularity Probe
         probeView.setUint32(8, numChunks, true);
 
+        // v02.1.39 (Patch 3): Send ONLY the sector-EOF. Probe removed — it caused premature
+        // 'Verifying Reassembly' on the receiver before data arrived (race condition).
         dataChannelsRef.current.forEach(dc => {
             if (dc?.readyState === 'open') {
                 dc.send(eofPacket);
-                dc.send(probePacket);
             }
         });
 
@@ -1130,7 +1135,7 @@ function InstantDropContent() {
                         <Smartphone className="w-12 h-12 text-indigo-500" />
                     </div>
                     <h1 className="text-4xl md:text-5xl font-bold text-foreground mb-4">Turbo Drop</h1>
-                    <p className="text-xs text-indigo-600 font-black tracking-[0.2em] uppercase mb-2">v02.1.39 (Patch 2) 
+                    <p className="text-xs text-indigo-600 font-black tracking-[0.2em] uppercase mb-2">v02.1.39 (Patch 3) 
 Titan-Singularity (Sustain: 5MB/s+)</p>
                     <p className="text-lg text-muted-foreground max-w-2xl mx-auto">
                         The ultimate high-speed file sharing app. Transfer photos and large files (up to 200MB) from desktop to mobile or mobile to mobile instantly.
