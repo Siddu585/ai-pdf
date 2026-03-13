@@ -1,2 +1,2 @@
-Deploying Hydra-Unchained: 2026-03-14T00:30:00Z
-Forced 16MB Ceiling + 512KB Pacing (Build: 2200)
+Deploying Titan-Pulse (v02.1.32): 2026-03-14T00:42:00Z
+Speed King (128KB Pacing) + Buffer King (16MB Ceiling)
