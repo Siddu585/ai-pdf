@@ -11,12 +11,12 @@ import { Footer } from "@/components/layout/Footer";
 import { useUsage } from "@/hooks/useUsage";
 import { PaywallModal } from "@/components/layout/PaywallModal";
 
-// v02.1.29 Hydra-Storm (12-Channel Scaling + 128KB Chunks)
-const VERSION = "v02.1.29";
-const CHANNELS = 12; // 12-Piston Core (Expanded Scaling)
-const CHUNK_SIZE = 128 * 1024; // 128KB (Increased volume per packet)
-const HIGH_WATER_MARK = 1024 * 1024; // 1MB per channel (12MB total reservoir)
-const PACER_THRESHOLD = 512 * 1024; // Yield every 4 chunks (Smooth flow)
+// v02.1.30 Hydra-Burst (16MB Ceiling + High-Frequency Pacing)
+const VERSION = "v02.1.30";
+const CHANNELS = 12; // 12-Piston Core (Scaling Champion)
+const CHUNK_SIZE = 128 * 1024; // 128KB (High Volume)
+const HIGH_WATER_MARK = 1024 * 1024; // 1MB per channel (12MB total active)
+const PACER_THRESHOLD = 128 * 1024; // Yield every chunk (Ultra-smooth frequency)
 const MAX_IN_FLIGHT = 512; // 64MB potential window
 const getBackendUrls = () => {
     let rawUrl = (process.env.NEXT_PUBLIC_API_URL || "").trim().replace(/\/$/, "");
@@ -199,8 +199,8 @@ function InstantDropContent() {
     const fileInputRef = useRef<HTMLInputElement>(null);
     const roomRef = useRef<string | null>(null);
     const heartbeatIntervalRef = useRef<any>(null); // v02.0.0: NAT Heartbeat
-    const workerRef = useRef<Worker | null>(null); // v02.1.29 Hydra-Storm Worker
-    // v02.1.29: Inline Hydra Worker Script (Zero-Copy Reassembly)
+    const workerRef = useRef<Worker | null>(null); // v02.1.30 Hydra-Burst Worker
+    // v02.1.30: Inline Hydra Worker Script (Zero-Copy Reassembly)
     useEffect(() => {
         const workerScript = `
             let fileBuffers = new Map();
@@ -534,7 +534,7 @@ function InstantDropContent() {
                     // Start speed timer
                     lastBytesRef.current = 0;
                     if (speedTimerRef.current) clearInterval(speedTimerRef.current);
-                    // v02.1.29: Performance Monitor (5s Interval)
+                    // v02.1.30: Performance Monitor (5s Interval)
                     let prevBytes = 0;
                     setInterval(() => {
                         const currentTotal = totalSentBytesRef.current + totalReceivedBytesRef.current;
@@ -728,8 +728,8 @@ function InstantDropContent() {
                     const totalBuffered = dataChannelsRef.current.reduce(
                         (acc, c) => acc + (c.readyState === 'open' ? c.bufferedAmount : 0), 0
                     );
-                    // v02.1.29: Aggressive Transition (8MB) - No waiting unless buffer is absolutely full
-                    if (totalBuffered < 8 * 1024 * 1024) { 
+                    // v02.1.30: High-Capacity Transition (16MB) - Allowing deeper bursts
+                    if (totalBuffered < 16 * 1024 * 1024) { 
                         resolve();
                     } else {
                         if (Math.random() < 0.1) logDebug(`Sender: Transition Waiting... Buffer at ${Math.round(totalBuffered/1024/1024)}MB`);
@@ -1055,7 +1055,8 @@ function InstantDropContent() {
                         <Smartphone className="w-12 h-12 text-indigo-500" />
                     </div>
                     <h1 className="text-4xl md:text-5xl font-bold text-foreground mb-4">Turbo Drop</h1>
-                    <p className="text-xs text-muted-foreground font-medium tracking-widest uppercase mb-2">v02.1.29 Hydra-Storm (Build: 2000)</p>
+                    <p className="text-xs text-muted-foreground font-medium tracking-widest uppercase mb-2">v02.1.30 
+Hydra-Burst (Build: 2100)</p>
                     <p className="text-lg text-muted-foreground max-w-2xl mx-auto">
                         The ultimate high-speed file sharing app. Transfer photos and large files (up to 200MB) from desktop to mobile or mobile to mobile instantly.
                     </p>
@@ -1283,7 +1284,7 @@ function InstantDropContent() {
                                 <>
                                     <h2 className="text-2xl font-bold">Receiving File</h2>
                                     <p className="mt-2 text-indigo-600 dark:text-indigo-400 font-bold tracking-widest text-[10px] animate-pulse">
-                                        {VERSION} HYDRA-STORM (BUILD: 2000)
+                                        {VERSION} HYDRA-BURST (BUILD: 2100)
                                     </p>
 
                                     {status === 'connecting' && (
