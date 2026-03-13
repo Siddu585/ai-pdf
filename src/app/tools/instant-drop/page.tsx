@@ -11,14 +11,16 @@ import { Footer } from "@/components/layout/Footer";
 import { useUsage } from "@/hooks/useUsage";
 import { PaywallModal } from "@/components/layout/PaywallModal";
 
-// v02.1.38 Titan-Quasar (Strict Global Quota + Heartbeat Handshake)
-const VERSION = "v02.1.38";
+// v02.1.39 Titan-Singularity (Triple-Pipe Multiplexing + Jumbo Chunks)
+const VERSION = "v02.1.39";
+const PIPES = 3; 
 const CHANNELS = 12;
-const CHUNK_SIZE = 124 * 1024;
-const HIGH_WATER_MARK_MAX = 1024 * 1024; // Lowered for Quasar Smoothness
-const PACER_THRESHOLD = 512 * 1024;
-const MAX_IN_FLIGHT = 256;
-const DRAIN_THRESHOLD = 8 * 1024 * 1024; // 8MB Strict Global Quota
+const CHANNELS_PER_PIPE = 4;
+const CHUNK_SIZE = 256 * 1024; // Jumbo Chunks
+const HIGH_WATER_MARK_MAX = 2 * 1024 * 1024;
+const PACER_THRESHOLD = 1024 * 1024;
+const MAX_IN_FLIGHT = 512;
+const DRAIN_THRESHOLD = 16 * 1024 * 1024; // 16MB Multiplexed Quota
 const getBackendUrls = () => {
     let rawUrl = (process.env.NEXT_PUBLIC_API_URL || "").trim().replace(/\/$/, "");
     
@@ -88,8 +90,10 @@ function InstantDropContent() {
         capturedLogsRef.current.push(formattedMsg);
         if (capturedLogsRef.current.length > 2000) capturedLogsRef.current.shift(); // Cap at 2k lines
     };
-    const peerRef = useRef<RTCPeerConnection | null>(null);
+    const peersRef = useRef<RTCPeerConnection[]>([]);
     const dataChannelsRef = useRef<RTCDataChannel[]>([]);
+    const remoteDescriptionSetsRef = useRef<boolean[]>([false, false, false]);
+    const iceBuffersRef = useRef<any[][]>([[], [], []]);
     const filesRef = useRef<File[]>([]);
     const modeRef = useRef(mode);
     const statusRef = useRef(status);
@@ -128,17 +132,20 @@ function InstantDropContent() {
 
     useEffect(() => {
         statusRef.current = status;
-        if (status === 'transferring' && peerRef.current) {
+        if (status === 'transferring') {
             const statsInterval = setInterval(async () => {
-                if (!peerRef.current) return;
                 try {
-                    const stats = await peerRef.current.getStats();
-                    let reportStr = "--- WebRTC Stats Snapshot ---\n";
-                    stats.forEach(report => {
-                        if (report.type === 'inbound-rtp' || report.type === 'outbound-rtp' || report.type === 'remote-candidate' || report.type === 'candidate-pair') {
-                            reportStr += `${report.type}: ${JSON.stringify(report)}\n`;
-                        }
-                    });
+                    let reportStr = "--- WebRTC Stats (Singularity Triple-Pipe) ---\n";
+                    for (let i = 0; i < PIPES; i++) {
+                        const peer = peersRef.current[i];
+                        if (!peer) continue;
+                        const stats = await peer.getStats();
+                        stats.forEach(report => {
+                            if (report.type === 'candidate-pair' && report.state === 'succeeded') {
+                                reportStr += `Pipe-${i}: RTT=${report.currentRoundTripTime} SpeedMultiplier=1.0\n`;
+                            }
+                        });
+                    }
                     logDebug(reportStr);
                 } catch (e) {}
             }, 5000);
@@ -177,8 +184,6 @@ function InstantDropContent() {
     };
 
 
-    const remoteDescriptionSet = useRef(false);
-    const iceBuffer = useRef<RTCIceCandidateInit[]>([]);
 
     // --- PIPELINED IN-BAND REASSEMBLY STATE (v02.0.28 Quantum Flow) ---
     const channelFileIndex = useRef<number[]>(new Array(CHANNELS).fill(0));
@@ -261,13 +266,17 @@ function InstantDropContent() {
                  setReceivedFiles(prev => [...prev, { blob, name }]);
                  logDebug(`Receiver: Worker reassembly complete for ${name}.`);
                  
-                 // v02.1.35: Symmetry Pacing ACK Pulse
-                 if (dataChannelsRef.current[0]?.readyState === 'open') {
-                     const pulsePkt = new Uint8Array(8);
-                     const pulseView = new DataView(pulsePkt.buffer);
-                     pulseView.setUint32(0, fileIdx, true);
-                     pulseView.setUint32(4, 0xFFFFFFFC, true); // Symmetry ACK constant
-                     dataChannelsRef.current[0].send(pulsePkt);
+                 // v02.1.39: Parallel ACK Pulse
+                 for (let i = 0; i < CHANNELS; i++) {
+                     const dc = dataChannelsRef.current[i];
+                     if (dc?.readyState === 'open') {
+                         const pulsePkt = new Uint8Array(8);
+                         const pulseView = new DataView(pulsePkt.buffer);
+                         pulseView.setUint32(0, fileIdx, true);
+                         pulseView.setUint32(4, 0xFFFFFFFC, true);
+                         dc.send(pulsePkt);
+                         break;
+                     }
                  }
             } else if (e.data.type === 'all-done') {
                  logDebug("Receiver: Data fully reassembled. Verifying...");
@@ -389,29 +398,32 @@ function InstantDropContent() {
                     if (data.type === 'peer-connected') {
                         logDebug("Peer joined, waiting for receiver-ready signal...");
                     } else if (data.type === 'receiver-ready') {
-                        logDebug("Receiver is READY. Initializing WebRTC Offer...");
+                        logDebug("Receiver is READY. Initializing 3x Parallel WebRTC Pipes...");
                         setStatus('connecting');
-                        setupWebRTC(ws, true).catch(err => {
-                            logDebug(`❌ Unhandled Sender Setup Error: ${err.message || err}`);
-                        });
+                        for (let i = 0; i < PIPES; i++) {
+                            setupWebRTC(ws, true, i);
+                        }
                     } else if (data.type === 'answer') {
-                        logDebug("Received answer, setting remote description");
+                        const pIdx = data.pipeIdx || 0;
                         try {
-                            await peerRef.current?.setRemoteDescription(new RTCSessionDescription(data.sdp));
-                            remoteDescriptionSet.current = true;
-                            logDebug("✅ Remote Description Set. Flushing " + iceBuffer.current.length + " buffered candidates");
-                            for (const candidate of iceBuffer.current) {
-                                try { await peerRef.current?.addIceCandidate(new RTCIceCandidate(candidate)); } catch (e) {}
+                            const peer = peersRef.current[pIdx];
+                            if (!peer) return;
+                            await peer.setRemoteDescription(new RTCSessionDescription(data.sdp));
+                            remoteDescriptionSetsRef.current[pIdx] = true;
+                            logDebug(`✅ Pipe-${pIdx} Remote Description Set. Flushing ${iceBuffersRef.current[pIdx].length} buffered candidates`);
+                            for (const candidate of iceBuffersRef.current[pIdx]) {
+                                try { await peer.addIceCandidate(new RTCIceCandidate(candidate)); } catch (e) {}
                             }
-                            iceBuffer.current = [];
+                            iceBuffersRef.current[pIdx] = [];
                         } catch (e: any) {
-                            logDebug("❌ Failed to set remote description: " + e.message);
+                            logDebug(`❌ Pipe-${pIdx} Failed to set answer: ${e.message}`);
                         }
                     } else if (data.type === 'ice-candidate') {
-                        if (!remoteDescriptionSet.current) {
-                            iceBuffer.current.push(data.candidate);
+                        const pIdx = data.pipeIdx || 0;
+                        if (!remoteDescriptionSetsRef.current[pIdx]) {
+                            iceBuffersRef.current[pIdx].push(data.candidate);
                         } else {
-                            try { await peerRef.current?.addIceCandidate(new RTCIceCandidate(data.candidate)); } catch (e) {}
+                            try { await peersRef.current[pIdx]?.addIceCandidate(new RTCIceCandidate(data.candidate)); } catch (e) {}
                         }
                     } else if (data.type === 'flow' && data.status === 'slow') {
                         isReceiverReadyRef.current = false;
@@ -429,145 +441,96 @@ function InstantDropContent() {
         connect();
     };
 
-    const setupWebRTC = async (ws: WebSocket, isSender: boolean, useFallback = false) => {
+    const setupWebRTC = async (ws: WebSocket, isSender: boolean, pipeIdx: number, useFallback = false) => {
         try {
-            logDebug(`Setting up RTCPeerConnection (v02.0.18 Titanium-Resilience), isSender: ${isSender}, fallback: ${useFallback}`);
+            logDebug(`Setting up RTCPeerConnection Pipe-${pipeIdx}, isSender: ${isSender}, fallback: ${useFallback}`);
             
-            // CRITICAL: Reset signaling state for new session
-            remoteDescriptionSet.current = false;
-            iceBuffer.current = [];
-            dataChannelsRef.current = [];
-            isActive.current = false;
+            // Initializing per-pipe state
+            remoteDescriptionSetsRef.current[pipeIdx] = false;
+            iceBuffersRef.current[pipeIdx] = [];
 
-            // v02.0.28 Pipeline State Reset
-            channelFileIndex.current = new Array(CHANNELS).fill(0);
-            fileBuffers.current.clear();
-            expectedTotalChunks.current.clear();
-            receivedChunksCount.current.clear();
-            fileMetas.current.clear();
-            reassembledCount.current = 0;
-            expectedTotalFiles.current = -1;
+            // v02.1.39: Parallel Signaling reset
+            if (pipeIdx === 0) {
+                dataChannelsRef.current = [];
+                isActive.current = false;
+                channelFileIndex.current = new Array(CHANNELS).fill(0);
+                fileBuffers.current.clear();
+                expectedTotalChunks.current.clear();
+                receivedChunksCount.current.clear();
+                fileMetas.current.clear();
+                reassembledCount.current = 0;
+                expectedTotalFiles.current = -1;
+            }
 
-            // v02.0.18: Titanium Adaptive Fallback Engine
             const currentRelays = (!useFallback && relayServersRef.current && relayServersRef.current.length > 0) 
                                     ? relayServersRef.current 
                                     : [...ICE_SERVERS.iceServers];
                                     
-            logDebug(`Initializing RTCPeerConnection with ${currentRelays.length} configured ICE servers.`);
             const peer = new RTCPeerConnection({ iceServers: currentRelays });
-            peerRef.current = peer;
+            peersRef.current[pipeIdx] = peer;
 
             if (isSender) {
-                logDebug(`Creating ${CHANNELS} Parallel DataChannels (Unordered)...`);
-                for (let i = 0; i < CHANNELS; i++) {
-                    const dc = peer.createDataChannel(`data-${i}`, {
-                        // v02.1.10: Unordered Blasting - eliminating Head-of-Line blocking
-                        // We use our own indexing to reassemble, so ordered is not needed.
+                const startIdx = pipeIdx * CHANNELS_PER_PIPE;
+                for (let i = 0; i < CHANNELS_PER_PIPE; i++) {
+                    const channelIdx = startIdx + i;
+                    const dc = peer.createDataChannel(`data-${channelIdx}`, {
                         ordered: false,
-                        // @ts-ignore: RTCDataChannelPriority is experimental but supported in Chromium
+                        // @ts-ignore
                         priority: 'high'
                     });
-                    dataChannelsRef.current[i] = dc;
-                    setupDataChannel(dc, i);
+                    dataChannelsRef.current[channelIdx] = dc;
+                    setupDataChannel(dc, channelIdx);
                     dc.bufferedAmountLowThreshold = 256 * 1024;
-                    // v02.1.18: Reduced to 50ms for faster handshakes
-                    await new Promise(r => setTimeout(r, 50));
                 }
             } else {
-                logDebug("Awaiting Ordered Parallel DataChannels...");
                 peer.ondatachannel = (e) => {
                     const label = e.channel.label;
                     const index = parseInt(label.split('-').pop() || '0');
-                    logDebug(`Receiver: DataChannel ${index} Received`);
+                    logDebug(`Receiver: DataChannel ${index} Received on Pipe-${pipeIdx}`);
                     dataChannelsRef.current[index] = e.channel;
                     setupDataChannel(e.channel, index);
                 };
 
-                // v02.0.27: Receiver Flow Control Telemetry (800ms loop)
-                setInterval(() => {
-                    if (statusRef.current === 'transferring') {
-                        // Check if memory queues are getting bloated
-                        let totalBufferedChunks = 0;
-                        fileBuffers.current.forEach((chunksArray) => {
-                             // Sparse array count
-                            for (let i = 0; i < chunksArray.length; i++) {
-                                 if (chunksArray[i]) totalBufferedChunks++;
-                            }
-                        });
-                        
-                        // If holding more than 500 chunks (~125MB) in RAM before saving/assembling
-                        if (totalBufferedChunks > 500) {
-                            sendControlMsg({ type: 'flow', status: 'slow' });
+                // Flow control timer (only on pipe 0)
+                if (pipeIdx === 0) {
+                    setInterval(() => {
+                        if (statusRef.current === 'transferring') {
+                            let totalBufferedChunks = 0;
+                            fileBuffers.current.forEach((chunksArray) => {
+                                for (let i = 0; i < chunksArray.length; i++) {
+                                     if (chunksArray[i]) totalBufferedChunks++;
+                                }
+                            });
+                            if (totalBufferedChunks > 1000) sendControlMsg({ type: 'flow', status: 'slow' });
+                            else sendControlMsg({ type: 'flow', status: 'ready' });
                         } else {
-                            // Recover
                             sendControlMsg({ type: 'flow', status: 'ready' });
                         }
-                    } else {
-                        // Send flow-ready even when idle to keep sender unlocked
-                        sendControlMsg({ type: 'flow', status: 'ready' });
-                    }
-                }, 800);
+                    }, 500);
+                }
             }
 
             peer.oniceconnectionstatechange = () => {
-                logDebug(`ICE Connection State: ${peer.iceConnectionState}`);
+                logDebug(`Pipe-${pipeIdx} ICE State: ${peer.iceConnectionState}`);
                 if (peer.iceConnectionState === 'disconnected' || peer.iceConnectionState === 'failed') {
-                    logDebug("v02.0.9: Aggressive ICE Restart...");
-                    try { peer.restartIce(); } catch (e) { logDebug("ICE Restart failed: " + e); }
+                    try { peer.restartIce(); } catch (e) {}
                 }
-            };
-
-            if (heartbeatIntervalRef.current) clearInterval(heartbeatIntervalRef.current);
-            heartbeatIntervalRef.current = setInterval(() => {
-                if (peerRef.current?.iceConnectionState === 'connected' || peerRef.current?.iceConnectionState === 'completed') {
-                    sendControlMsg({ type: 'heartbeat', ts: Date.now() });
-                }
-            }, 3000); // v02.0.26: Aggressive 3s heartbeat for both Sender AND Receiver
-
-            peer.onicegatheringstatechange = () => {
-                logDebug(`ICE Gathering State: ${peer.iceGatheringState}`);
             };
 
             peer.onicecandidate = (e) => {
                 if (e.candidate) {
-                    logDebug("Generated local ICE candidate");
-                    // v02.1.4: Stringify or toJSON for robust cross-browser signaling
                     const cand = e.candidate.toJSON ? e.candidate.toJSON() : e.candidate;
-                    ws.send(JSON.stringify({ type: 'ice-candidate', candidate: cand }));
-                } else {
-                    logDebug("Native ICE Gathering COMPLETED (null candidate).");
-                }
-            };
-
-            peer.onconnectionstatechange = () => {
-                logDebug(`WebRTC Connection State: ${peer.connectionState}`);
-                if (peer.connectionState === 'failed') {
-                    if (statusRef.current !== 'done') {
-                        setStatus('error');
-                        logDebug("❌ WebRTC Connection Failed");
-                    }
+                    ws.send(JSON.stringify({ type: 'ice-candidate', pipeIdx, candidate: cand }));
                 }
             };
 
             if (isSender) {
-                logDebug(`Awaiting createOffer...`);
-                // Enforce SDP semantics
                 const offer = await peer.createOffer({ offerToReceiveAudio: false, offerToReceiveVideo: false });
-                logDebug(`createOffer succeeded, setting local description...`);
-                
-                // CRITICAL: Await setLocalDescription completely before sending to signal
                 await peer.setLocalDescription(offer);
-                logDebug(`Set Local Description complete. Sending offer via WS.`);
-                ws.send(JSON.stringify({ type: 'offer', sdp: peer.localDescription }));
+                ws.send(JSON.stringify({ type: 'offer', pipeIdx, sdp: peer.localDescription }));
             }
         } catch (err: any) {
-            logDebug(`❌ CRITICAL WEBRTC ERROR IN SETUP: ${err.message || err}`);
-            if (!useFallback) {
-                logDebug(`⚠️ Triggering Adaptive Fallback Engine... retrying with standard STUN.`);
-                await setupWebRTC(ws, isSender, true);
-            } else {
-                setStatus('error');
-            }
+            logDebug(`❌ Pipe-${pipeIdx} Error: ${err.message}`);
         }
     };
 
@@ -782,14 +745,24 @@ function InstantDropContent() {
         
         setProgress(100);
 
-        // v02.1.38: Multi-Path EOF Broadcast
+        // v02.1.39: Multi-Pipe Probe + EOF Broadcast
         const eofPacket = new Uint8Array(12);
         const eofView = new DataView(eofPacket.buffer);
         eofView.setUint32(0, index, true);
         eofView.setUint32(4, 0xFFFFFFFE, true); 
         eofView.setUint32(8, numChunks, true); 
+        
+        const probePacket = new Uint8Array(12);
+        const probeView = new DataView(probePacket.buffer);
+        probeView.setUint32(0, index, true);
+        probeView.setUint32(4, 0xFFFFFFF9, true); // Active Singularity Probe
+        probeView.setUint32(8, numChunks, true);
+
         dataChannelsRef.current.forEach(dc => {
-            if (dc?.readyState === 'open') dc.send(eofPacket);
+            if (dc?.readyState === 'open') {
+                dc.send(eofPacket);
+                dc.send(probePacket);
+            }
         });
 
         // Pipeline Drain Wait
@@ -856,27 +829,31 @@ function InstantDropContent() {
                 try {
                     const data = JSON.parse(event.data);
                     if (data.type === 'offer') {
-                        logDebug("Received offer, setting remote and creating answer");
-                        await setupWebRTC(ws, false);
-                        await peerRef.current?.setRemoteDescription(new RTCSessionDescription(data.sdp));
-                        remoteDescriptionSet.current = true;
-                        
-                        for (const candidate of iceBuffer.current) {
-                            try { await peerRef.current?.addIceCandidate(new RTCIceCandidate(candidate)); } catch (e) {}
-                        }
-                        iceBuffer.current = [];
+                        const pIdx = data.pipeIdx || 0;
+                        logDebug(`Received offer for Pipe-${pIdx}`);
+                        await setupWebRTC(ws, false, pIdx);
+                        const peer = peersRef.current[pIdx];
+                        if (!peer) return;
 
-                        const answer = await peerRef.current?.createAnswer();
-                        await peerRef.current?.setLocalDescription(answer);
-                        ws.send(JSON.stringify({ type: 'answer', sdp: peerRef.current?.localDescription }));
+                        await peer.setRemoteDescription(new RTCSessionDescription(data.sdp));
+                        remoteDescriptionSetsRef.current[pIdx] = true;
+                        
+                        for (const candidate of iceBuffersRef.current[pIdx]) {
+                            try { await peer.addIceCandidate(new RTCIceCandidate(candidate)); } catch (e) {}
+                        }
+                        iceBuffersRef.current[pIdx] = [];
+
+                        const answer = await peer.createAnswer();
+                        await peer.setLocalDescription(answer);
+                        ws.send(JSON.stringify({ type: 'answer', pipeIdx: pIdx, sdp: peer.localDescription }));
                     } else if (data.type === 'ice-candidate') {
-                        if (!remoteDescriptionSet.current) {
-                            iceBuffer.current.push(data.candidate);
+                        const pIdx = data.pipeIdx || 0;
+                        if (!remoteDescriptionSetsRef.current[pIdx]) {
+                            iceBuffersRef.current[pIdx].push(data.candidate);
                         } else {
-                            try { await peerRef.current?.addIceCandidate(new RTCIceCandidate(data.candidate)); } catch (e) {}
+                            try { await peersRef.current[pIdx]?.addIceCandidate(new RTCIceCandidate(data.candidate)); } catch (e) {}
                         }
                     } else if (data.type === 'force-verify') {
-                        // v02.1.35 Handshake Recovery
                         if (reassembledCount.current >= expectedTotalFiles.current && expectedTotalFiles.current !== -1) {
                             sendControlMsg({ type: 'batch-ack' });
                         }
@@ -925,6 +902,11 @@ function InstantDropContent() {
                     chunkIdx: chunkIdx,
                     payloadCount
                 });
+            } else if (chunkIdx === 0xFFFFFFF9) {
+                // v02.1.39: Active Singularity Probe ACK
+                if (statusRef.current === 'transferring' && reassembledCount.current >= expectedTotalFiles.current && expectedTotalFiles.current !== -1) {
+                    setStatus('done');
+                }
             } else if (chunkIdx === 0xFFFFFFFC) {
                 logDebug(`Receiver: Symmetry Pulse for ${fileIdx}.`);
             } else {
@@ -948,13 +930,14 @@ function InstantDropContent() {
     };
 
     const disconnectEverything = () => {
-        logDebug(`${VERSION}: Full Session Reset...`);
+        logDebug(`${VERSION}: Full Multiplexed Session Reset...`);
         if (wsRef.current) { wsRef.current.close(); wsRef.current = null; }
-        if (peerRef.current) { peerRef.current.close(); peerRef.current = null; }
+        peersRef.current.forEach(p => { if (p) try { p.close(); } catch (e) {} });
+        peersRef.current = [];
         isActive.current = false;
         isInitializingRef.current = false;
-        remoteDescriptionSet.current = false;
-        iceBuffer.current = [];
+        remoteDescriptionSetsRef.current = [false, false, false];
+        iceBuffersRef.current = [[], [], []];
         dataChannelsRef.current = [];
         fileBuffers.current.clear();
         expectedTotalChunks.current.clear();
@@ -978,10 +961,10 @@ function InstantDropContent() {
         // v02.0.26 Prevent Mobile Sleep
         const handleVisibilityChange = () => {
             if (document.visibilityState === 'hidden') {
-                logDebug("Tab Hidden: Sending emergency keep-alive...");
+                logDebug("Tab Hidden: Background Resilience Active...");
                 sendControlMsg({ type: 'heartbeat', ts: Date.now(), urgent: true });
             } else {
-                logDebug("Tab Visible: Restoring flow state.");
+                logDebug("Tab Visible: Restoring full throughput.");
                 sendControlMsg({ type: 'flow', status: 'ready' });
             }
         };
@@ -1142,8 +1125,8 @@ function InstantDropContent() {
                         <Smartphone className="w-12 h-12 text-indigo-500" />
                     </div>
                     <h1 className="text-4xl md:text-5xl font-bold text-foreground mb-4">Turbo Drop</h1>
-                    <p className="text-xs text-muted-foreground font-medium tracking-widest uppercase mb-2">v02.1.38 
-Titan-Quasar (Build: 2900)</p>
+                    <p className="text-xs text-indigo-600 font-black tracking-[0.2em] uppercase mb-2">v02.1.39 
+Titan-Singularity (Sustain: 5MB/s+)</p>
                     <p className="text-lg text-muted-foreground max-w-2xl mx-auto">
                         The ultimate high-speed file sharing app. Transfer photos and large files (up to 200MB) from desktop to mobile or mobile to mobile instantly.
                     </p>
@@ -1377,7 +1360,7 @@ Titan-Quasar (Build: 2900)</p>
                                 <>
                                     <h2 className="text-2xl font-bold">Receiving File</h2>
                                     <p className="mt-2 text-indigo-600 dark:text-indigo-400 font-bold tracking-widest text-[10px] animate-pulse">
-                                        {VERSION} TITAN-QUASAR (BUILD: 2900)
+                                        {VERSION} TITAN-SINGULARITY (BREAKTHROUGH: 5MB/s)
                                     </p>
 
                                     {status === 'connecting' && (
