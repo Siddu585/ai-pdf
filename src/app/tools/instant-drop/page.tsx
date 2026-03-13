@@ -11,13 +11,13 @@ import { Footer } from "@/components/layout/Footer";
 import { useUsage } from "@/hooks/useUsage";
 import { PaywallModal } from "@/components/layout/PaywallModal";
 
-// v02.1.20 Omega-Piston (Robustness)
-const VERSION = "v02.1.20 Build: 9915";
-const CHANNELS = 16; // 16-Piston Core (Stable sweet spot)
-const CHUNK_SIZE = 128 * 1024; // 128KB Chunks (Safe Standard)
+// v02.1.21 Hyper-Piston (Optimized Flow)
+const VERSION = "v02.1.21";
+const CHANNELS = 24; // 24-Piston Core (Hyper-Piston)
+const CHUNK_SIZE = 64 * 1024; // 64KB optimized for 24 pistons
 const HIGH_WATER_MARK = 1 * 1024 * 1024; // Balanced pressure (1MB/channel)
-const PACER_THRESHOLD = 0; // Infinite Pacer (Continuous Pressure)
-const MAX_IN_FLIGHT = 160; // Tuned for 16-channel flow
+const PACER_THRESHOLD = 128 * 1024; // Yield every 128KB (approx 2 chunks)
+const MAX_IN_FLIGHT = 240; // Tuned for 24-channel flow (10 chunks/channel)
 const getBackendUrls = () => {
     let rawUrl = (process.env.NEXT_PUBLIC_API_URL || "").trim().replace(/\/$/, "");
     
@@ -1035,7 +1035,7 @@ function InstantDropContent() {
                         <Smartphone className="w-12 h-12 text-indigo-500" />
                     </div>
                     <h1 className="text-4xl md:text-5xl font-bold text-foreground mb-4">Turbo Drop</h1>
-                    <p className="text-xs text-muted-foreground font-medium tracking-widest uppercase mb-2">v02.1.20 Omega-Piston (Build: 9915)</p>
+                    <p className="text-xs text-muted-foreground font-medium tracking-widest uppercase mb-2">v02.1.21 Hyper-Piston (Build: 1105)</p>
                     <p className="text-lg text-muted-foreground max-w-2xl mx-auto">
                         The ultimate high-speed file sharing app. Transfer photos and large files (up to 200MB) from desktop to mobile or mobile to mobile instantly.
                     </p>
@@ -1262,9 +1262,9 @@ function InstantDropContent() {
                             {(status === 'connecting' || status === 'transferring') && (
                                 <>
                                     <h2 className="text-2xl font-bold">Receiving File</h2>
-                                    <div className="text-3xl font-mono font-bold tracking-[0.5em] text-indigo-600 opacity-50">
-                                        {roomId}
-                                    </div>
+                                    <p className="mt-2 text-indigo-600 dark:text-indigo-400 font-bold tracking-widest text-[10px] animate-pulse">
+                                        {VERSION} HYPER-PISTON (BUILD: 1105)
+                                    </p>
 
                                     {status === 'connecting' && (
                                         <div className="flex items-center justify-center text-muted-foreground bg-secondary/10 p-4 rounded-xl">
