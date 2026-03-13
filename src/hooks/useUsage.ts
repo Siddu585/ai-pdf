@@ -131,15 +131,27 @@ export function useUsage() {
     };
 
     const handleAction = async (actionCallback: () => void) => {
+        // Gigabit Pro Bypass
+        if (isPro) {
+            actionCallback();
+            return;
+        }
+
         // Double check with backend before proceeding
         try {
-            const res = await fetch(`${API_BASE}/api/usage/status?deviceId=${deviceId}`);
+            const url = new URL(`${API_BASE}/api/usage/status`);
+            url.searchParams.append("deviceId", deviceId);
+            if (email) url.searchParams.append("email", email);
+
+            const res = await fetch(url.toString());
             const data = await res.json();
-            if (data.remaining <= 0) {
+            
+            // If backend says Pro OR has remaining uses, allow
+            if (data.is_pro || data.remaining > 0) {
+                actionCallback();
+            } else {
                 setIsPaywallOpen(true);
-                return;
             }
-            actionCallback();
         } catch (e) {
             // Fallback to local check if backend is unreachable
             if (!canUse) {
