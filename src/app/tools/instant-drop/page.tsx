@@ -706,11 +706,11 @@ function InstantDropContent() {
 
             if (totalBuffered < DRAIN_THRESHOLD) {
                 // v02.1.39 (Patch 2): Dynamically pick first available open channel
-                let dcCandidate = dataChannelsRef.current[chunkIdx % CHANNELS];
+                let dcCandidate: RTCDataChannel | undefined = dataChannelsRef.current[chunkIdx % CHANNELS];
                 if (!dcCandidate || dcCandidate.readyState !== 'open') {
                     dcCandidate = dataChannelsRef.current.find(c => c?.readyState === 'open');
                 }
-                const dc = dcCandidate;
+                const dc: RTCDataChannel | undefined = dcCandidate;
 
                 if (dc && dc.readyState === 'open') {
                     const offset = chunkIdx * CHUNK_SIZE;
