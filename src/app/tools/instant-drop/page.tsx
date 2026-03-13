@@ -11,13 +11,13 @@ import { Footer } from "@/components/layout/Footer";
 import { useUsage } from "@/hooks/useUsage";
 import { PaywallModal } from "@/components/layout/PaywallModal";
 
-// v02.1.23 SCTP-Pulse (Backpressure Flush)
-const VERSION = "v02.1.23";
-const CHANNELS = 8; // 8-Piston Core (Titanium Stability)
+// v02.1.24 SCTP-Flow (Volume Expansion)
+const VERSION = "v02.1.24";
+const CHANNELS = 12; // 12-Piston Drive (Volume Expansion)
 const CHUNK_SIZE = 64 * 1024; // 64KB optimized for throughput
-const HIGH_WATER_MARK = 128 * 1024; // 128KB (Critical: Prevents browser buffer saturation)
+const HIGH_WATER_MARK = 128 * 1024; // 128KB (Maintains Low Backpressure)
 const PACER_THRESHOLD = 64 * 1024; // Yield every chunk for maximum smoothness
-const MAX_IN_FLIGHT = 128; // Increased for higher pulse throughput
+const MAX_IN_FLIGHT = 128; // 8MB pulse depth
 const getBackendUrls = () => {
     let rawUrl = (process.env.NEXT_PUBLIC_API_URL || "").trim().replace(/\/$/, "");
     
@@ -569,9 +569,9 @@ function InstantDropContent() {
 
         logDebug(`Sender: ${VERSION} Start for ${file.name} (${numChunks} chunks)`);
         
-        // v02.1.22 SCTP-Lean: Reduced Lead-In (16 Chunks)
-        // Saturating 8 pipes with 2 chunks each immediately (1MB total surge)
-        const leadInCount = Math.min(16, numChunks);
+        // v02.1.24 SCTP-Flow: Increased Lead-In (24 Chunks)
+        // Saturating 12 pipes with 2 chunks each immediately (1.5MB surge)
+        const leadInCount = Math.min(24, numChunks);
         for (let i = 0; i < leadInCount; i++) {
             if (!isActive.current) return;
             const dc = dataChannelsRef.current[i % CHANNELS];
@@ -1035,7 +1035,7 @@ function InstantDropContent() {
                         <Smartphone className="w-12 h-12 text-indigo-500" />
                     </div>
                     <h1 className="text-4xl md:text-5xl font-bold text-foreground mb-4">Turbo Drop</h1>
-                    <p className="text-xs text-muted-foreground font-medium tracking-widest uppercase mb-2">v02.1.23 SCTP-Pulse (Build: 1300)</p>
+                    <p className="text-xs text-muted-foreground font-medium tracking-widest uppercase mb-2">v02.1.24 SCTP-Flow (Build: 1400)</p>
                     <p className="text-lg text-muted-foreground max-w-2xl mx-auto">
                         The ultimate high-speed file sharing app. Transfer photos and large files (up to 200MB) from desktop to mobile or mobile to mobile instantly.
                     </p>
@@ -1263,7 +1263,7 @@ function InstantDropContent() {
                                 <>
                                     <h2 className="text-2xl font-bold">Receiving File</h2>
                                     <p className="mt-2 text-indigo-600 dark:text-indigo-400 font-bold tracking-widest text-[10px] animate-pulse">
-                                        {VERSION} SCTP-PULSE (BUILD: 1300)
+                                        {VERSION} SCTP-FLOW (BUILD: 1400)
                                     </p>
 
                                     {status === 'connecting' && (
