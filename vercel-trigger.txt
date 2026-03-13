@@ -1,2 +1,2 @@
-Deploying Hydra-Burst: 2026-03-13T23:35:00Z
-16MB Ceiling + 128KB Pacing Frequency (Build: 2100)
+Deploying Hydra-Burst + Pro Bypass Fix: 2026-03-13T23:43:00Z
+16MB Ceiling + 128KB Pacing Frequency + Pro Limit Bypass
