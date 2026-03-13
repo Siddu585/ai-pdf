@@ -12,7 +12,7 @@ import { useUsage } from "@/hooks/useUsage";
 import { PaywallModal } from "@/components/layout/PaywallModal";
 
 // v02.1.39 Titan-Singularity (Triple-Pipe Multiplexing + Jumbo Chunks)
-const VERSION = "v02.1.39 (Patch 4)";
+const VERSION = "v02.1.39 (Patch 5)";
 const PIPES = 3; 
 const CHANNELS = 12;
 const CHANNELS_PER_PIPE = 4;
@@ -20,7 +20,7 @@ const CHUNK_SIZE = 224 * 1024; // v02.1.39 (Patch 4): Reduced from 256KB to fit 
 const HIGH_WATER_MARK_MAX = 2 * 1024 * 1024;
 const PACER_THRESHOLD = 1024 * 1024;
 const MAX_IN_FLIGHT = 512;
-const DRAIN_THRESHOLD = 16 * 1024 * 1024; // 16MB Multiplexed Quota
+const DRAIN_THRESHOLD = 24 * 1024 * 1024; // v02.1.39 (Patch 5): Optimized to 24MB for 12-Channel sat.
 const getBackendUrls = () => {
     let rawUrl = (process.env.NEXT_PUBLIC_API_URL || "").trim().replace(/\/$/, "");
     
@@ -214,6 +214,7 @@ function InstantDropContent() {
             let fileMetas = new Map();
             let receivedChunksCount = new Map();
             let reassembledFiles = new Set();
+            let expectedTotalChunks = new Map();
             let expectedTotalFiles = -1;
 
             self.onmessage = function(e) {
@@ -1137,7 +1138,7 @@ function InstantDropContent() {
                         <Smartphone className="w-12 h-12 text-indigo-500" />
                     </div>
                     <h1 className="text-4xl md:text-5xl font-bold text-foreground mb-4">Turbo Drop</h1>
-                    <p className="text-xs text-indigo-600 font-black tracking-[0.2em] uppercase mb-2">v02.1.39 (Patch 4) 
+                    <p className="text-xs text-indigo-600 font-black tracking-[0.2em] uppercase mb-2">v02.1.39 (Patch 5) 
 Titan-Singularity (Sustain: 5MB/s+)</p>
                     <p className="text-lg text-muted-foreground max-w-2xl mx-auto">
                         The ultimate high-speed file sharing app. Transfer photos and large files (up to 200MB) from desktop to mobile or mobile to mobile instantly.
