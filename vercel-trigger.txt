@@ -1,2 +1,2 @@
-Deploying Hydra-Pulse: 2026-03-13T20:20:00Z
-Aggressive Pacer + Worker Reassembly (Build: 1800)
+Deploying Hydra-Storm: 2026-03-13T23:20:00Z
+12-Channel Scaling + 128KB Chunks (Build: 2000)
