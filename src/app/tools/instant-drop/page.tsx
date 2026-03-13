@@ -11,13 +11,13 @@ import { Footer } from "@/components/layout/Footer";
 import { useUsage } from "@/hooks/useUsage";
 import { PaywallModal } from "@/components/layout/PaywallModal";
 
-// v02.1.27 Titanium-Flow (Predictive Pacing)
-const VERSION = "v02.1.27";
+// v02.1.28 Hydra-Pulse (Aggressive Saturation + Worker Reassembly)
+const VERSION = "v02.1.28";
 const CHANNELS = 8; // 8-Piston Core (Stability Anchor)
 const CHUNK_SIZE = 64 * 1024; // 64KB (Optimal ACK granularity)
-const HIGH_WATER_MARK = 256 * 1024; // 256KB (Increased for in-flight volume)
-const PACER_THRESHOLD = 256 * 1024; // Yield every 4 chunks (Reduce event loop lag)
-const MAX_IN_FLIGHT = 256; // 16MB potential window
+const HIGH_WATER_MARK = 1024 * 1024; // 1MB per channel (8MB total reservoir)
+const PACER_THRESHOLD = 256 * 1024; // Yield every 4 chunks (Smooth flow)
+const MAX_IN_FLIGHT = 512; // 32MB potential window
 const getBackendUrls = () => {
     let rawUrl = (process.env.NEXT_PUBLIC_API_URL || "").trim().replace(/\/$/, "");
     
@@ -199,6 +199,73 @@ function InstantDropContent() {
     const fileInputRef = useRef<HTMLInputElement>(null);
     const roomRef = useRef<string | null>(null);
     const heartbeatIntervalRef = useRef<any>(null); // v02.0.0: NAT Heartbeat
+    const workerRef = useRef<Worker | null>(null); // v02.1.28 Hydra Worker
+
+    // v02.1.28: Inline Hydra Worker Script (Zero-Copy Reassembly)
+    useEffect(() => {
+        const workerScript = `
+            let fileBuffers = new Map();
+            let fileMetas = new Map();
+            let receivedChunksCount = new Map();
+            let expectedTotalChunks = new Map();
+            let reassembledCount = 0;
+            let expectedTotalFiles = -1;
+
+            self.onmessage = function(e) {
+                const { type, data, fileIdx, chunkIdx, meta } = e.data;
+
+                if (type === 'metadata') {
+                    fileMetas.set(fileIdx, meta);
+                    if (!fileBuffers.has(fileIdx)) fileBuffers.set(fileIdx, []);
+                } else if (type === 'sector-eof') {
+                    expectedTotalChunks.set(fileIdx, e.data.totalChunks);
+                } else if (type === 'batch-eof') {
+                    expectedTotalFiles = e.data.totalFiles;
+                } else if (type === 'chunk') {
+                    if (!fileBuffers.has(fileIdx)) fileBuffers.set(fileIdx, []);
+                    const chunks = fileBuffers.get(fileIdx);
+                    chunks[chunkIdx] = data;
+                    const current = (receivedChunksCount.get(fileIdx) || 0) + 1;
+                    receivedChunksCount.set(fileIdx, current);
+                    
+                    const expected = expectedTotalChunks.get(fileIdx);
+                    if (expected !== undefined && current === expected) {
+                        const meta = fileMetas.get(fileIdx);
+                        self.postMessage({ type: 'reassembled', fileIdx, name: meta.name, fileType: meta.fileType, chunks });
+                        fileBuffers.delete(fileIdx);
+                        fileMetas.delete(fileIdx);
+                        receivedChunksCount.delete(fileIdx);
+                        expectedTotalChunks.delete(fileIdx);
+                        reassembledCount++;
+                    }
+                }
+                
+                if (expectedTotalFiles !== -1 && reassembledCount >= expectedTotalFiles) {
+                    self.postMessage({ type: 'all-done' });
+                }
+            };
+        `;
+        const blob = new Blob([workerScript], { type: 'application/javascript' });
+        const url = URL.createObjectURL(blob);
+        const worker = new Worker(url);
+        
+        worker.onmessage = (e) => {
+            if (e.data.type === 'reassembled') {
+                 const { name, fileType, chunks } = e.data;
+                 const blob = new Blob(chunks, { type: fileType || 'application/octet-stream' });
+                 setReceivedFiles(prev => [...prev, { blob, name }]);
+                 logDebug(`Receiver: Worker reassembly complete for ${name}.`);
+            } else if (e.data.type === 'all-done') {
+                 setStatus('done');
+            }
+        };
+
+        workerRef.current = worker;
+        return () => {
+            worker.terminate();
+            URL.revokeObjectURL(url);
+        };
+    }, []);
 
     // --- SIGNALING HELPER (v01.5.0 Out-of-Band) ---
     const sendControlMsg = (payload: any) => {
@@ -468,13 +535,15 @@ function InstantDropContent() {
                     // Start speed timer
                     lastBytesRef.current = 0;
                     if (speedTimerRef.current) clearInterval(speedTimerRef.current);
-                    speedTimerRef.current = setInterval(() => {
-                        // v02.0.24: Rolling 1-second delta (Realistic Peak Throughput)
+                    // v02.1.28: Performance Monitor (5s Interval)
+                    let prevBytes = 0;
+                    setInterval(() => {
                         const currentTotal = totalSentBytesRef.current + totalReceivedBytesRef.current;
-                        const bytesSinceLast = currentTotal - lastBytesRef.current;
-                        lastBytesRef.current = currentTotal;
-                        setTransferSpeed(parseFloat((bytesSinceLast / 1024 / 1024).toFixed(1)));
-                    }, 1000);
+                        const speed = ((currentTotal - prevBytes) / 5 / 1024 / 1024).toFixed(2);
+                        console.log(`%c [HYDRA MONITOR] INSTANT SPEED: ${speed} MB/s`, "color: #00ff00; font-weight: bold;");
+                        prevBytes = currentTotal;
+                    }, 5000);
+
                     startFileTransfer();
                 }, 500);
             }
@@ -660,8 +729,8 @@ function InstantDropContent() {
                     const totalBuffered = dataChannelsRef.current.reduce(
                         (acc, c) => acc + (c.readyState === 'open' ? c.bufferedAmount : 0), 0
                     );
-                    // v02.1.27: Predictive Transition (1MB) - Start next file while pipe is 50% full
-                    if (totalBuffered < 1024 * 1024) { 
+                    // v02.1.28: Aggressive Transition (8MB) - No waiting unless buffer is absolutely full
+                    if (totalBuffered < 8 * 1024 * 1024) { 
                         resolve();
                     } else {
                         if (Math.random() < 0.1) logDebug(`Sender: Transition Waiting... Buffer at ${Math.round(totalBuffered/1024/1024)}MB`);
@@ -752,90 +821,43 @@ function InstantDropContent() {
     };
 
     const handleIncomingData = (data: any, _channelIdx: number) => {
-        const checkReassembly = (fileIdx: number) => {
-            const meta = fileMetas.current.get(fileIdx);
-            const expected = expectedTotalChunks.current.get(fileIdx);
-            const received = receivedChunksCount.current.get(fileIdx) || 0;
-            
-            if (meta && expected !== undefined && received === expected) {
-                logDebug(`Receiver: All chunks received for ${meta.name}. Reassembling...`);
-                const flatArray = fileBuffers.current.get(fileIdx) || [];
-                const allChunks: ArrayBuffer[] = [];
-                for (let i = 0; i < expected; i++) {
-                    if (flatArray[i]) allChunks.push(flatArray[i]);
-                }
-                
-                const blob = new Blob(allChunks, { type: meta.fileType || 'application/octet-stream' });
-                if (blob.size > 0 || meta.size === 0) {
-                    setReceivedFiles(prev => [...prev, { blob, name: meta.name }]);
-                    logDebug(`Receiver: Reassembly complete for ${meta.name}.`);
-                }
-                
-                fileBuffers.current.delete(fileIdx);
-                expectedTotalChunks.current.delete(fileIdx);
-                receivedChunksCount.current.delete(fileIdx);
-                reassembledCount.current++;
+        if (!workerRef.current) return;
 
-                if (expectedTotalFiles.current !== -1 && reassembledCount.current >= expectedTotalFiles.current) {
-                    setStatus('done');
-                    setTimeout(disconnectEverything, 1000);
-                }
-            }
-        };
-
-        let msg: any = null;
         if (typeof data === 'string') {
-            try { msg = JSON.parse(data); } catch (e) {}
-        } else if (typeof data === 'object' && data !== null && data.type) {
-            msg = data;
-        }
-
-        if (msg) {
-            if (msg.type === 'metadata') {
-                logDebug(`Receiver: Metadata for ${msg.name}`);
-                fileMetas.current.set(msg.currentIdx, msg);
-                setIncomingMeta(msg);
-                setStatus('transferring');
-                checkReassembly(msg.currentIdx);
-            } else if (msg.type === 'sector-eof') {
-                expectedTotalChunks.current.set(msg.fileIndex, msg.totalChunks);
-                checkReassembly(msg.fileIndex);
-            } else if (msg.type === 'batch-eof') {
-                expectedTotalFiles.current = msg.totalFiles;
-                if (reassembledCount.current >= msg.totalFiles) setStatus('done');
-            }
+            try {
+                const msg = JSON.parse(data);
+                if (msg.type === 'metadata') {
+                    logDebug(`Receiver: Metadata for ${msg.name}`);
+                    setIncomingMeta(msg);
+                    setStatus('transferring');
+                    workerRef.current.postMessage({ type: 'metadata', fileIdx: msg.currentIdx, meta: msg });
+                } else if (msg.type === 'sector-eof') {
+                    workerRef.current.postMessage({ type: 'sector-eof', fileIdx: msg.fileIndex, totalChunks: msg.totalChunks });
+                } else if (msg.type === 'batch-eof') {
+                    workerRef.current.postMessage({ type: 'batch-eof', totalFiles: msg.totalFiles });
+                }
+            } catch (e) {}
         } else if (data instanceof ArrayBuffer) {
             const view = new DataView(data);
             const fileIdx = view.getUint32(0, true);
             const chunkIdx = view.getUint32(4, true);
             
-            // v02.1.13: Nitro-Ignition Guard
-            // Ignore dummy Nitro-Blast warm-up packets
-            if (chunkIdx === 0xFFFFFFFF) {
-                logDebug(`Receiver: Nitro-Ignition warm-up received. Prime ACK triggered.`);
-                return;
-            }
+            if (chunkIdx === 0xFFFFFFFF) return; // Nitro Warmup
             
             const pureData = data.slice(8);
-
-            if (!fileBuffers.current.has(fileIdx)) fileBuffers.current.set(fileIdx, []);
-            const chunkArray = fileBuffers.current.get(fileIdx)!;
-            
-            // v02.1.2: Place at absolute index (Critical for cross-channel merging)
-            chunkArray[chunkIdx] = pureData;
-            
-            const currentReceived = (receivedChunksCount.current.get(fileIdx) || 0) + 1;
-            receivedChunksCount.current.set(fileIdx, currentReceived);
             totalReceivedBytesRef.current += pureData.byteLength;
 
-            const expected = expectedTotalChunks.current.get(fileIdx);
-            if (expected !== undefined && currentReceived === expected) {
-                checkReassembly(fileIdx);
-            }
+            // Use Transferables for extreme performance (Zero-Copy)
+            workerRef.current.postMessage({
+                type: 'chunk',
+                fileIdx,
+                chunkIdx,
+                data: pureData
+            }, [pureData]);
 
-            if (currentReceived % 100 === 0) {
-                const meta = fileMetas.current.get(fileIdx);
-                if (meta?.size) setProgress(Math.round(((currentReceived * CHUNK_SIZE) / meta.size) * 100));
+            if (chunkIdx % 100 === 0) {
+                // Approximate progress based on known metadata
+                setProgress(p => Math.min(99, p + 1)); 
             }
         }
     };
@@ -1034,7 +1056,7 @@ function InstantDropContent() {
                         <Smartphone className="w-12 h-12 text-indigo-500" />
                     </div>
                     <h1 className="text-4xl md:text-5xl font-bold text-foreground mb-4">Turbo Drop</h1>
-                    <p className="text-xs text-muted-foreground font-medium tracking-widest uppercase mb-2">v02.1.27 Titanium-Flow (Build: 1700)</p>
+                    <p className="text-xs text-muted-foreground font-medium tracking-widest uppercase mb-2">v02.1.28 Hydra-Pulse (Build: 1800)</p>
                     <p className="text-lg text-muted-foreground max-w-2xl mx-auto">
                         The ultimate high-speed file sharing app. Transfer photos and large files (up to 200MB) from desktop to mobile or mobile to mobile instantly.
                     </p>
@@ -1262,7 +1284,7 @@ function InstantDropContent() {
                                 <>
                                     <h2 className="text-2xl font-bold">Receiving File</h2>
                                     <p className="mt-2 text-indigo-600 dark:text-indigo-400 font-bold tracking-widest text-[10px] animate-pulse">
-                                        {VERSION} TITANIUM-FLOW (BUILD: 1700)
+                                        {VERSION} HYDRA-PULSE (BUILD: 1800)
                                     </p>
 
                                     {status === 'connecting' && (
