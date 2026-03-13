@@ -11,14 +11,14 @@ import { Footer } from "@/components/layout/Footer";
 import { useUsage } from "@/hooks/useUsage";
 import { PaywallModal } from "@/components/layout/PaywallModal";
 
-// v02.1.35 Titan-Infinity (Unified Binary Signaling + Symmetry Pacing)
-const VERSION = "v02.1.35";
-const CHANNELS = 12; // 12-Piston Core (Scaling Champion)
-const CHUNK_SIZE = 126 * 1024; // 126KB (Reserved for 2-word header)
-const HIGH_WATER_MARK = 1536 * 1024; // 1.5MB per channel (18MB total active)
+// v02.1.36 Titan-Nova (Elastic Window + 12-byte Rich Signaling)
+const VERSION = "v02.1.36";
+const CHANNELS = 12; // 12-Piston Core
+const CHUNK_SIZE = 124 * 1024; // 124KB (Reserved for 12-byte header/payload)
+const HIGH_WATER_MARK_MAX = 1536 * 1024; // 1.5MB per channel (18MB total)
 const PACER_THRESHOLD = 1024 * 1024; // 1MB Blocks
-const MAX_IN_FLIGHT = 512; // 64MB potential window
-const DRAIN_THRESHOLD = 20 * 1024 * 1024; // 20MB (Titan-Infinity Sync)
+const MAX_IN_FLIGHT = 512;
+const DRAIN_THRESHOLD = 20 * 1024 * 1024; // 20MB Sync
 const getBackendUrls = () => {
     let rawUrl = (process.env.NEXT_PUBLIC_API_URL || "").trim().replace(/\/$/, "");
     
@@ -219,15 +219,16 @@ function InstantDropContent() {
                     if (!fileBuffers.has(fileIdx)) fileBuffers.set(fileIdx, []);
                 } else if (type === 'chunk') {
                     if (chunkIdx === 0xFFFFFFFE) { // Sector EOF
-                        expectedTotalChunks.set(fileIdx, e.data.totalChunks);
+                        const totalChunks = e.data.payloadCount; // Titan-Nova Payload
+                        expectedTotalChunks.set(fileIdx, totalChunks);
                         const current = (receivedChunksCount.get(fileIdx) || 0);
-                        if (current === e.data.totalChunks) {
+                        if (current === totalChunks) {
                              const meta = fileMetas.get(fileIdx);
                              self.postMessage({ type: 'reassembled', fileIdx, name: meta.name, fileType: meta.fileType, chunks: fileBuffers.get(fileIdx) });
                              fileBuffers.delete(fileIdx); fileMetas.delete(fileIdx); receivedChunksCount.delete(fileIdx); expectedTotalChunks.delete(fileIdx); reassembledFiles.add(fileIdx);
                         }
                     } else if (chunkIdx === 0xFFFFFFFD) { // Batch EOF
-                        expectedTotalFiles = e.data.totalFiles;
+                        expectedTotalFiles = e.data.payloadCount; // Titan-Nova Payload
                     } else {
                         if (!fileBuffers.has(fileIdx)) fileBuffers.set(fileIdx, []);
                         const chunks = fileBuffers.get(fileIdx);
@@ -239,7 +240,7 @@ function InstantDropContent() {
                         if (expected !== undefined && current === expected) {
                             const meta = fileMetas.get(fileIdx);
                             self.postMessage({ type: 'reassembled', fileIdx, name: meta.name, fileType: meta.fileType, chunks });
-                            fileBuffers.delete(fileIdx); fileMetas.delete(fileIdx); receivedChunksCount.delete(fileIdx); expectedTotalChunks.delete(fileIdx); reassembledFiles.add(fileIdx);
+                            fileBuffers.delete(fileIdx); fileMetas.delete(fileIdx); receivedChunksCount.delete(fileIdx); expectedTotalChunks.set(fileIdx, undefined); reassembledFiles.add(fileIdx);
                         }
                     }
                 }
@@ -271,7 +272,16 @@ function InstantDropContent() {
             } else if (e.data.type === 'all-done') {
                  logDebug("Receiver: Data fully reassembled. Verifying...");
                  setStatus('done');
-                 sendControlMsg({ type: 'batch-ack' }); // v02.1.33 Final Wave
+                 
+                 // v02.1.36: Redundant Handshake (Binary + Signal)
+                 if (dataChannelsRef.current[0]?.readyState === 'open') {
+                     const ackPkt = new Uint8Array(8);
+                     const ackView = new DataView(ackPkt.buffer);
+                     ackView.setUint32(0, 0, true);
+                     ackView.setUint32(4, 0xFFFFFFFB, true); // Batch-ACK binary constant
+                     dataChannelsRef.current[0].send(ackPkt);
+                 }
+                 sendControlMsg({ type: 'batch-ack' }); 
             }
         };
 
@@ -662,11 +672,12 @@ function InstantDropContent() {
             await transferFileP2PParallel(currentFiles[i], i);
         }
         
-        // v02.1.35 Unified Binary Signaling: No JSON blockage
-        const batchEofPkt = new Uint8Array(8);
+        // v02.1.36 Payload-Rich Binary Signaling: Carry counts
+        const batchEofPkt = new Uint8Array(12);
         const batchView = new DataView(batchEofPkt.buffer);
         batchView.setUint32(0, 0, true);
-        batchView.setUint32(4, 0xFFFFFFFD, true); // Batch EOF constant
+        batchView.setUint32(4, 0xFFFFFFFD, true);
+        batchView.setUint32(8, currentFiles.length, true); // Payload: Total Files
         dataChannelsRef.current[0].send(batchEofPkt);
         
         // v02.1.33 Finalization Handshake: Wait for receiver to confirm local save
@@ -737,7 +748,7 @@ function InstantDropContent() {
                 const dcIdx = (chunkIdx + i) % CHANNELS;
                 const dc = dataChannelsRef.current[dcIdx];
 
-                if (dc?.readyState === 'open' && dc.bufferedAmount < HIGH_WATER_MARK) {
+                if (dc?.readyState === 'open' && dc.bufferedAmount < HIGH_WATER_MARK_MAX) {
                     const pieceIdx = Math.floor(offset / CHUNK_SIZE);
                     // v02.1.34: Zero-Copy View
                     const chunkData = new Uint8Array(buffer, offset, Math.min(CHUNK_SIZE, buffer.byteLength - offset));
@@ -779,11 +790,12 @@ function InstantDropContent() {
         // Final Sync for progress
         setProgress(100);
 
-        // v02.1.35: Binary Unified EOF
-        const eofPacket = new Uint8Array(8);
+        // v02.1.36: 12-byte Rich EOF
+        const eofPacket = new Uint8Array(12);
         const eofView = new DataView(eofPacket.buffer);
         eofView.setUint32(0, index, true);
-        eofView.setUint32(4, 0xFFFFFFFE, true); // Sector EOF constant
+        eofView.setUint32(4, 0xFFFFFFFE, true); 
+        eofView.setUint32(8, numChunks, true); // Payload: Total Chunks
         dataChannelsRef.current[0].send(eofPacket);
         
         await new Promise(res => setTimeout(res, 20)); // v02.1.6: Reduced from 50ms
@@ -796,12 +808,16 @@ function InstantDropContent() {
                     const totalBuffered = dataChannelsRef.current.reduce(
                         (acc, c) => acc + (c.readyState === 'open' ? c.bufferedAmount : 0), 0
                     );
-                    // v02.1.35: Explicit Sync Threshold
-                    if (totalBuffered < DRAIN_THRESHOLD) { 
+                    
+                    // v02.1.36: Elastic Window (Congestion Avoidance)
+                    // If buffer is slammed (>16MB), we wait for it to clear much more before pushing next file
+                    const dynamicBarrier = (totalBuffered > 16 * 1024 * 1024) ? DRAIN_THRESHOLD / 2 : DRAIN_THRESHOLD;
+
+                    if (totalBuffered < dynamicBarrier) { 
                         resolve();
                     } else {
-                        if (Math.random() < 0.1) logDebug(`Sender: Symmetry Wait... Buffer at ${Math.round(totalBuffered/1024/1024)}MB`);
-                        setTimeout(checkDrain, 20); 
+                        if (Math.random() < 0.1) logDebug(`Sender: Elastic Wait... Buffer at ${Math.round(totalBuffered/1024/1024)}MB`);
+                        setTimeout(checkDrain, totalBuffered > 20000000 ? 50 : 20); 
                     }
                 };
                 checkDrain();
@@ -919,20 +935,32 @@ function InstantDropContent() {
             
             if (chunkIdx === 0xFFFFFFFF) return; // Nitro Warmup
             
-            const pureData = data.slice(8);
-            totalReceivedBytesRef.current += pureData.byteLength;
+            if (chunkIdx === 0xFFFFFFFD || chunkIdx === 0xFFFFFFFE) {
+                // v02.1.36: 12-byte Rich Signaling Parsing
+                const payloadCount = (data.byteLength >= 12) ? view.getUint32(8, true) : -1;
+                workerRef.current?.postMessage({
+                    type: 'chunk',
+                    fileIdx: fileIdx,
+                    chunkIdx: chunkIdx,
+                    payloadCount
+                });
+            } else if (chunkIdx === 0xFFFFFFFC) {
+                logDebug(`Receiver: Symmetry Pulse for ${fileIdx}.`);
+            } else {
+                // Regular Chunk
+                const pureData = data.slice(8);
+                totalReceivedBytesRef.current += pureData.byteLength;
 
-            // v02.1.34: Zero-Copy Worker Handover
-            workerRef.current.postMessage({
-                type: 'chunk',
-                fileIdx,
-                chunkIdx,
-                originalBuffer: data,
-                offset: 8
-            }, [data]);
+                workerRef.current.postMessage({
+                    type: 'chunk',
+                    fileIdx,
+                    chunkIdx,
+                    originalBuffer: data,
+                    offset: 8
+                }, [data]);
+            }
 
             if (chunkIdx % 100 === 0) {
-                // Approximate progress based on known metadata
                 setProgress(p => Math.min(99, p + 1)); 
             }
         }
@@ -1133,8 +1161,8 @@ function InstantDropContent() {
                         <Smartphone className="w-12 h-12 text-indigo-500" />
                     </div>
                     <h1 className="text-4xl md:text-5xl font-bold text-foreground mb-4">Turbo Drop</h1>
-                    <p className="text-xs text-muted-foreground font-medium tracking-widest uppercase mb-2">v02.1.35 
-Titan-Infinity (Build: 2600)</p>
+                    <p className="text-xs text-muted-foreground font-medium tracking-widest uppercase mb-2">v02.1.36 
+Titan-Nova (Build: 2700)</p>
                     <p className="text-lg text-muted-foreground max-w-2xl mx-auto">
                         The ultimate high-speed file sharing app. Transfer photos and large files (up to 200MB) from desktop to mobile or mobile to mobile instantly.
                     </p>
@@ -1368,7 +1396,7 @@ Titan-Infinity (Build: 2600)</p>
                                 <>
                                     <h2 className="text-2xl font-bold">Receiving File</h2>
                                     <p className="mt-2 text-indigo-600 dark:text-indigo-400 font-bold tracking-widest text-[10px] animate-pulse">
-                                        {VERSION} TITAN-INFINITY (BUILD: 2600)
+                                        {VERSION} TITAN-NOVA (BUILD: 2700)
                                     </p>
 
                                     {status === 'connecting' && (
