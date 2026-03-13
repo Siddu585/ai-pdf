@@ -1,2 +1,2 @@
-Deploying Hydra-Storm: 2026-03-13T23:20:00Z
-12-Channel Scaling + 128KB Chunks (Build: 2000)
+Deploying Hydra-Burst: 2026-03-13T23:35:00Z
+16MB Ceiling + 128KB Pacing Frequency (Build: 2100)
