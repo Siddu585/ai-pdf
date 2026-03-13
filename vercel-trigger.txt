@@ -1,5 +1,6 @@
-Deploying TurboDrop v02.1.33 "Titan-Omni"
-- Build 2400
-- Screen Wake-Lock (Anti-Throttling)
-- Finalization Handshake (Fixed Missing Download Button)
-- Safe Chunk Indexing
+Deploying TurboDrop v02.1.34 "Titan-Nitro"
+- Build 2500
+- 1MB Block-Pacing (8x Yield reduction)
+- Zero-Allocation Data Flow (Memory Efficient)
+- Hardened Reassembly Worker (Download Button Fix)
+- Extended Handshake (10s Verification)

@@ -11,12 +11,12 @@ import { Footer } from "@/components/layout/Footer";
 import { useUsage } from "@/hooks/useUsage";
 import { PaywallModal } from "@/components/layout/PaywallModal";
 
-// v02.1.33 Titan-Omni (Safe-Indexing + Screen Wake-Lock)
-const VERSION = "v02.1.33";
+// v02.1.34 Titan-Nitro (1MB Block-Pacing + Zero-Allocation)
+const VERSION = "v02.1.34";
 const CHANNELS = 12; // 12-Piston Core (Scaling Champion)
 const CHUNK_SIZE = 128 * 1024; // 128KB (High Volume)
-const HIGH_WATER_MARK = 1024 * 1024; // 1MB per channel (12MB total active)
-const PACER_THRESHOLD = 128 * 1024; // Yield every chunk (High-Freq Recovery)
+const HIGH_WATER_MARK = 2048 * 1024; // 2MB per channel (24MB total active)
+const PACER_THRESHOLD = 1024 * 1024; // 1MB Blocks (8x Yield reduction)
 const MAX_IN_FLIGHT = 512; // 64MB potential window
 const getBackendUrls = () => {
     let rawUrl = (process.env.NEXT_PUBLIC_API_URL || "").trim().replace(/\/$/, "");
@@ -212,19 +212,27 @@ function InstantDropContent() {
             let expectedTotalFiles = -1;
 
             self.onmessage = function(e) {
-                const { type, data, fileIdx, chunkIdx, meta } = e.data;
+                const { type, fileIdx, chunkIdx, meta } = e.data;
 
                 if (type === 'metadata') {
                     fileMetas.set(fileIdx, meta);
                     if (!fileBuffers.has(fileIdx)) fileBuffers.set(fileIdx, []);
                 } else if (type === 'sector-eof') {
                     expectedTotalChunks.set(fileIdx, e.data.totalChunks);
+                    // Critical Trace: If we already have all chunks, trigger immediate reassembly
+                    const current = (receivedChunksCount.get(fileIdx) || 0);
+                    if (current === e.data.totalChunks) {
+                         const meta = fileMetas.get(fileIdx);
+                         self.postMessage({ type: 'reassembled', fileIdx, name: meta.name, fileType: meta.fileType, chunks: fileBuffers.get(fileIdx) });
+                         fileBuffers.delete(fileIdx); fileMetas.delete(fileIdx); receivedChunksCount.delete(fileIdx); expectedTotalChunks.delete(fileIdx); reassembledCount++;
+                    }
                 } else if (type === 'batch-eof') {
                     expectedTotalFiles = e.data.totalFiles;
                 } else if (type === 'chunk') {
                     if (!fileBuffers.has(fileIdx)) fileBuffers.set(fileIdx, []);
                     const chunks = fileBuffers.get(fileIdx);
-                    chunks[chunkIdx] = data;
+                    // v02.1.34: Zero-Allocation View
+                    chunks[chunkIdx] = new Uint8Array(e.data.originalBuffer, e.data.offset);
                     const current = (receivedChunksCount.get(fileIdx) || 0) + 1;
                     receivedChunksCount.set(fileIdx, current);
                     
@@ -653,6 +661,7 @@ function InstantDropContent() {
         
         // v02.1.33 Finalization Handshake: Wait for receiver to confirm local save
         logDebug("Sender: Batch sent. Awaiting receiver verification...");
+        setStatus('done-waiting'); // New UI state for "Verifying..."
         const waitForAck = () => new Promise<void>((resolve) => {
             const handler = (e: any) => {
                 if (e.detail.type === 'batch-ack') {
@@ -661,11 +670,11 @@ function InstantDropContent() {
                 }
             };
             window.addEventListener('webrtc-sender-msg', handler);
-            // Safety timeout
+            // v02.1.34: Increased to 10s for large batches
             setTimeout(() => {
                 window.removeEventListener('webrtc-sender-msg', handler);
                 resolve();
-            }, 5000);
+            }, 10000);
         });
         await waitForAck();
 
@@ -688,18 +697,19 @@ function InstantDropContent() {
             if (!isActive.current) return;
             const dc = dataChannelsRef.current[i % CHANNELS];
             if (dc?.readyState === 'open') {
-                const chunk = buffer.slice(offset, offset + CHUNK_SIZE);
                 const pieceIdx = Math.floor(offset / CHUNK_SIZE);
-                const packet = new Uint8Array(8 + chunk.byteLength);
+                // v02.1.34: Zero-Copy View Construction
+                const chunkData = new Uint8Array(buffer, offset, Math.min(CHUNK_SIZE, buffer.byteLength - offset));
+                const packet = new Uint8Array(8 + chunkData.byteLength);
                 const view = new DataView(packet.buffer);
                 view.setUint32(0, index, true);
                 view.setUint32(4, pieceIdx, true);
-                packet.set(new Uint8Array(chunk), 8);
+                packet.set(chunkData, 8);
                 try {
                     dc.send(packet);
-                    offset += CHUNK_SIZE;
+                    offset += chunkData.byteLength;
                     chunkIdx++;
-                    totalSentBytesRef.current += chunk.byteLength;
+                    totalSentBytesRef.current += chunkData.byteLength;
                 } catch (e) {}
             }
         }
@@ -715,21 +725,21 @@ function InstantDropContent() {
                 const dc = dataChannelsRef.current[dcIdx];
 
                 if (dc?.readyState === 'open' && dc.bufferedAmount < HIGH_WATER_MARK) {
-                    const chunk = buffer.slice(offset, offset + CHUNK_SIZE);
                     const pieceIdx = Math.floor(offset / CHUNK_SIZE);
-                    
-                    const packet = new Uint8Array(8 + chunk.byteLength);
+                    // v02.1.34: Zero-Copy View
+                    const chunkData = new Uint8Array(buffer, offset, Math.min(CHUNK_SIZE, buffer.byteLength - offset));
+                    const packet = new Uint8Array(8 + chunkData.byteLength);
                     const view = new DataView(packet.buffer);
                     view.setUint32(0, index, true);
                     view.setUint32(4, pieceIdx, true);
-                    packet.set(new Uint8Array(chunk), 8);
+                    packet.set(chunkData, 8);
 
                     try {
                         dc.send(packet);
-                        offset += CHUNK_SIZE;
+                        offset += chunkData.byteLength;
                         chunkIdx = (dcIdx + 1) % CHANNELS; // Rotate starting channel
                         pacerAccumulator += packet.byteLength;
-                        totalSentBytesRef.current += chunk.byteLength;
+                        totalSentBytesRef.current += chunkData.byteLength;
                         sentThisLoop = true;
 
                         if (pacerAccumulator >= PACER_THRESHOLD) {
@@ -894,13 +904,14 @@ function InstantDropContent() {
             const pureData = data.slice(8);
             totalReceivedBytesRef.current += pureData.byteLength;
 
-            // Use Transferables for extreme performance (Zero-Copy)
+            // v02.1.34: Zero-Copy Worker Handover
             workerRef.current.postMessage({
                 type: 'chunk',
                 fileIdx,
                 chunkIdx,
-                data: pureData
-            }, [pureData]);
+                originalBuffer: data,
+                offset: 8
+            }, [data]);
 
             if (chunkIdx % 100 === 0) {
                 // Approximate progress based on known metadata
@@ -1104,8 +1115,8 @@ function InstantDropContent() {
                         <Smartphone className="w-12 h-12 text-indigo-500" />
                     </div>
                     <h1 className="text-4xl md:text-5xl font-bold text-foreground mb-4">Turbo Drop</h1>
-                    <p className="text-xs text-muted-foreground font-medium tracking-widest uppercase mb-2">v02.1.33 
-Titan-Omni (Build: 2400)</p>
+                    <p className="text-xs text-muted-foreground font-medium tracking-widest uppercase mb-2">v02.1.34 
+Titan-Nitro (Build: 2500)</p>
                     <p className="text-lg text-muted-foreground max-w-2xl mx-auto">
                         The ultimate high-speed file sharing app. Transfer photos and large files (up to 200MB) from desktop to mobile or mobile to mobile instantly.
                     </p>
@@ -1210,8 +1221,14 @@ Titan-Omni (Build: 2400)</p>
                                 </>
                             )}
 
-                            {(status === 'connecting' || status === 'transferring' || (status === 'done' && mode === 'send')) && (
+                            {(status === 'connecting' || status === 'transferring' || status === 'done-waiting' || (status === 'done' && mode === 'send')) && (
                                 <div className="space-y-6 w-full max-w-md mx-auto">
+                                    {status === 'done-waiting' && (
+                                        <div className="flex items-center justify-center text-indigo-600 bg-indigo-50 dark:bg-indigo-900/20 p-4 rounded-xl font-bold animate-pulse">
+                                            <Loader2 className="w-5 h-5 animate-spin mr-2" />
+                                            Verifying Reassembly...
+                                        </div>
+                                    )}
                                     <div className="flex items-center justify-between p-4 bg-muted rounded-xl border mb-4">
                                         <div className="text-left w-full">
                                             <p className="font-semibold text-foreground truncate max-w-[300px]">
@@ -1333,7 +1350,7 @@ Titan-Omni (Build: 2400)</p>
                                 <>
                                     <h2 className="text-2xl font-bold">Receiving File</h2>
                                     <p className="mt-2 text-indigo-600 dark:text-indigo-400 font-bold tracking-widest text-[10px] animate-pulse">
-                                        {VERSION} TITAN-OMNI (BUILD: 2400)
+                                        {VERSION} TITAN-NITRO (BUILD: 2500)
                                     </p>
 
                                     {status === 'connecting' && (
