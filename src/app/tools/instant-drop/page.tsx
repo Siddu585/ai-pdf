@@ -12,7 +12,7 @@ import { useUsage } from "@/hooks/useUsage";
 import { PaywallModal } from "@/components/layout/PaywallModal";
 
 // v02.1.39 Titan-Singularity (Triple-Pipe Multiplexing + Jumbo Chunks)
-const VERSION = "v02.1.39 (Patch 1)";
+const VERSION = "v02.1.39 (Patch 2)";
 const PIPES = 3; 
 const CHANNELS = 12;
 const CHANNELS_PER_PIPE = 4;
@@ -261,6 +261,7 @@ function InstantDropContent() {
         
         worker.onmessage = (e) => {
             if (e.data.type === 'reassembled') {
+                 reassembledCount.current++; 
                  const { fileIdx, name, fileType, chunks } = e.data;
                  const blob = new Blob(chunks, { type: fileType || 'application/octet-stream' });
                  setReceivedFiles(prev => [...prev, { blob, name }]);
@@ -704,14 +705,17 @@ function InstantDropContent() {
             );
 
             if (totalBuffered < DRAIN_THRESHOLD) {
-                const dcIdx = chunkIdx % CHANNELS;
-                const dc = dataChannelsRef.current[dcIdx];
+                // v02.1.39 (Patch 2): Dynamically pick first available open channel
+                let dcCandidate = dataChannelsRef.current[chunkIdx % CHANNELS];
+                if (!dcCandidate || dcCandidate.readyState !== 'open') {
+                    dcCandidate = dataChannelsRef.current.find(c => c?.readyState === 'open');
+                }
+                const dc = dcCandidate;
 
-                if (dc?.readyState === 'open') {
+                if (dc && dc.readyState === 'open') {
                     const offset = chunkIdx * CHUNK_SIZE;
                     const chunkData = new Uint8Array(buffer, offset, Math.min(CHUNK_SIZE, buffer.byteLength - offset));
                     
-                    // v02.1.38: 12-byte Rich Header (index, chunkIdx, totalChunks)
                     const packet = new Uint8Array(12 + chunkData.byteLength);
                     const view = new DataView(packet.buffer);
                     view.setUint32(0, index, true);
@@ -720,7 +724,7 @@ function InstantDropContent() {
                     packet.set(chunkData, 12);
 
                     try {
-                        dc.send(packet);
+                        if (dc) dc.send(packet);
                         totalSentBytesRef.current += packet.byteLength;
                         chunkIdx++;
 
@@ -731,8 +735,8 @@ function InstantDropContent() {
                         // Channel slammed, loop will retry
                     }
                 } else {
-                    // v02.1.39 (Patch 1): DO NOT increment chunkIdx if channel is closed.
-                    // Wait for reconnect or next rotation.
+                    // v02.1.39 (Patch 2): No channels ready yet, yield to prevent freeze
+                    await new Promise(res => setTimeout(res, 50));
                 }
             } else {
                 // Throttle: v02.1.38 Pulse Pacing (Background Resilient)
@@ -1126,7 +1130,7 @@ function InstantDropContent() {
                         <Smartphone className="w-12 h-12 text-indigo-500" />
                     </div>
                     <h1 className="text-4xl md:text-5xl font-bold text-foreground mb-4">Turbo Drop</h1>
-                    <p className="text-xs text-indigo-600 font-black tracking-[0.2em] uppercase mb-2">v02.1.39 (Patch 1) 
+                    <p className="text-xs text-indigo-600 font-black tracking-[0.2em] uppercase mb-2">v02.1.39 (Patch 2) 
 Titan-Singularity (Sustain: 5MB/s+)</p>
                     <p className="text-lg text-muted-foreground max-w-2xl mx-auto">
                         The ultimate high-speed file sharing app. Transfer photos and large files (up to 200MB) from desktop to mobile or mobile to mobile instantly.

@@ -1,5 +1,5 @@
-Deploying TurboDrop v02.1.39 "Titan-Singularity" (Patch 1)
-- FIX: Critical Data Discard bug (Zero-Loss Pipeline)
-- FIX: Parallel Setup race condition (DataChannel Stability)
+Deploying TurboDrop v02.1.39 "Titan-Singularity" (Patch 2)
+- FIX: Receiver ReassembledCount pulse (Verified Handshake)
+- FIX: Sender Channel-Selection busy wait (UI Stability)
 - Breakthrough: Sustaining 5MB/s+ throughput
-- Active Singularity Probe: Guaranteed handshake resolution
+- Architecture: Zero-Discard Triple-Pipe Multiplexing
