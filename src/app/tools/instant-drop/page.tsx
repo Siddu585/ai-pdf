@@ -11,13 +11,14 @@ import { Footer } from "@/components/layout/Footer";
 import { useUsage } from "@/hooks/useUsage";
 import { PaywallModal } from "@/components/layout/PaywallModal";
 
-// v02.1.34 Titan-Nitro (1MB Block-Pacing + Zero-Allocation)
-const VERSION = "v02.1.34";
+// v02.1.35 Titan-Infinity (Unified Binary Signaling + Symmetry Pacing)
+const VERSION = "v02.1.35";
 const CHANNELS = 12; // 12-Piston Core (Scaling Champion)
-const CHUNK_SIZE = 128 * 1024; // 128KB (High Volume)
-const HIGH_WATER_MARK = 2048 * 1024; // 2MB per channel (24MB total active)
-const PACER_THRESHOLD = 1024 * 1024; // 1MB Blocks (8x Yield reduction)
+const CHUNK_SIZE = 126 * 1024; // 126KB (Reserved for 2-word header)
+const HIGH_WATER_MARK = 1536 * 1024; // 1.5MB per channel (18MB total active)
+const PACER_THRESHOLD = 1024 * 1024; // 1MB Blocks
 const MAX_IN_FLIGHT = 512; // 64MB potential window
+const DRAIN_THRESHOLD = 20 * 1024 * 1024; // 20MB (Titan-Infinity Sync)
 const getBackendUrls = () => {
     let rawUrl = (process.env.NEXT_PUBLIC_API_URL || "").trim().replace(/\/$/, "");
     
@@ -207,8 +208,7 @@ function InstantDropContent() {
             let fileBuffers = new Map();
             let fileMetas = new Map();
             let receivedChunksCount = new Map();
-            let expectedTotalChunks = new Map();
-            let reassembledCount = 0;
+            let reassembledFiles = new Set();
             let expectedTotalFiles = -1;
 
             self.onmessage = function(e) {
@@ -217,38 +217,34 @@ function InstantDropContent() {
                 if (type === 'metadata') {
                     fileMetas.set(fileIdx, meta);
                     if (!fileBuffers.has(fileIdx)) fileBuffers.set(fileIdx, []);
-                } else if (type === 'sector-eof') {
-                    expectedTotalChunks.set(fileIdx, e.data.totalChunks);
-                    // Critical Trace: If we already have all chunks, trigger immediate reassembly
-                    const current = (receivedChunksCount.get(fileIdx) || 0);
-                    if (current === e.data.totalChunks) {
-                         const meta = fileMetas.get(fileIdx);
-                         self.postMessage({ type: 'reassembled', fileIdx, name: meta.name, fileType: meta.fileType, chunks: fileBuffers.get(fileIdx) });
-                         fileBuffers.delete(fileIdx); fileMetas.delete(fileIdx); receivedChunksCount.delete(fileIdx); expectedTotalChunks.delete(fileIdx); reassembledCount++;
-                    }
-                } else if (type === 'batch-eof') {
-                    expectedTotalFiles = e.data.totalFiles;
                 } else if (type === 'chunk') {
-                    if (!fileBuffers.has(fileIdx)) fileBuffers.set(fileIdx, []);
-                    const chunks = fileBuffers.get(fileIdx);
-                    // v02.1.34: Zero-Allocation View
-                    chunks[chunkIdx] = new Uint8Array(e.data.originalBuffer, e.data.offset);
-                    const current = (receivedChunksCount.get(fileIdx) || 0) + 1;
-                    receivedChunksCount.set(fileIdx, current);
-                    
-                    const expected = expectedTotalChunks.get(fileIdx);
-                    if (expected !== undefined && current === expected) {
-                        const meta = fileMetas.get(fileIdx);
-                        self.postMessage({ type: 'reassembled', fileIdx, name: meta.name, fileType: meta.fileType, chunks });
-                        fileBuffers.delete(fileIdx);
-                        fileMetas.delete(fileIdx);
-                        receivedChunksCount.delete(fileIdx);
-                        expectedTotalChunks.delete(fileIdx);
-                        reassembledCount++;
+                    if (chunkIdx === 0xFFFFFFFE) { // Sector EOF
+                        expectedTotalChunks.set(fileIdx, e.data.totalChunks);
+                        const current = (receivedChunksCount.get(fileIdx) || 0);
+                        if (current === e.data.totalChunks) {
+                             const meta = fileMetas.get(fileIdx);
+                             self.postMessage({ type: 'reassembled', fileIdx, name: meta.name, fileType: meta.fileType, chunks: fileBuffers.get(fileIdx) });
+                             fileBuffers.delete(fileIdx); fileMetas.delete(fileIdx); receivedChunksCount.delete(fileIdx); expectedTotalChunks.delete(fileIdx); reassembledFiles.add(fileIdx);
+                        }
+                    } else if (chunkIdx === 0xFFFFFFFD) { // Batch EOF
+                        expectedTotalFiles = e.data.totalFiles;
+                    } else {
+                        if (!fileBuffers.has(fileIdx)) fileBuffers.set(fileIdx, []);
+                        const chunks = fileBuffers.get(fileIdx);
+                        chunks[chunkIdx] = new Uint8Array(e.data.originalBuffer, e.data.offset);
+                        const current = (receivedChunksCount.get(fileIdx) || 0) + 1;
+                        receivedChunksCount.set(fileIdx, current);
+                        
+                        const expected = expectedTotalChunks.get(fileIdx);
+                        if (expected !== undefined && current === expected) {
+                            const meta = fileMetas.get(fileIdx);
+                            self.postMessage({ type: 'reassembled', fileIdx, name: meta.name, fileType: meta.fileType, chunks });
+                            fileBuffers.delete(fileIdx); fileMetas.delete(fileIdx); receivedChunksCount.delete(fileIdx); expectedTotalChunks.delete(fileIdx); reassembledFiles.add(fileIdx);
+                        }
                     }
                 }
                 
-                if (expectedTotalFiles !== -1 && reassembledCount >= expectedTotalFiles) {
+                if (expectedTotalFiles !== -1 && reassembledFiles.size >= expectedTotalFiles) {
                     self.postMessage({ type: 'all-done' });
                 }
             };
@@ -259,10 +255,19 @@ function InstantDropContent() {
         
         worker.onmessage = (e) => {
             if (e.data.type === 'reassembled') {
-                 const { name, fileType, chunks } = e.data;
+                 const { fileIdx, name, fileType, chunks } = e.data;
                  const blob = new Blob(chunks, { type: fileType || 'application/octet-stream' });
                  setReceivedFiles(prev => [...prev, { blob, name }]);
                  logDebug(`Receiver: Worker reassembly complete for ${name}.`);
+                 
+                 // v02.1.35: Symmetry Pacing ACK Pulse
+                 if (dataChannelsRef.current[0]?.readyState === 'open') {
+                     const pulsePkt = new Uint8Array(8);
+                     const pulseView = new DataView(pulsePkt.buffer);
+                     pulseView.setUint32(0, fileIdx, true);
+                     pulseView.setUint32(4, 0xFFFFFFFC, true); // Symmetry ACK constant
+                     dataChannelsRef.current[0].send(pulsePkt);
+                 }
             } else if (e.data.type === 'all-done') {
                  logDebug("Receiver: Data fully reassembled. Verifying...");
                  setStatus('done');
@@ -657,7 +662,12 @@ function InstantDropContent() {
             await transferFileP2PParallel(currentFiles[i], i);
         }
         
-        sendControlMsg({ type: 'batch-eof', totalFiles: currentFiles.length });
+        // v02.1.35 Unified Binary Signaling: No JSON blockage
+        const batchEofPkt = new Uint8Array(8);
+        const batchView = new DataView(batchEofPkt.buffer);
+        batchView.setUint32(0, 0, true);
+        batchView.setUint32(4, 0xFFFFFFFD, true); // Batch EOF constant
+        dataChannelsRef.current[0].send(batchEofPkt);
         
         // v02.1.33 Finalization Handshake: Wait for receiver to confirm local save
         logDebug("Sender: Batch sent. Awaiting receiver verification...");
@@ -676,6 +686,9 @@ function InstantDropContent() {
                 resolve();
             }, 10000);
         });
+
+        // symmetry-pacing trigger: Send one final pulse
+        sendControlMsg({ type: 'force-verify' });
         await waitForAck();
 
         setStatus('done');
@@ -766,12 +779,12 @@ function InstantDropContent() {
         // Final Sync for progress
         setProgress(100);
 
-        // Send EOF over reliable channel 0
-        dataChannelsRef.current[0].send(JSON.stringify({ 
-            type: 'sector-eof', 
-            fileIndex: index,
-            totalChunks: numChunks
-        }));
+        // v02.1.35: Binary Unified EOF
+        const eofPacket = new Uint8Array(8);
+        const eofView = new DataView(eofPacket.buffer);
+        eofView.setUint32(0, index, true);
+        eofView.setUint32(4, 0xFFFFFFFE, true); // Sector EOF constant
+        dataChannelsRef.current[0].send(eofPacket);
         
         await new Promise(res => setTimeout(res, 20)); // v02.1.6: Reduced from 50ms
         
@@ -783,12 +796,12 @@ function InstantDropContent() {
                     const totalBuffered = dataChannelsRef.current.reduce(
                         (acc, c) => acc + (c.readyState === 'open' ? c.bufferedAmount : 0), 0
                     );
-                    // v02.1.32: Mandatory 16MB Ceiling (Unchained Flow)
-                    if (totalBuffered < 16252928) { 
+                    // v02.1.35: Explicit Sync Threshold
+                    if (totalBuffered < DRAIN_THRESHOLD) { 
                         resolve();
                     } else {
-                        if (Math.random() < 0.1) logDebug(`Sender: Transition Waiting... Buffer at ${Math.round(totalBuffered/1024/1024)}MB`);
-                        setTimeout(checkDrain, 30); // v02.1.9: Maximized check cycle
+                        if (Math.random() < 0.1) logDebug(`Sender: Symmetry Wait... Buffer at ${Math.round(totalBuffered/1024/1024)}MB`);
+                        setTimeout(checkDrain, 20); 
                     }
                 };
                 checkDrain();
@@ -865,7 +878,12 @@ function InstantDropContent() {
                         } else {
                             try { await peerRef.current?.addIceCandidate(new RTCIceCandidate(data.candidate)); } catch (e) {}
                         }
-                    } else if (data.type === 'metadata' || data.type === 'sector-eof' || data.type === 'batch-eof') {
+                    } else if (data.type === 'force-verify') {
+                        // v02.1.35 Handshake Recovery
+                        if (reassembledCount.current >= expectedTotalFiles.current && expectedTotalFiles.current !== -1) {
+                            sendControlMsg({ type: 'batch-ack' });
+                        }
+                    } else if (data.type === 'metadata' || data.type === 'batch-eof') {
                         handleIncomingData(data, 0);
                     }
                 } catch (err: any) {
@@ -1115,8 +1133,8 @@ function InstantDropContent() {
                         <Smartphone className="w-12 h-12 text-indigo-500" />
                     </div>
                     <h1 className="text-4xl md:text-5xl font-bold text-foreground mb-4">Turbo Drop</h1>
-                    <p className="text-xs text-muted-foreground font-medium tracking-widest uppercase mb-2">v02.1.34 
-Titan-Nitro (Build: 2500)</p>
+                    <p className="text-xs text-muted-foreground font-medium tracking-widest uppercase mb-2">v02.1.35 
+Titan-Infinity (Build: 2600)</p>
                     <p className="text-lg text-muted-foreground max-w-2xl mx-auto">
                         The ultimate high-speed file sharing app. Transfer photos and large files (up to 200MB) from desktop to mobile or mobile to mobile instantly.
                     </p>
@@ -1350,7 +1368,7 @@ Titan-Nitro (Build: 2500)</p>
                                 <>
                                     <h2 className="text-2xl font-bold">Receiving File</h2>
                                     <p className="mt-2 text-indigo-600 dark:text-indigo-400 font-bold tracking-widest text-[10px] animate-pulse">
-                                        {VERSION} TITAN-NITRO (BUILD: 2500)
+                                        {VERSION} TITAN-INFINITY (BUILD: 2600)
                                     </p>
 
                                     {status === 'connecting' && (
