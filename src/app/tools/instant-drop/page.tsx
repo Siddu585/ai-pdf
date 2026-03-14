@@ -189,9 +189,10 @@ function InstantDropContent() {
                 }
                 break;
             case 'batch-ack':
+            case 'verification-complete':
                 window.dispatchEvent(new CustomEvent('webrtc-sender-msg', { detail: msg }));
-                if (modeRef.current === 'send' && statusRef.current === 'done-waiting') {
-                    logDebug("Sender: Final sync ACK received. Closing session.");
+                if (modeRef.current === 'send' && (statusRef.current === 'done-waiting' || statusRef.current === 'transferring')) {
+                    logDebug(`Sender: Final verification (${msg.type}) received. Closing session.`);
                     setStatus('done');
                 }
                 break;
@@ -209,8 +210,9 @@ function InstantDropContent() {
             case 'force-verify':
                 if (modeRef.current === 'receive') {
                     logDebug("Receiver: Force-Verify signal received.");
-                    if (reassembledCount.current >= expectedTotalFiles.current && expectedTotalFiles.current !== -1) {
-                         sendControlMsg({ type: 'batch-ack' });
+                    workerRef.current?.postMessage({ type: 'force-all-done' });
+                    if (reassembledCount.current > 0) {
+                         sendControlMsg({ type: 'verification-complete', status: 'success' });
                          setStatus('done');
                     }
                 }
@@ -381,6 +383,11 @@ function InstantDropContent() {
                     }
                 }
                 
+                if (type === 'force-all-done') {
+                    self.postMessage({ type: 'all-done' });
+                    return;
+                }
+                
                 if (expectedTotalFiles !== -1 && reassembledFiles.size >= expectedTotalFiles) {
                     self.postMessage({ type: 'all-done' });
                 }
@@ -415,6 +422,7 @@ function InstantDropContent() {
                          dataChannelsRef.current.forEach(dc => {
                              if (dc?.readyState === 'open') dc.send(ackPkt);
                          });
+                         sendControlMsg({ type: 'verification-complete', status: 'success' }); // v02.1.39 (Patch 11)
                          sendControlMsg({ type: 'batch-ack' });
                          setTimeout(sendAck, 2000); 
                      }
@@ -765,12 +773,15 @@ function InstantDropContent() {
                 }
             };
             window.addEventListener('webrtc-sender-msg', handler);
-            // v02.1.39 (Patch 3): Extended to 5 min — never show 'done' before receiver ACKs
+            // v02.1.39 (Patch 11): Reduced from 5min to 10s based on user recommendation (Safety Net)
             setTimeout(() => {
                 window.removeEventListener('webrtc-sender-msg', handler);
-                logDebug('Sender: ACK timeout (5min). Forcing done state.');
+                if (statusRef.current === 'done-waiting') {
+                    logDebug('Sender: Verification Safety Net (10s) Triggered. Forcing UI Done.');
+                    setStatus('done');
+                }
                 resolve();
-            }, 5 * 60 * 1000);
+            }, 10 * 1000);
         });
 
         // symmetry-pacing trigger: Send one final pulse
