@@ -11,9 +11,9 @@ import { Footer } from "@/components/layout/Footer";
 import { useUsage } from "@/hooks/useUsage";
 import { PaywallModal } from "@/components/layout/PaywallModal";
 
-// v02.1.39 Restoration (Patch 20: Total Signal Guard & UI Hydration)
-const VERSION = "v02.1.39 (Patch 20)";
-const PIPES = 3; // Patch 17/18/19/20: 3-Pipe (12 Channels total)
+// v02.1.39 Restoration (Patch 21: Redundant Signaling & Handshake Hydration)
+const VERSION = "v02.1.39 (Patch 21)";
+const PIPES = 3; // Patch 17-21: 3-Pipe (12 Channels total)
 const CHANNELS_PER_PIPE = 4;
 const CHANNELS = 12; // v02.1.39 (Patch 18): Critical Sync
 const CHUNK_SIZE = 64 * 1024; // 64KB - Authentic Patch 8 Baseline
@@ -70,7 +70,7 @@ function InstantDropContent() {
     const [currentFileIndex, setCurrentFileIndex] = useState(0);
     const [progress, setProgress] = useState(0);
     const [status, setStatus] = useState<"disconnected" | "waiting" | "connecting" | "transferring" | "done" | "error" | "done-waiting">("disconnected");
-    const [receivedFiles, setReceivedFiles] = useState<{ blob: Blob, name: string }[]>([]);
+    const [receivedFiles, setReceivedFiles] = useState<{ blob: Blob | null, name: string }[]>([]);
     const [incomingMeta, setIncomingMeta] = useState<any>(null); // New state for reactive UI labels
     const [totalFiles, setTotalFiles] = useState<number>(0); 
     const [isZipping, setIsZipping] = useState(false);
@@ -127,16 +127,17 @@ function InstantDropContent() {
 
     function sendControlMsg(payload: any) {
         const msgStr = JSON.stringify(payload);
+        let sent = false;
+        // v02.1.39 (Patch 21): Redundant Multicast (WS + DC)
         if (wsRef.current?.readyState === WebSocket.OPEN) {
-            wsRef.current.send(msgStr);
-            return true;
+            try { wsRef.current.send(msgStr); sent = true; } catch(e) {}
         }
         dataChannelsRef.current.forEach(dc => {
             if (dc?.readyState === 'open') {
-                try { dc.send(msgStr); } catch(e) {}
+                try { dc.send(msgStr); sent = true; } catch(e) {}
             }
         });
-        return true;
+        return sent;
     }
 
     function disconnectEverything() {
@@ -202,15 +203,25 @@ function InstantDropContent() {
                 }
                 break;
             case 'verification-complete':
-                // v02.1.39 (Patch 20): Unified Handshake Routing
+                // v02.1.39 (Patch 20/21): Unified Handshake Routing + UI Hydration
                 window.dispatchEvent(new CustomEvent('webrtc-sender-msg', { detail: msg }));
                 if (modeRef.current === 'send' && (statusRef.current === 'done-waiting' || statusRef.current === 'transferring')) {
                     logDebug(`Sender: Final verification (${msg.type}) received. Closing session.`);
                     setStatus('done');
                 }
-                if (modeRef.current === 'receive' && statusRef.current === 'done-waiting') {
+                if (modeRef.current === 'receive') {
                     if (msg.status === 'success') {
                         logDebug("Receiver: Handshake sync detected. Hydrating UI...");
+                        // v02.1.39 (Patch 21): Manual Hydration Safety Net (as suggested by User)
+                        if (msg.fileNames && msg.fileNames.length > 0) {
+                            setReceivedFiles(prev => {
+                                if (prev.length === 0) {
+                                    logDebug("Receiver: Hydrating empty file list from verification payload.");
+                                    return msg.fileNames.map((n: string) => ({ blob: null, name: n }));
+                                }
+                                return prev;
+                            });
+                        }
                         setStatus('done');
                     }
                 }
@@ -1075,11 +1086,12 @@ function InstantDropContent() {
                         if (dc?.readyState === 'open') dc.send(ackPkt);
                     });
                     
-                    // v02.1.39 (Patch 20): Anchored verification including reassembled count
+                    // v02.1.39 (Patch 21): Anchored verification including file list for hydration
                     sendControlMsg({ 
                         type: 'verification-complete', 
                         status: 'success',
-                        count: reassembledCount.current 
+                        count: reassembledCount.current,
+                        fileNames: receivedFiles.map(f => f.name)
                     });
                     sendControlMsg({ type: 'batch-ack' });
                     ackTimer = setTimeout(sendAck, 3000);
