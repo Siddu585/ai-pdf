@@ -11,9 +11,9 @@ import { Footer } from "@/components/layout/Footer";
 import { useUsage } from "@/hooks/useUsage";
 import { PaywallModal } from "@/components/layout/PaywallModal";
 
-// v02.1.39 Restoration (Patch 19: Atomic Hydration & Proxy Fix)
-const VERSION = "v02.1.39 (Patch 19)";
-const PIPES = 3; // Patch 17/18/19: 3-Pipe (12 Channels total)
+// v02.1.39 Restoration (Patch 20: Total Signal Guard & UI Hydration)
+const VERSION = "v02.1.39 (Patch 20)";
+const PIPES = 3; // Patch 17/18/19/20: 3-Pipe (12 Channels total)
 const CHANNELS_PER_PIPE = 4;
 const CHANNELS = 12; // v02.1.39 (Patch 18): Critical Sync
 const CHUNK_SIZE = 64 * 1024; // 64KB - Authentic Patch 8 Baseline
