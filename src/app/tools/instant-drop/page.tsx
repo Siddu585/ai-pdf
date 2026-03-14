@@ -12,7 +12,7 @@ import { useUsage } from "@/hooks/useUsage";
 import { PaywallModal } from "@/components/layout/PaywallModal";
 
 // v02.1.39 Titan-Singularity (Triple-Pipe Multiplexing + Jumbo Chunks)
-const VERSION = "v02.1.39 (Patch 9)";
+const VERSION = "v02.1.39 (Patch 11)";
 const PIPES = 3; 
 const CHANNELS = 12;
 const CHANNELS_PER_PIPE = 4;
