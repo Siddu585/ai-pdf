@@ -11,8 +11,8 @@ import { Footer } from "@/components/layout/Footer";
 import { useUsage } from "@/hooks/useUsage";
 import { PaywallModal } from "@/components/layout/PaywallModal";
 
-// v02.1.39 Restoration (Patch 25.5: URL Fix & Relay Restore)
-const VERSION = "v02.1.39 (Patch 25.5)";
+// v02.1.39 Restoration (Patch 25.6: Metered Turbo)
+const VERSION = "v02.1.39 (Patch 25.6)";
 const PIPES = 3; // Patch 17-24: 3-Pipe (12 Channels total)
 const CHANNELS_PER_PIPE = 4;
 const CHANNELS = 12; // v02.1.39 (Patch 18): Critical Sync
@@ -21,12 +21,34 @@ const HIGH_WATER_MARK_MAX = 64 * 1024 * 1024; // 64MB - Patch 19 Quasar Baseline
 const PACER_THRESHOLD = 1 * 1024 * 1024; // 1MB - Authentic Patch 8 Baseline
 const MAX_IN_FLIGHT = 128; // Patch 8 Balance
 const DRAIN_THRESHOLD = 64 * 1024 * 1024; // 64MB - Patch 19 Quasar Baseline
-const getBackendUrls = () => {
-    let rawUrl = (process.env.NEXT_PUBLIC_API_URL || "").trim().replace(/\/$/, "");
+
+// v02.1.39 (Patch 25.6): Extreme URL Sanitization
+// Strips recursive prefixes like ai-pdfai-pdf from environment variables
+const sanitizeBackendUrl = (url: string) => {
+    if (!url) return "";
+    let clean = url.trim().replace(/\/$/, "");
     
-    // v02.1.39 (Patch 25.5): Removed "Sense and Fix" logic that caused recursive URL corruption.
-    // Canonical backend URL should be handled via Vercel env vars directly.
-    const http = rawUrl || (typeof window !== "undefined" ? `${window.location.protocol}//${window.location.hostname}:8000` : "http://localhost:8000");
+    // Remove recursive Render/Vercel name stacking (e.g., ai-pdfai-pdf)
+    // Matches the pattern: duplicate-part | duplicate-part
+    if (clean.includes("ai-pdfai-pdf")) {
+        clean = clean.replace(/ai-pdfai-pdf/g, "ai-pdf");
+    }
+    
+    // Ensure the backend-specific part is present but not duplicated
+    if (!clean.includes("-backend") && clean.includes("onrender.com")) {
+        clean = clean.replace("ai-pdf", "ai-pdf-backend");
+    }
+    
+    return clean;
+};
+
+const getBackendUrls = () => {
+    let rawUrl = process.env.NEXT_PUBLIC_API_URL || "";
+    const sanitized = sanitizeBackendUrl(rawUrl);
+    
+    console.log(`[CONFIG] Backend URL Sanitized: ${sanitized || "Localhost"}`);
+    
+    const http = sanitized || (typeof window !== "undefined" ? `${window.location.protocol}//${window.location.hostname}:8000` : "http://localhost:8000");
     const ws = http.replace(/^https:\/\//i, "wss://").replace(/^http:\/\//i, "ws://");
     
     return { http, ws };
@@ -39,30 +61,29 @@ const ICE_SERVERS = {
         { urls: "stun:stun.l.google.com:19302" },
         { urls: "stun:stun1.l.google.com:19302" },
         { urls: "stun:stun.cloudflare.com:3478" },
-        // v02.1.39 (Patch 25.5): Hardened TURN Relay Pool for Airtel Cellular NAT Traversal
-        // Primary: openrelay (free, highly available)
+        // v02.1.39 (Patch 25.6): Metered Turbo (TLS/443)
+        // Prioritizing turns: transport=tcp to bypass cellular carrier throttling/NAT blocks
         {
             urls: [
-                "turn:openrelay.metered.ca:80",
-                "turn:openrelay.metered.ca:443",
+                "turns:openrelay.metered.ca:443?transport=tcp",
                 "turn:openrelay.metered.ca:443?transport=tcp",
-                "turns:openrelay.metered.ca:443"
+                "turn:openrelay.metered.ca:80?transport=tcp",
             ],
             username: "openrelayproject",
             credential: "openrelayproject"
         },
-        // Backup: Metered.ca free tier
+        // Account Fallback (50GB Free Tier)
         {
             urls: [
-                "turn:a.relay.metered.ca:80",
-                "turn:a.relay.metered.ca:443",
-                "turns:a.relay.metered.ca:443"
+                "turns:swap-pdf.metered.live:443?transport=tcp",
+                "turn:swap-pdf.metered.live:443?transport=tcp",
             ],
             username: "e8dd65b2e518fd1e3f3b30c7",
             credential: "uFj5KNoH6mPM1b5R"
         }
     ]
 };
+
 
 function InstantDropContent() {
     const searchParams = useSearchParams();
