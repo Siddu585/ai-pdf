@@ -11,8 +11,8 @@ import { Footer } from "@/components/layout/Footer";
 import { useUsage } from "@/hooks/useUsage";
 import { PaywallModal } from "@/components/layout/PaywallModal";
 
-// v02.1.39 Restoration (Patch 15: Liquid Fidelity)
-const VERSION = "v02.1.39 (Patch 15)";
+// v02.1.39 Restoration (Patch 16: Robust Handshake)
+const VERSION = "v02.1.39 (Patch 16)";
 const PIPES = 2; // v02.1.39 (Patch 13): 2-Pipe (8 Channels total)
 const CHANNELS = 8;
 const CHANNELS_PER_PIPE = 4;
@@ -438,10 +438,9 @@ function InstantDropContent() {
                          });
                          sendControlMsg({ type: 'verification-complete', status: 'success' }); // v02.1.39 (Patch 11)
                          sendControlMsg({ type: 'batch-ack' });
-                         setTimeout(sendAck, 2000); 
                      }
                  };
-                 sendAck();
+                 // Manual trigger removed here, handled by useEffect below
             }
         };
 
@@ -775,15 +774,15 @@ function InstantDropContent() {
                 }
             };
             window.addEventListener('webrtc-sender-msg', handler);
-            // v02.1.39 (Patch 11): Reduced from 5min to 10s based on user recommendation (Safety Net)
+            // v02.1.39 (Patch 11/15): Increased from 10s to 20s to accommodate large batches
             setTimeout(() => {
                 window.removeEventListener('webrtc-sender-msg', handler);
                 if (statusRef.current === 'done-waiting') {
-                    logDebug('Sender: Verification Safety Net (10s) Triggered. Forcing UI Done.');
+                    logDebug('Sender: Verification Safety Net (20s) Triggered. Forcing UI Done.');
                     setStatus('done');
                 }
                 resolve();
-            }, 10 * 1000);
+            }, 20 * 1000);
         });
 
         // symmetry-pacing trigger: Send one final pulse
@@ -1064,6 +1063,29 @@ function InstantDropContent() {
             return () => clearTimeout(timer);
         }
     }, [initialRoom]);
+
+    // v02.1.39 (Patch 16): Robust Handshake Logic
+    useEffect(() => {
+        let ackTimer: any = null;
+        if (mode === 'receive' && status === 'done') {
+            const sendAck = () => {
+                if (statusRef.current === 'done') {
+                    const ackPkt = new Uint8Array(12);
+                    const ackView = new DataView(ackPkt.buffer);
+                    ackView.setUint32(0, 0, true);
+                    ackView.setUint32(4, 0xFFFFFFFB, true); // Batch-ACK Pulsar
+                    dataChannelsRef.current.forEach(dc => {
+                        if (dc?.readyState === 'open') dc.send(ackPkt);
+                    });
+                    sendControlMsg({ type: 'verification-complete', status: 'success' });
+                    sendControlMsg({ type: 'batch-ack' });
+                    ackTimer = setTimeout(sendAck, 2000);
+                }
+            };
+            sendAck();
+        }
+        return () => { if (ackTimer) clearTimeout(ackTimer); };
+    }, [status, mode]);
 
     // Cleanup WebRTC and WS on unmount
     useEffect(() => {
