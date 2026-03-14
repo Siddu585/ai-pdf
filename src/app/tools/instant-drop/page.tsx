@@ -11,8 +11,8 @@ import { Footer } from "@/components/layout/Footer";
 import { useUsage } from "@/hooks/useUsage";
 import { PaywallModal } from "@/components/layout/PaywallModal";
 
-// v02.1.39 Restoration (Patch 24: Safe Zero-Copy & Meta-Deduplication)
-const VERSION = "v02.1.39 (Patch 24)";
+// v02.1.39 Restoration (Patch 25: Cellular 5MB/s Goal)
+const VERSION = "v02.1.39 (Patch 25)";
 const PIPES = 3; // Patch 17-24: 3-Pipe (12 Channels total)
 const CHANNELS_PER_PIPE = 4;
 const CHANNELS = 12; // v02.1.39 (Patch 18): Critical Sync
@@ -99,6 +99,8 @@ function InstantDropContent() {
     const reassembledCount = useRef(0);
     const expectedTotalFiles = useRef(-1);
     const lastBytesRef = useRef(0);
+    const avgRTTRef = useRef<number>(0.1); // v02.1.39 (Patch 25): BDP-Snap Average RTT
+    const currentMBpsRef = useRef<number>(1.0); // v02.1.39 (Patch 25): Current Speed for BDP
     const channelFileIndex = useRef<number[]>(new Array(CHANNELS).fill(0));
     const fileBuffers = useRef<Map<number, ArrayBuffer[]>>(new Map());
     const expectedTotalChunks = useRef<Map<number, number>>(new Map());
@@ -187,8 +189,9 @@ function InstantDropContent() {
         switch (msg.type) {
             case 'metadata':
                 if (modeRef.current === 'receive') {
-                    // v02.1.39 (Patch 24): Deduplicate Metadata Processing (Spam Guard)
+                    // v02.1.39 (Patch 24/25): Deduplicate Metadata Processing (Spam Guard Fix)
                     if (fileMetas.current.has(msg.currentIdx)) return;
+                    fileMetas.current.set(msg.currentIdx, msg); // Fix: Actually store the seen metadata
                     
                     logDebug(`Receiver: Metadata for ${msg.name} (File ${msg.currentIdx})`);
                     setIncomingMeta(msg);
@@ -313,6 +316,8 @@ function InstantDropContent() {
             const statsInterval = setInterval(async () => {
                 try {
                     let reportStr = "--- WebRTC Stats (Singularity Triple-Pipe) ---\n";
+                    let rttSum = 0;
+                    let rttCount = 0;
                     for (let i = 0; i < PIPES; i++) {
                         const peer = peersRef.current[i];
                         if (!peer) continue;
@@ -320,9 +325,14 @@ function InstantDropContent() {
                         stats.forEach(report => {
                             if (report.type === 'candidate-pair' && report.state === 'succeeded') {
                                 reportStr += `Pipe-${i}: RTT=${report.currentRoundTripTime} SpeedMultiplier=1.0\n`;
+                                if (report.currentRoundTripTime) {
+                                    rttSum += report.currentRoundTripTime;
+                                    rttCount++;
+                                }
                             }
                         });
                     }
+                    if (rttCount > 0) avgRTTRef.current = rttSum / rttCount;
                     logDebug(reportStr);
                 } catch (e) {}
             }, 5000);
@@ -655,7 +665,13 @@ function InstantDropContent() {
             peer.oniceconnectionstatechange = () => {
                 logDebug(`Pipe-${pipeIdx} ICE State: ${peer.iceConnectionState}`);
                 if (peer.iceConnectionState === 'disconnected' || peer.iceConnectionState === 'failed') {
-                    try { peer.restartIce(); } catch (e) {}
+                    // v02.1.39 (Patch 25): Phoenix Recovery (Pipe Self-Healing)
+                    if (isActive.current && statusRef.current === 'transferring') {
+                        logDebug(`🔥 Pipe-${pipeIdx} Phoenix Recovery: Triggering Re-init...`);
+                        setupWebRTC(ws, isSender, pipeIdx, true); // Fallback to TCP/Relay
+                    } else {
+                        try { peer.restartIce(); } catch (e) {}
+                    }
                 }
             };
 
@@ -699,7 +715,8 @@ function InstantDropContent() {
                     setInterval(() => {
                         const currentTotal = totalSentBytesRef.current + totalReceivedBytesRef.current;
                         const speed = ((currentTotal - prevBytes) / 5 / 1024 / 1024).toFixed(2);
-                        console.log(`%c [HYDRA MONITOR] INSTANT SPEED: ${speed} MB/s`, "color: #00ff00; font-weight: bold;");
+                        currentMBpsRef.current = parseFloat(speed); // v02.1.39 (Patch 25): Update speed for BDP
+                        console.log(`%c [HYDRA MONITOR] INSTANT SPEED: ${speed} MB/s (RTT: ${avgRTTRef.current.toFixed(3)})`, "color: #00ff00; font-weight: bold;");
                         prevBytes = currentTotal;
                     }, 5000);
 
@@ -834,8 +851,11 @@ function InstantDropContent() {
                 (acc, c) => acc + (c?.readyState === 'open' ? c.bufferedAmount : 0), 0
             );
 
-            // v02.1.39 (Patch 15): Removed isReceiverReadyRef check to restore authentic Patch 8 flow.
-            if (totalBuffered < DRAIN_THRESHOLD) {
+            // v02.1.39 (Patch 25): BDP-Snap (Dynamic Adaptive Buffering)
+            // Adaptive limit based on Bandwidth-Delay Product (Speed * RTT * 2)
+            const bdpLimit = Math.max(8 * 1024 * 1024, Math.min(64 * 1024 * 1024, (currentMBpsRef.current * 1024 * 1024 * avgRTTRef.current * 2)));
+
+            if (totalBuffered < bdpLimit) {
                 // v02.1.39 (Patch 2): Dynamically pick first available open channel
                 let dcCandidate: RTCDataChannel | undefined = dataChannelsRef.current[chunkIdx % CHANNELS];
                 if (!dcCandidate || dcCandidate.readyState !== 'open') {
