@@ -11,16 +11,16 @@ import { Footer } from "@/components/layout/Footer";
 import { useUsage } from "@/hooks/useUsage";
 import { PaywallModal } from "@/components/layout/PaywallModal";
 
-// v02.1.39 Restoration (Patch 14: Sync & Flow)
-const VERSION = "v02.1.39 (Patch 14)";
+// v02.1.39 Restoration (Patch 15: Liquid Fidelity)
+const VERSION = "v02.1.39 (Patch 15)";
 const PIPES = 2; // v02.1.39 (Patch 13): 2-Pipe (8 Channels total)
 const CHANNELS = 8;
 const CHANNELS_PER_PIPE = 4;
-const CHUNK_SIZE = 64 * 1024; // v02.1.39 (Patch 13): Reverted to 64KB for maximum SCTP smoothness
+const CHUNK_SIZE = 64 * 1024; // 64KB - Authentic Patch 8 Baseline
 const HIGH_WATER_MARK_MAX = 2 * 1024 * 1024;
-const PACER_THRESHOLD = 1 * 1024 * 1024; // v02.1.39 (Patch 13): 1MB Yield
-const MAX_IN_FLIGHT = 128;
-const DRAIN_THRESHOLD = 16 * 1024 * 1024; // v02.1.39 (Patch 13): 16MB (Proven speed of Patch 7/8/9)
+const PACER_THRESHOLD = 1 * 1024 * 1024; // 1MB - Authentic Patch 8 Baseline
+const MAX_IN_FLIGHT = 128; // Patch 8 Balance
+const DRAIN_THRESHOLD = 16 * 1024 * 1024; // 16MB - Authentic Patch 8 Baseline
 const getBackendUrls = () => {
     let rawUrl = (process.env.NEXT_PUBLIC_API_URL || "").trim().replace(/\/$/, "");
     
@@ -620,17 +620,10 @@ function InstantDropContent() {
                     setupDataChannel(e.channel, index);
                 };
 
-                // Flow control timer (only on pipe 0)
+                // Flow control timer
                 if (pipeIdx === 0) {
-                    setInterval(() => {
-                        if (statusRef.current === 'transferring') {
-                            // v02.1.39 (Patch 14): Increased threshold to 4000 (256MB window for 64KB chunks)
-                            if (totalReceivedChunksCountRef.current > 4000) sendControlMsg({ type: 'flow', status: 'slow' });
-                            else sendControlMsg({ type: 'flow', status: 'ready' });
-                        } else {
-                            sendControlMsg({ type: 'flow', status: 'ready' });
-                        }
-                    }, 500);
+                    // v02.1.39 (Patch 15): DELETED artificial signaling delays.
+                    // WebRTC's native bufferedAmount is sufficient for liquid flow.
                 }
             }
 
@@ -816,8 +809,8 @@ function InstantDropContent() {
                 (acc, c) => acc + (c?.readyState === 'open' ? c.bufferedAmount : 0), 0
             );
 
-            // v02.1.39 (Patch 14): Respect backpressure to prevent deadlock
-            if (totalBuffered < DRAIN_THRESHOLD && isReceiverReadyRef.current) {
+            // v02.1.39 (Patch 15): Removed isReceiverReadyRef check to restore authentic Patch 8 flow.
+            if (totalBuffered < DRAIN_THRESHOLD) {
                 // v02.1.39 (Patch 2): Dynamically pick first available open channel
                 let dcCandidate: RTCDataChannel | undefined = dataChannelsRef.current[chunkIdx % CHANNELS];
                 if (!dcCandidate || dcCandidate.readyState !== 'open') {
@@ -1031,7 +1024,8 @@ function InstantDropContent() {
                 logDebug(`Receiver: Symmetry Pulse for ${fileIdx}.`);
             } else {
                 // Regular Chunk
-                totalReceivedChunksCountRef.current++; // v02.1.39 (Patch 12): Global Tracking
+                const incomingMeta = fileMetas.current.get(fileIdx);
+                totalReceivedChunksCountRef.current++; 
                 // v02.1.39 (Patch 8): Align with 12-byte binary header (fileIdx, chunkIdx, numChunks)
                 workerRef.current.postMessage({
                     type: 'chunk',
@@ -1041,20 +1035,19 @@ function InstantDropContent() {
                     offset: 12
                 }, [data]);
                 if (chunkIdx % 10 === 0) {
-                    // v02.1.39 (Patch 14): Correct progress pulse logic
+                    // v02.1.39 (Patch 15): Authentic soft-grain progress tracking
                     const currentChunksReceived = (currentFileReceivedRef.current.get(fileIdx) || 0) + 1;
                     currentFileReceivedRef.current.set(fileIdx, currentChunksReceived);
-                    totalReceivedChunksCountRef.current++; // Global Tracking
+                    totalReceivedChunksCountRef.current++;
 
                     if (incomingMeta && incomingMeta.size) {
                         const totalChunksExpected = Math.ceil(incomingMeta.size / CHUNK_SIZE);
                         const fileProgress = Math.floor((currentChunksReceived / totalChunksExpected) * 100);
-                        setProgress(Math.max(progress, Math.floor(fileProgress / 5) * 5));
+                        setProgress(fileProgress); // Reverted artificial 5% logic for true fidelity
                     } else {
                         setProgress(p => Math.min(99, p + 2)); 
                     }
                 } else {
-                    // Background increment even if not updating UI
                     const currentChunksReceived = (currentFileReceivedRef.current.get(fileIdx) || 0) + 1;
                     currentFileReceivedRef.current.set(fileIdx, currentChunksReceived);
                     totalReceivedChunksCountRef.current++;
@@ -1242,7 +1235,7 @@ function InstantDropContent() {
                     </div>
                     <h1 className="text-4xl md:text-5xl font-bold text-foreground mb-4">Turbo Drop</h1>
                     <p className="text-xs text-indigo-600 font-black tracking-[0.2em] uppercase mb-2">{VERSION} 
- Titan-Singularity (Sustain: 5MB/s+)</p>
+ Liquid Fidelity (Smooth Batching)</p>
                     <p className="text-lg text-muted-foreground max-w-2xl mx-auto">
                         The ultimate high-speed file sharing app. Transfer photos and large files (up to 200MB) from desktop to mobile or mobile to mobile instantly.
                     </p>
@@ -1492,7 +1485,7 @@ function InstantDropContent() {
                                 <>
                                     <h2 className="text-2xl font-bold">Receiving File</h2>
                                     <p className="mt-2 text-indigo-600 dark:text-indigo-400 font-bold tracking-widest text-[10px] animate-pulse">
-                                        {VERSION} TITAN-SINGULARITY (BREAKTHROUGH: 5MB/s)
+                                        {VERSION} Liquid Fidelity (Smooth Batching)
                                     </p>
 
                                     {status === 'connecting' && (
