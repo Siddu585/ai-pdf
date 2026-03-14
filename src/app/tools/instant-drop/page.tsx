@@ -72,6 +72,7 @@ function InstantDropContent() {
     const [status, setStatus] = useState<"disconnected" | "waiting" | "connecting" | "transferring" | "done" | "error" | "done-waiting">("disconnected");
     const [receivedFiles, setReceivedFiles] = useState<{ blob: Blob, name: string }[]>([]);
     const [incomingMeta, setIncomingMeta] = useState<any>(null); // New state for reactive UI labels
+    const [totalFiles, setTotalFiles] = useState<number>(0); 
     const [isZipping, setIsZipping] = useState(false);
     const [compressImages, setCompressImages] = useState(false);
     const [isCompressing, setIsCompressing] = useState(false);
@@ -168,7 +169,10 @@ function InstantDropContent() {
                     logDebug(`Receiver: Metadata for ${msg.name} (File ${msg.currentIdx})`);
                     setIncomingMeta(msg);
                     if (msg.currentIdx !== undefined) setCurrentFileIndex(msg.currentIdx);
-                    if (msg.totalFiles !== undefined) expectedTotalFiles.current = msg.totalFiles;
+                    if (msg.totalFiles !== undefined) {
+                        expectedTotalFiles.current = msg.totalFiles;
+                        setTotalFiles(msg.totalFiles);
+                    }
                     workerRef.current?.postMessage({ type: 'metadata', fileIdx: msg.currentIdx, meta: msg });
                     setStatus('transferring');
                 }
@@ -176,7 +180,10 @@ function InstantDropContent() {
             case 'batch-eof':
                 if (modeRef.current === 'receive') {
                     logDebug("Receiver: Batch EOF received.");
-                    if (msg.totalFiles !== undefined) expectedTotalFiles.current = msg.totalFiles;
+                    if (msg.totalFiles !== undefined) {
+                        expectedTotalFiles.current = msg.totalFiles;
+                        setTotalFiles(msg.totalFiles);
+                    }
                     setStatus('done-waiting');
                     workerRef.current?.postMessage({ type: 'chunk', fileIdx: 0, chunkIdx: 0xFFFFFFFD, payloadCount: msg.totalFiles });
                 }
@@ -329,9 +336,12 @@ function InstantDropContent() {
                     if (!fileBuffers.has(fileIdx)) fileBuffers.set(fileIdx, []);
                     if (!receivedChunkIndices.has(fileIdx)) receivedChunkIndices.set(fileIdx, new Set());
                 } else if (type === 'chunk') {
-                    if (reassembledFiles.has(fileIdx)) return; // Ignore duplicate packets for finished files
-
-                    if (chunkIdx === 0xFFFFFFFE) { // Sector EOF
+                    if (chunkIdx === 0xFFFFFFFD) { // Batch EOF - DO NOT IGNORE based on reassembledFiles
+                        expectedTotalFiles = e.data.payloadCount;
+                    } else {
+                        if (reassembledFiles.has(fileIdx)) return; // Ignore duplicate packets for finished files
+                        
+                        if (chunkIdx === 0xFFFFFFFE) { // Sector EOF
                         const totalChunks = e.data.payloadCount;
                         expectedTotalChunks.set(fileIdx, totalChunks);
                         
@@ -345,8 +355,6 @@ function InstantDropContent() {
                                  self.postMessage({ type: 'need-metadata', fileIdx });
                              }
                         }
-                    } else if (chunkIdx === 0xFFFFFFFD) { // Batch EOF
-                        expectedTotalFiles = e.data.payloadCount;
                     } else {
                         if (!fileBuffers.has(fileIdx)) fileBuffers.set(fileIdx, []);
                         if (!receivedChunkIndices.has(fileIdx)) receivedChunkIndices.set(fileIdx, new Set());
@@ -1435,16 +1443,16 @@ function InstantDropContent() {
                                     {status === 'transferring' && (
                                         <div className="space-y-4">
                                             {/* Overall Batch Progress */}
-                                            {incomingMeta?.totalFiles && incomingMeta.totalFiles > 1 && (
+                                            {totalFiles > 1 && (
                                                 <div className="space-y-2 pb-4 border-b border-border/50">
                                                     <div className="flex justify-between text-xs font-bold text-indigo-600 dark:text-indigo-400">
                                                         <span>OVERALL BATCH PROGRESS</span>
-                                                        <span>{Math.round((((currentFileIndex || 0) + (progress / 100)) / incomingMeta.totalFiles) * 100)}%</span>
+                                                        <span>{Math.round((((currentFileIndex || 0) + (progress / 100)) / totalFiles) * 100)}%</span>
                                                     </div>
                                                     <div className="w-full bg-indigo-100 dark:bg-indigo-950/50 rounded-full h-2">
                                                         <div
                                                             className="bg-indigo-600 dark:bg-indigo-400 h-2 rounded-full transition-all duration-300"
-                                                            style={{ width: `${(((currentFileIndex || 0) + (progress / 100)) / incomingMeta.totalFiles) * 100}%` }}
+                                                            style={{ width: `${(((currentFileIndex || 0) + (progress / 100)) / totalFiles) * 100}%` }}
                                                         />
                                                     </div>
                                                 </div>
