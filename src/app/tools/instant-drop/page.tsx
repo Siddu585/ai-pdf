@@ -11,9 +11,9 @@ import { Footer } from "@/components/layout/Footer";
 import { useUsage } from "@/hooks/useUsage";
 import { PaywallModal } from "@/components/layout/PaywallModal";
 
-// v02.1.39 Restoration (Patch 21: Redundant Signaling & Handshake Hydration)
-const VERSION = "v02.1.39 (Patch 21)";
-const PIPES = 3; // Patch 17-21: 3-Pipe (12 Channels total)
+// v02.1.39 Restoration (Patch 22: Universal Null-Safety & UI Polish)
+const VERSION = "v02.1.39 (Patch 22)";
+const PIPES = 3; // Patch 17-22: 3-Pipe (12 Channels total)
 const CHANNELS_PER_PIPE = 4;
 const CHANNELS = 12; // v02.1.39 (Patch 18): Critical Sync
 const CHUNK_SIZE = 64 * 1024; // 64KB - Authentic Patch 8 Baseline
@@ -1122,15 +1122,17 @@ function InstantDropContent() {
         };
     }, []);
 
-    // Smart save: images use native share sheet (ΓåÆ Google Photos / iOS Library), docs use anchor download
-    const isImageFile = (blob: Blob, name: string) => {
+    // Smart save: images use native share sheet (-> Google Photos / iOS Library), docs use anchor download
+    const isImageFile = (blob: Blob | null, name: string) => {
+        if (!blob) return false;
         const imageTypes = ['image/jpeg', 'image/jpg', 'image/png', 'image/gif', 'image/webp', 'image/heic', 'image/heif'];
         const ext = name.split('.').pop()?.toLowerCase() || '';
         const imageExts = ['jpg', 'jpeg', 'png', 'gif', 'webp', 'heic', 'heif', 'bmp', 'tiff'];
         return imageTypes.includes(blob.type) || imageExts.includes(ext);
     };
 
-    const smartSaveFile = async (blob: Blob, name: string) => {
+    const smartSaveFile = async (blob: Blob | null, name: string) => {
+        if (!blob) return;
         // For images on mobile: use Web Share API so OS offers "Save to Photos / Google Photos"
         if (isImageFile(blob, name) && navigator.canShare) {
             const file = new File([blob], name, { type: blob.type || 'image/jpeg' });
@@ -1411,7 +1413,7 @@ function InstantDropContent() {
                                             </p>
                                             <p className="text-xs text-muted-foreground flex items-center mt-1">
                                                 <span className="bg-indigo-100 text-indigo-700 dark:bg-indigo-900/40 dark:text-indigo-300 px-2 py-0.5 rounded-full font-bold inline-flex items-center gap-1 mr-2">
-                                                    ΓÜí OOBS Engine
+                                                    ⚡ OOBS Engine
                                                 </span>
                                                 Batch size: {mode === 'send'
                                                     ? (files.reduce((acc, f) => acc + f.size, 0) / 1024 / 1024).toFixed(2)
@@ -1588,7 +1590,7 @@ function InstantDropContent() {
                                             <div key={idx} className="flex items-center justify-between p-3 bg-card border rounded-lg">
                                                 <p className="text-xs font-semibold text-left truncate flex-1 mr-2">{rf.name}</p>
                                                 <Button size="sm" variant="secondary" onClick={() => rf.blob && smartSaveFile(rf.blob, rf.name)} disabled={!rf.blob}>
-                                                    {(rf.blob && isImageFile(rf.blob, rf.name)) ? '📸 Save' : '💾 Save'}
+                                                    {(rf.blob && isImageFile(rf.blob, rf.name)) ? '📷 Save' : '💾 Save'}
                                                 </Button>
                                             </div>
                                         ))}
@@ -1618,7 +1620,7 @@ function InstantDropContent() {
                             Running slow? Download diagnostics and send to developer for Superfast optimization analysis.
                         </p>
                         <Button variant="outline" size="sm" onClick={downloadDiagnostics} className="text-indigo-600 border-indigo-200 hover:bg-indigo-50">
-                            ≡ƒôè Download Meta Diagnostics
+                            📊 Download Meta Diagnostics
                         </Button>
                     </div>
 
