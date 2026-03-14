@@ -11,8 +11,8 @@ import { Footer } from "@/components/layout/Footer";
 import { useUsage } from "@/hooks/useUsage";
 import { PaywallModal } from "@/components/layout/PaywallModal";
 
-// v02.1.39 Restoration (Patch 25.10: Autonomous Hybrid Speed/Resilience)
-const VERSION = "v02.1.39 (Patch 25.10: Hybrid)";
+// v02.1.39 Restoration (Patch 25.11: Autonomous Fluidity)
+const VERSION = "v02.1.39 (Patch 25.11: Fluidity)";
 const PIPES = 3; // Patch 17-24: 3-Pipe (12 Channels total)
 const CHANNELS_PER_PIPE = 4;
 const CHANNELS = 12; // v02.1.39 (Patch 18): Critical Sync
@@ -267,6 +267,10 @@ function InstantDropContent() {
                     setStatus('done');
                 }
                 break;
+            case 'file-ack':
+                // v02.1.39 (Patch 25.11): Fluidity Pulse
+                window.dispatchEvent(new CustomEvent('webrtc-file-ack', { detail: msg }));
+                break;
         }
     }
 
@@ -470,12 +474,17 @@ function InstantDropContent() {
                                 const chunks = fileBuffers.get(fileIdx);
                                 // v02.1.39 (Patch 24): Filter undefined to prevent Transferable mapping crash
                                 const transferList = chunks.filter(c => c && c.buffer).map(c => c.buffer);
-                                try {
-                                    self.postMessage({ type: 'reassembled', fileIdx, name: meta.name, fileType: meta.fileType, chunks }, transferList);
-                                } catch (err) {
-                                    self.postMessage({ type: 'error', msg: 'PostMessage Transfer Failed: ' + err });
-                                }
-                                fileBuffers.delete(fileIdx); fileMetas.delete(fileIdx); indices.clear(); expectedTotalChunks.delete(fileIdx); reassembledFiles.add(fileIdx);
+                              try {
+                             self.postMessage({ type: 'reassembled', fileIdx, name: meta.name, fileType: meta.fileType, chunks }, transferList);
+                             // v02.1.39 (Patch 25.11): Immediate memory release
+                             fileBuffers.delete(fileIdx); 
+                             fileMetas.delete(fileIdx); 
+                             indices.clear(); 
+                             expectedTotalChunks.delete(fileIdx); 
+                             reassembledFiles.add(fileIdx);
+                          } catch (err) {
+                             self.postMessage({ type: 'error', msg: 'PostMessage Transfer Failed: ' + err });
+                          }
                             } else {
                                 self.postMessage({ type: 'need-metadata', fileIdx });
                             }
@@ -501,11 +510,14 @@ function InstantDropContent() {
             if (e.data.type === 'reassembled') {
                  reassembledCount.current++; 
                  const { fileIdx, name, fileType, chunks } = e.data;
-                 // v02.1.39 (Patch 12): Decrement global chunk counter to allow more data in
-                 if (chunks) totalReceivedChunksCountRef.current = Math.max(0, totalReceivedChunksCountRef.current - chunks.length);
-                 const blob = new Blob(chunks, { type: fileType || 'application/octet-stream' });
-                 setReceivedFiles(prev => [...prev, { blob, name }]);
-                 logDebug(`Receiver: Worker reassembly complete for ${name}.`);
+                  // v02.1.39 (Patch 12): Decrement global chunk counter to allow more data in
+                  if (chunks) totalReceivedChunksCountRef.current = Math.max(0, totalReceivedChunksCountRef.current - chunks.length);
+                  const blob = new Blob(chunks, { type: fileType || 'application/octet-stream' });
+                  setReceivedFiles(prev => [...prev, { blob, name }]);
+                  logDebug(`Receiver: Worker reassembly complete for ${name}. Signaling Ack...`);
+                  // v02.1.39 (Patch 25.11): Fluidity Handshake (Signal sender that reassembly is DONE)
+                  sendControlMsg({ type: 'file-ack', fileIdx });
+
             } else if (e.data.type === 'need-metadata') {
                  const fIdx = e.data.fileIdx;
                  logDebug(`Receiver: Missing metadata for file ${fIdx}. Requesting...`);
@@ -816,6 +828,21 @@ function InstantDropContent() {
             });
 
             await transferFileP2PParallel(currentFiles[i], i);
+            
+            // v02.1.39 (Patch 25.11): Backpressure Fluidity Handshake
+            // Ensure receiver has REASSEMBLED the file before we start the next one.
+            // This prevents the "9/10 files stall" at 125MB+.
+            logDebug(`Sender: Awaiting reassembly confirmation for File ${i}...`);
+            await new Promise<void>((resolve) => {
+                const h = (e: any) => {
+                    if (e.detail.fileIdx === i) {
+                        window.removeEventListener('webrtc-file-ack', h);
+                        resolve();
+                    }
+                };
+                window.addEventListener('webrtc-file-ack', h);
+                setTimeout(() => { window.removeEventListener('webrtc-file-ack', h); resolve(); }, 10000); // 10s Safety
+            });
         }
         
         // v02.1.37: 12-Channel EOF Broadcast (Redundancy)
@@ -877,12 +904,12 @@ function InstantDropContent() {
                 (acc, c) => acc + (c?.readyState === 'open' ? c.bufferedAmount : 0), 0
             );
 
-            // v02.1.39 (Patch 25.2): Anti-Deadlock BDP-Snap
-            // Use Speed*RTT but protect against Speed=0 with a "Restart Burst" (32MB)
+            // v02.1.39 (Patch 25.11): Strict 32MB Backpressure (Fluidity Cap)
+            // Reduced from 64MB to prevent mobile carrier packet drop on saturated buffers.
             const calculatedLimit = currentMBpsRef.current * 1024 * 1024 * avgRTTRef.current * 2;
             const bdpLimit = (currentMBpsRef.current < 0.1) 
-                             ? 32 * 1024 * 1024 // Restart Burst (breaks the zero-speed stall)
-                             : Math.max(8 * 1024 * 1024, Math.min(64 * 1024 * 1024, calculatedLimit));
+                             ? 32 * 1024 * 1024 // Restart Burst
+                             : Math.max(8 * 1024 * 1024, Math.min(32 * 1024 * 1024, calculatedLimit));
 
             if (totalBuffered < bdpLimit) {
                 // v02.1.39 (Patch 2): Dynamically pick first available open channel
