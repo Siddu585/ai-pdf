@@ -12,7 +12,7 @@ import { useUsage } from "@/hooks/useUsage";
 import { PaywallModal } from "@/components/layout/PaywallModal";
 
 // v02.1.39 Titan-Singularity (Triple-Pipe Multiplexing + Jumbo Chunks)
-const VERSION = "v02.1.39 (Patch 5)";
+const VERSION = "v02.1.39 (Patch 6)";
 const PIPES = 3; 
 const CHANNELS = 12;
 const CHANNELS_PER_PIPE = 4;
@@ -20,7 +20,7 @@ const CHUNK_SIZE = 224 * 1024; // v02.1.39 (Patch 4): Reduced from 256KB to fit 
 const HIGH_WATER_MARK_MAX = 2 * 1024 * 1024;
 const PACER_THRESHOLD = 1024 * 1024;
 const MAX_IN_FLIGHT = 512;
-const DRAIN_THRESHOLD = 24 * 1024 * 1024; // v02.1.39 (Patch 5): Optimized to 24MB for 12-Channel sat.
+const DRAIN_THRESHOLD = 24 * 1024 * 1024; // v02.1.39 (Patch 6): Optimized to 24MB for 12-Channel sat.
 const getBackendUrls = () => {
     let rawUrl = (process.env.NEXT_PUBLIC_API_URL || "").trim().replace(/\/$/, "");
     
@@ -230,8 +230,12 @@ function InstantDropContent() {
                         const current = (receivedChunksCount.get(fileIdx) || 0);
                         if (current === totalChunks) {
                              const meta = fileMetas.get(fileIdx);
-                             self.postMessage({ type: 'reassembled', fileIdx, name: meta.name, fileType: meta.fileType, chunks: fileBuffers.get(fileIdx) });
-                             fileBuffers.delete(fileIdx); fileMetas.delete(fileIdx); receivedChunksCount.delete(fileIdx); expectedTotalChunks.delete(fileIdx); reassembledFiles.add(fileIdx);
+                             if (meta) {
+                                 self.postMessage({ type: 'reassembled', fileIdx, name: meta.name, fileType: meta.fileType, chunks: fileBuffers.get(fileIdx) });
+                                 fileBuffers.delete(fileIdx); fileMetas.delete(fileIdx); receivedChunksCount.delete(fileIdx); expectedTotalChunks.delete(fileIdx); reassembledFiles.add(fileIdx);
+                             } else {
+                                 self.postMessage({ type: 'need-metadata', fileIdx });
+                             }
                         }
                     } else if (chunkIdx === 0xFFFFFFFD) { // Batch EOF
                         expectedTotalFiles = e.data.payloadCount; // Titan-Nova Payload
@@ -245,8 +249,12 @@ function InstantDropContent() {
                         const expected = expectedTotalChunks.get(fileIdx);
                         if (expected !== undefined && current === expected) {
                             const meta = fileMetas.get(fileIdx);
-                            self.postMessage({ type: 'reassembled', fileIdx, name: meta.name, fileType: meta.fileType, chunks });
-                            fileBuffers.delete(fileIdx); fileMetas.delete(fileIdx); receivedChunksCount.delete(fileIdx); expectedTotalChunks.set(fileIdx, undefined); reassembledFiles.add(fileIdx);
+                            if (meta) {
+                                self.postMessage({ type: 'reassembled', fileIdx, name: meta.name, fileType: meta.fileType, chunks });
+                                fileBuffers.delete(fileIdx); fileMetas.delete(fileIdx); receivedChunksCount.delete(fileIdx); expectedTotalChunks.set(fileIdx, undefined); reassembledFiles.add(fileIdx);
+                            } else {
+                                self.postMessage({ type: 'need-metadata', fileIdx });
+                            }
                         }
                     }
                 }
@@ -267,19 +275,10 @@ function InstantDropContent() {
                  const blob = new Blob(chunks, { type: fileType || 'application/octet-stream' });
                  setReceivedFiles(prev => [...prev, { blob, name }]);
                  logDebug(`Receiver: Worker reassembly complete for ${name}.`);
-                 
-                 // v02.1.39: Parallel ACK Pulse
-                 for (let i = 0; i < CHANNELS; i++) {
-                     const dc = dataChannelsRef.current[i];
-                     if (dc?.readyState === 'open') {
-                         const pulsePkt = new Uint8Array(8);
-                         const pulseView = new DataView(pulsePkt.buffer);
-                         pulseView.setUint32(0, fileIdx, true);
-                         pulseView.setUint32(4, 0xFFFFFFFC, true);
-                         dc.send(pulsePkt);
-                         break;
-                     }
-                 }
+            } else if (e.data.type === 'need-metadata') {
+                 const fIdx = e.data.fileIdx;
+                 logDebug(`Receiver: Missing metadata for file ${fIdx}. Requesting...`);
+                 sendControlMsg({ type: 'request-metadata', fileIdx: fIdx });
             } else if (e.data.type === 'all-done') {
                  logDebug("Receiver: Data fully reassembled. Verifying...");
                  setStatus('done');
@@ -576,6 +575,7 @@ function InstantDropContent() {
                 if (e.data instanceof ArrayBuffer && e.data.byteLength >= 8) {
                     const view = new DataView(e.data);
                     const chunkIdx = view.getUint32(4, true);
+                    const fileIdx = view.getUint32(0, true);
                     if (chunkIdx === 0xFFFFFFFB) { // Batch-ACK Pulsar
                         logDebug("Sender: Tachyon Handshake received! Closing loop.");
                         setStatus('done');
@@ -585,21 +585,25 @@ function InstantDropContent() {
                 try {
                     if (typeof e.data === 'string') {
                         const msg = JSON.parse(e.data);
-                        if (msg.type === 'request-metadata') {
-                            console.log("Receiver requested metadata, resending...");
-                            const file = filesRef.current[currentFileIndex];
-                            if (file) {
-                                sendControlMsg({
-                                    type: 'metadata',
-                                    name: file.name,
-                                    size: file.size,
-                                    fileType: file.type,
-                                    currentIdx: currentFileIndex,
-                                    totalFiles: filesRef.current.length
-                                });
-                            }
+                        if (msg.type === 'request-metadata' || (e.data.includes('0xFFFFFFF8') && typeof e.data === 'string' && e.data.includes('chunkIdx'))) { 
+                             // v02.1.39 (Patch 6): Improved Request Metadata Handling
+                             const reqIdx = (msg.type === 'request-metadata') ? msg.fileIdx : (msg.fileIndex || 0);
+                             console.log(`Receiver requested metadata for ${reqIdx}, resending...`);
+                             const file = filesRef.current[reqIdx];
+                             if (file) {
+                                 const metaPayload = {
+                                     type: 'metadata',
+                                     name: file.name,
+                                     size: file.size,
+                                     fileType: file.type,
+                                     currentIdx: reqIdx,
+                                     totalFiles: filesRef.current.length
+                                 };
+                                 const metaStr = JSON.stringify(metaPayload);
+                                 dataChannelsRef.current.forEach(c => { if (c?.readyState === 'open') c.send(metaStr); });
+                                 sendControlMsg(metaPayload);
+                             }
                         } else if (msg.type === 'flow') {
-                            // v02.0.27 Unshackled Flow (5MB/s Max)ow Control
                             if (msg.status === 'slow') {
                                 isReceiverReadyRef.current = false;
                                 logDebug("Receiver struggling, paused pacing...");
@@ -607,7 +611,6 @@ function InstantDropContent() {
                                 isReceiverReadyRef.current = true;
                             }
                         } else {
-                            // Route all other sender messages (ready, file-ack) through standard DOM events
                             window.dispatchEvent(new CustomEvent('webrtc-sender-msg', { detail: msg }));
                         }
                     }
@@ -635,6 +638,33 @@ function InstantDropContent() {
         const currentFiles = filesRef.current;
         if (currentFiles.length === 0) return;
         isActive.current = true;
+        setStatus('transferring');
+        
+        // v02.1.39 (Patch 6): Initial Metadata Sweep (Redundant)
+        const broadcastMetadata = () => {
+             for (let i = 0; i < currentFiles.length; i++) {
+                 const file = currentFiles[i];
+                 const metaPayload = {
+                    type: 'metadata',
+                    name: file.name,
+                    size: file.size,
+                    fileType: file.type,
+                    currentIdx: i,
+                    totalFiles: currentFiles.length,
+                    isParallel: true,
+                    parallelChannels: dataChannelsRef.current.length
+                };
+                const msgStr = JSON.stringify(metaPayload);
+                dataChannelsRef.current.forEach(dc => { if (dc?.readyState === 'open') dc.send(msgStr); });
+                sendControlMsg(metaPayload);
+             }
+        };
+        broadcastMetadata();
+        // v02.1.39 (Patch 6): Periodically rebroadcast metadata if transfer is slow or channels open staggered
+        const metaInterval = setInterval(() => {
+            if (isActive.current && statusRef.current === 'transferring') broadcastMetadata();
+            else clearInterval(metaInterval);
+        }, 3000);
         
         for (let i = 0; i < currentFiles.length; i++) {
             if (!isActive.current) break; // v02.1.1: Catch disconnection
@@ -909,6 +939,7 @@ function InstantDropContent() {
             if (chunkIdx === 0xFFFFFFFD || chunkIdx === 0xFFFFFFFE) {
                 // v02.1.36: 12-byte Rich Signaling Parsing
                 const payloadCount = (data.byteLength >= 12) ? view.getUint32(8, true) : -1;
+                if (chunkIdx === 0xFFFFFFFD) expectedTotalFiles.current = payloadCount;
                 workerRef.current?.postMessage({
                     type: 'chunk',
                     fileIdx: fileIdx,
@@ -1138,7 +1169,7 @@ function InstantDropContent() {
                         <Smartphone className="w-12 h-12 text-indigo-500" />
                     </div>
                     <h1 className="text-4xl md:text-5xl font-bold text-foreground mb-4">Turbo Drop</h1>
-                    <p className="text-xs text-indigo-600 font-black tracking-[0.2em] uppercase mb-2">v02.1.39 (Patch 5) 
+                    <p className="text-xs text-indigo-600 font-black tracking-[0.2em] uppercase mb-2">v02.1.39 (Patch 6) 
 Titan-Singularity (Sustain: 5MB/s+)</p>
                     <p className="text-lg text-muted-foreground max-w-2xl mx-auto">
                         The ultimate high-speed file sharing app. Transfer photos and large files (up to 200MB) from desktop to mobile or mobile to mobile instantly.
