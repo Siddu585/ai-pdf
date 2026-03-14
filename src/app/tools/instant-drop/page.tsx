@@ -11,8 +11,8 @@ import { Footer } from "@/components/layout/Footer";
 import { useUsage } from "@/hooks/useUsage";
 import { PaywallModal } from "@/components/layout/PaywallModal";
 
-// v02.1.39 Restoration (Patch 25.1: Stable Cellular Goal)
-const VERSION = "v02.1.39 (Patch 25.1)";
+// v02.1.39 Restoration (Patch 25.2: Anti-Stall Cellular Goal)
+const VERSION = "v02.1.39 (Patch 25.2)";
 const PIPES = 3; // Patch 17-24: 3-Pipe (12 Channels total)
 const CHANNELS_PER_PIPE = 4;
 const CHANNELS = 12; // v02.1.39 (Patch 18): Critical Sync
@@ -665,7 +665,14 @@ function InstantDropContent() {
             peer.oniceconnectionstatechange = () => {
                 logDebug(`Pipe-${pipeIdx} ICE State: ${peer.iceConnectionState}`);
                 if (peer.iceConnectionState === 'disconnected' || peer.iceConnectionState === 'failed') {
-                    try { peer.restartIce(); } catch (e) {}
+                    // v02.1.39 (Patch 25.2): Graceful Resurrection (Phoenix Lite)
+                    // If we are mid-transfer and a pipe fails, attempt a silent re-init ONCE.
+                    if (isActive.current && statusRef.current === 'transferring' && !useFallback) {
+                        logDebug(`🔥 Pipe-${pipeIdx} Graceful Resurrection: Attempting Re-init...`);
+                        setupWebRTC(ws, isSender, pipeIdx, true); // Fallback to TCP/Relay
+                    } else {
+                        try { peer.restartIce(); } catch (e) {}
+                    }
                 }
             };
 
@@ -845,9 +852,12 @@ function InstantDropContent() {
                 (acc, c) => acc + (c?.readyState === 'open' ? c.bufferedAmount : 0), 0
             );
 
-            // v02.1.39 (Patch 25): BDP-Snap (Dynamic Adaptive Buffering)
-            // Adaptive limit based on Bandwidth-Delay Product (Speed * RTT * 2)
-            const bdpLimit = Math.max(8 * 1024 * 1024, Math.min(64 * 1024 * 1024, (currentMBpsRef.current * 1024 * 1024 * avgRTTRef.current * 2)));
+            // v02.1.39 (Patch 25.2): Anti-Deadlock BDP-Snap
+            // Use Speed*RTT but protect against Speed=0 with a "Restart Burst" (32MB)
+            const calculatedLimit = currentMBpsRef.current * 1024 * 1024 * avgRTTRef.current * 2;
+            const bdpLimit = (currentMBpsRef.current < 0.1) 
+                             ? 32 * 1024 * 1024 // Restart Burst (breaks the zero-speed stall)
+                             : Math.max(8 * 1024 * 1024, Math.min(64 * 1024 * 1024, calculatedLimit));
 
             if (totalBuffered < bdpLimit) {
                 // v02.1.39 (Patch 2): Dynamically pick first available open channel
