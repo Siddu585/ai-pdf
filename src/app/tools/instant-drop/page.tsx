@@ -11,16 +11,16 @@ import { Footer } from "@/components/layout/Footer";
 import { useUsage } from "@/hooks/useUsage";
 import { PaywallModal } from "@/components/layout/PaywallModal";
 
-// v02.1.39 Restoration (Patch 16: Robust Handshake)
-const VERSION = "v02.1.39 (Patch 16)";
-const PIPES = 2; // v02.1.39 (Patch 13): 2-Pipe (8 Channels total)
+// v02.1.39 Restoration (Patch 17: Quasar Hyper-Speed)
+const VERSION = "v02.1.39 (Patch 17)";
+const PIPES = 3; // Patch 17: 3-Pipe (12 Channels total)
 const CHANNELS = 8;
 const CHANNELS_PER_PIPE = 4;
 const CHUNK_SIZE = 64 * 1024; // 64KB - Authentic Patch 8 Baseline
-const HIGH_WATER_MARK_MAX = 2 * 1024 * 1024;
+const HIGH_WATER_MARK_MAX = 64 * 1024 * 1024; // 64MB - Quasar Hyper-Speed
 const PACER_THRESHOLD = 1 * 1024 * 1024; // 1MB - Authentic Patch 8 Baseline
 const MAX_IN_FLIGHT = 128; // Patch 8 Balance
-const DRAIN_THRESHOLD = 16 * 1024 * 1024; // 16MB - Authentic Patch 8 Baseline
+const DRAIN_THRESHOLD = 64 * 1024 * 1024; // 64MB - Quasar Hyper-Speed
 const getBackendUrls = () => {
     let rawUrl = (process.env.NEXT_PUBLIC_API_URL || "").trim().replace(/\/$/, "");
     
@@ -1003,10 +1003,10 @@ function InstantDropContent() {
                     if (doneWaitingTimeoutRef.current) clearTimeout(doneWaitingTimeoutRef.current);
                     doneWaitingTimeoutRef.current = setTimeout(() => {
                         if (statusRef.current === 'done-waiting') {
-                            logDebug("Receiver: Safety Net (10s) triggered in done-waiting. Forcing completion.");
+                            logDebug("Receiver: Safety Net (30s) triggered in done-waiting. Forcing completion.");
                             setStatus('done');
                         }
-                    }, 10000);
+                    }, 30000); // 30s Safety Net for large batches
                 }
                 workerRef.current?.postMessage({
                     type: 'chunk',
@@ -1024,7 +1024,7 @@ function InstantDropContent() {
             } else {
                 // Regular Chunk
                 const incomingMeta = fileMetas.current.get(fileIdx);
-                totalReceivedChunksCountRef.current++; 
+                // totalReceivedChunksCountRef.current++; // v02.1.39 (Patch 17): DELETED double-increment
                 // v02.1.39 (Patch 8): Align with 12-byte binary header (fileIdx, chunkIdx, numChunks)
                 workerRef.current.postMessage({
                     type: 'chunk',
@@ -1033,23 +1033,19 @@ function InstantDropContent() {
                     originalBuffer: data,
                     offset: 12
                 }, [data]);
-                if (chunkIdx % 10 === 0) {
-                    // v02.1.39 (Patch 15): Authentic soft-grain progress tracking
-                    const currentChunksReceived = (currentFileReceivedRef.current.get(fileIdx) || 0) + 1;
-                    currentFileReceivedRef.current.set(fileIdx, currentChunksReceived);
-                    totalReceivedChunksCountRef.current++;
+                
+                const currentChunksReceived = (currentFileReceivedRef.current.get(fileIdx) || 0) + 1;
+                currentFileReceivedRef.current.set(fileIdx, currentChunksReceived);
+                totalReceivedChunksCountRef.current++; // Primary increment
 
+                if (chunkIdx % 10 === 0) {
                     if (incomingMeta && incomingMeta.size) {
                         const totalChunksExpected = Math.ceil(incomingMeta.size / CHUNK_SIZE);
                         const fileProgress = Math.floor((currentChunksReceived / totalChunksExpected) * 100);
-                        setProgress(fileProgress); // Reverted artificial 5% logic for true fidelity
+                        setProgress(fileProgress);
                     } else {
                         setProgress(p => Math.min(99, p + 2)); 
                     }
-                } else {
-                    const currentChunksReceived = (currentFileReceivedRef.current.get(fileIdx) || 0) + 1;
-                    currentFileReceivedRef.current.set(fileIdx, currentChunksReceived);
-                    totalReceivedChunksCountRef.current++;
                 }
             }
         }
@@ -1507,7 +1503,7 @@ function InstantDropContent() {
                                 <>
                                     <h2 className="text-2xl font-bold">Receiving File</h2>
                                     <p className="mt-2 text-indigo-600 dark:text-indigo-400 font-bold tracking-widest text-[10px] animate-pulse">
-                                        {VERSION} Liquid Fidelity (Smooth Batching)
+                                        {VERSION}
                                     </p>
 
                                     {status === 'connecting' && (
