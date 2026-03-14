@@ -11,11 +11,11 @@ import { Footer } from "@/components/layout/Footer";
 import { useUsage } from "@/hooks/useUsage";
 import { PaywallModal } from "@/components/layout/PaywallModal";
 
-// v02.1.39 Restoration (Patch 18: Silk-Performance & 12-Ch Sync)
-const VERSION = "v02.1.39 (Patch 18)";
-const PIPES = 3; // Patch 17/18: 3-Pipe (12 Channels total)
+// v02.1.39 Restoration (Patch 19: Atomic Hydration & Proxy Fix)
+const VERSION = "v02.1.39 (Patch 19)";
+const PIPES = 3; // Patch 17/18/19: 3-Pipe (12 Channels total)
 const CHANNELS_PER_PIPE = 4;
-const CHANNELS = 12; // v02.1.39 (Patch 18): Critical Sync (Fixed Mismatch)
+const CHANNELS = 12; // v02.1.39 (Patch 18): Critical Sync
 const CHUNK_SIZE = 64 * 1024; // 64KB - Authentic Patch 8 Baseline
 const HIGH_WATER_MARK_MAX = 16 * 1024 * 1024; // 16MB - Silk Performance Baseline
 const PACER_THRESHOLD = 1 * 1024 * 1024; // 1MB - Authentic Patch 8 Baseline
@@ -1024,8 +1024,9 @@ function InstantDropContent() {
             } else {
                 // Regular Chunk
                 const incomingMeta = fileMetas.current.get(fileIdx);
+                const payloadCount = (data.byteLength >= 12) ? view.getUint32(8, true) : -1;
                 
-                // v02.1.39 (Patch 18): Reassembled Count Decoupling (Ensuring UI trigger)
+                // v02.1.39 (Patch 18/19): Robust Progress & Worker Proxy
                 const currentChunksReceived = (currentFileReceivedRef.current.get(fileIdx) || 0) + 1;
                 currentFileReceivedRef.current.set(fileIdx, currentChunksReceived);
                 totalReceivedChunksCountRef.current++; 
@@ -1034,6 +1035,7 @@ function InstantDropContent() {
                     type: 'chunk',
                     fileIdx,
                     chunkIdx,
+                    payloadCount, // v02.1.39 (Patch 19): CRITICAL - Proxy signaling to worker
                     originalBuffer: data,
                     offset: 12
                 }, [data]);
