@@ -34,6 +34,10 @@ print = functools.partial(print, flush=True)
 
 app = FastAPI(title="PDF Ninja Intelligent Backend")
 
+@app.get("/api/health")
+async def health_check():
+    return {"status": "healthy", "version": "v02.1.39", "engine": "PDF Ninja Intelligent Backend"}
+
 # Fully open CORS since this is a public stateless tool
 app.add_middleware(
     CORSMiddleware,
@@ -74,7 +78,7 @@ class ConnectionManager:
             ws = self.rooms[room_id][to_client]
             if self.is_connected(ws):
                 try:
-                    await asyncio.wait_for(ws.send_json(message), timeout=2.0)
+                    await asyncio.wait_for(ws.send_json(message), timeout=10.0)
                     print(f"✅ Sent {message.get('type')} to {to_client} in room {room_id}")
                 except Exception as e:
                     print(f"⚠️ send_message FAILED ({message.get('type')} → {to_client} in {room_id}): {e}")
@@ -308,7 +312,7 @@ async def drop_websocket(websocket: WebSocket, room_id: str, client_type: str):
                             except: pass
 
                         try:
-                            await asyncio.wait_for(other_ws.send_text(message["text"]), timeout=2.0)
+                            await asyncio.wait_for(other_ws.send_text(message["text"]), timeout=10.0)
                         except Exception as e:
                             print(f"Relay Error (text): {e}")
                     elif "bytes" in message and message["bytes"]:
