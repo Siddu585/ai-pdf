@@ -11,9 +11,9 @@ import { Footer } from "@/components/layout/Footer";
 import { useUsage } from "@/hooks/useUsage";
 import { PaywallModal } from "@/components/layout/PaywallModal";
 
-// v02.1.39 Restoration (Patch 22: Universal Null-Safety & UI Polish)
-const VERSION = "v02.1.39 (Patch 22)";
-const PIPES = 3; // Patch 17-22: 3-Pipe (12 Channels total)
+// v02.1.39 Restoration (Patch 23: Zero-Copy & Reactive Handshake)
+const VERSION = "v02.1.39 (Patch 23)";
+const PIPES = 3; // Patch 17-23: 3-Pipe (12 Channels total)
 const CHANNELS_PER_PIPE = 4;
 const CHANNELS = 12; // v02.1.39 (Patch 18): Critical Sync
 const CHUNK_SIZE = 64 * 1024; // 64KB - Authentic Patch 8 Baseline
@@ -358,47 +358,42 @@ function InstantDropContent() {
                     const expected = expectedTotalChunks.get(fileIdx);
                     const indices = receivedChunkIndices.get(fileIdx);
                     if (expected !== undefined && indices.size === expected) {
-                         self.postMessage({ type: 'reassembled', fileIdx, name: meta.name, fileType: meta.fileType, chunks: fileBuffers.get(fileIdx) });
+                         const chunks = fileBuffers.get(fileIdx);
+                         self.postMessage({ type: 'reassembled', fileIdx, name: meta.name, fileType: meta.fileType, chunks }, chunks.map(c => c.buffer));
                          fileBuffers.delete(fileIdx); fileMetas.delete(fileIdx); indices.clear(); expectedTotalChunks.delete(fileIdx); reassembledFiles.add(fileIdx);
                     }
                 } else if (type === 'chunk') {
-                    if (chunkIdx === 0xFFFFFFFD) { // Batch EOF - DO NOT IGNORE based on reassembledFiles
+                    if (chunkIdx === 0xFFFFFFFD) { // Batch EOF
                         expectedTotalFiles = e.data.payloadCount;
                     } else {
-                        if (reassembledFiles.has(fileIdx)) return; // Ignore duplicate packets for finished files
+                        if (reassembledFiles.has(fileIdx)) return;
                         
-                        if (chunkIdx === 0xFFFFFFFE) { // Sector EOF
-                        const totalChunks = e.data.payloadCount;
-                        expectedTotalChunks.set(fileIdx, totalChunks);
-                        
-                        const indices = receivedChunkIndices.get(fileIdx);
-                        if (indices && indices.size === totalChunks) {
-                             const meta = fileMetas.get(fileIdx);
-                             if (meta) {
-                                 self.postMessage({ type: 'reassembled', fileIdx, name: meta.name, fileType: meta.fileType, chunks: fileBuffers.get(fileIdx) });
-                                 fileBuffers.delete(fileIdx); fileMetas.delete(fileIdx); receivedChunkIndices.get(fileIdx).clear(); expectedTotalChunks.delete(fileIdx); reassembledFiles.add(fileIdx);
-                             } else {
-                                 self.postMessage({ type: 'need-metadata', fileIdx });
-                             }
-                        }
-                    } else {
-                        if (!fileBuffers.has(fileIdx)) fileBuffers.set(fileIdx, []);
-                        if (!receivedChunkIndices.has(fileIdx)) receivedChunkIndices.set(fileIdx, new Set());
+                        // v02.1.39 (Patch 23): Sector EOF & Zero-Copy Proxy
+                        if (chunkIdx === 0xFFFFFFFE) { 
+                            const totalChunks = e.data.payloadCount;
+                            expectedTotalChunks.set(fileIdx, totalChunks);
+                        } else {
+                            if (!fileBuffers.has(fileIdx)) fileBuffers.set(fileIdx, []);
+                            if (!receivedChunkIndices.has(fileIdx)) receivedChunkIndices.set(fileIdx, new Set());
 
-                        const chunks = fileBuffers.get(fileIdx);
-                        const indices = receivedChunkIndices.get(fileIdx);
-                        
-                        // Only add and count if we haven't seen this chunk yet
-                        if (!indices.has(chunkIdx) && chunkIdx < 0xEFFFFFFF) {
-                            chunks[chunkIdx] = new Uint8Array(e.data.originalBuffer, e.data.offset);
-                            indices.add(chunkIdx);
+                            const chunks = fileBuffers.get(fileIdx);
+                            const indices = receivedChunkIndices.get(fileIdx);
+                            
+                            if (!indices.has(chunkIdx) && chunkIdx < 0xEFFFFFFF) {
+                                chunks[chunkIdx] = new Uint8Array(e.data.originalBuffer, e.data.offset);
+                                indices.add(chunkIdx);
+                            }
                         }
-                        
+
+                        // Reassembly check after every chunk/EOF
                         const expected = expectedTotalChunks.get(fileIdx);
-                        if (expected !== undefined && indices.size === expected) {
+                        const indices = receivedChunkIndices.get(fileIdx);
+                        if (expected !== undefined && indices && indices.size === expected) {
                             const meta = fileMetas.get(fileIdx);
                             if (meta) {
-                                self.postMessage({ type: 'reassembled', fileIdx, name: meta.name, fileType: meta.fileType, chunks });
+                                const chunks = fileBuffers.get(fileIdx);
+                                // v02.1.39 (Patch 23): Zero-Copy Transfer
+                                self.postMessage({ type: 'reassembled', fileIdx, name: meta.name, fileType: meta.fileType, chunks }, chunks.map(c => c.buffer));
                                 fileBuffers.delete(fileIdx); fileMetas.delete(fileIdx); indices.clear(); expectedTotalChunks.delete(fileIdx); reassembledFiles.add(fileIdx);
                             } else {
                                 self.postMessage({ type: 'need-metadata', fileIdx });
@@ -438,19 +433,9 @@ function InstantDropContent() {
                  logDebug("Receiver: Data fully reassembled. Verifying...");
                  if (doneWaitingTimeoutRef.current) { clearTimeout(doneWaitingTimeoutRef.current); doneWaitingTimeoutRef.current = null; }
                  
-                 // v02.1.39 (Patch 20): Capture final file names for state hydration
-                 setReceivedFiles(prev => {
-                     if (prev.length > 0) {
-                         sendControlMsg({ 
-                            type: 'verification-complete', 
-                            status: 'success', 
-                            fileNames: prev.map(f => f.name) 
-                         });
-                     }
-                     return prev;
-                 });
-                 
-                 setStatus('done');
+                 // v02.1.39 (Patch 23): Reactive Handshake Trigger
+                 // Instead of sending handshake here, we set a flag that the effect watches
+                 setStatus('done-waiting');
             }
         };
 
@@ -1072,10 +1057,16 @@ function InstantDropContent() {
         }
     }, [initialRoom]);
 
-    // v02.1.39 (Patch 20): Robust Handshake Logic
+    // v02.1.39 (Patch 23): Robust Reactive Handshake
     useEffect(() => {
         let ackTimer: any = null;
-        if (mode === 'receive' && status === 'done') {
+        const totalFilesExpected = expectedTotalFiles.current;
+        const currentCount = receivedFiles.length;
+        
+        // Only send success if we actually have all files reassembled
+        if (mode === 'receive' && (status === 'done' || status === 'done-waiting') && currentCount > 0 && currentCount >= totalFilesExpected) {
+            if (status !== 'done') setStatus('done');
+            
             const sendAck = () => {
                 if (statusRef.current === 'done') {
                     const ackPkt = new Uint8Array(12);
@@ -1086,21 +1077,21 @@ function InstantDropContent() {
                         if (dc?.readyState === 'open') dc.send(ackPkt);
                     });
                     
-                    // v02.1.39 (Patch 21): Anchored verification including file list for hydration
+                    // v02.1.39 (Patch 23): Anchored verification including file list for hydration
                     sendControlMsg({ 
                         type: 'verification-complete', 
                         status: 'success',
-                        count: reassembledCount.current,
+                        count: currentCount,
                         fileNames: receivedFiles.map(f => f.name)
                     });
                     sendControlMsg({ type: 'batch-ack' });
-                    ackTimer = setTimeout(sendAck, 3000);
+                    ackTimer = setTimeout(sendAck, 1500); // Tighter loop (Patch 23)
                 }
             };
             sendAck();
         }
         return () => { if (ackTimer) clearTimeout(ackTimer); };
-    }, [status, mode]);
+    }, [status, mode, receivedFiles.length]);
 
     // Cleanup WebRTC and WS on unmount
     useEffect(() => {
