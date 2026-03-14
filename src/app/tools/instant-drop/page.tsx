@@ -12,7 +12,7 @@ import { useUsage } from "@/hooks/useUsage";
 import { PaywallModal } from "@/components/layout/PaywallModal";
 
 // v02.1.39 Titan-Singularity (Triple-Pipe Multiplexing + Jumbo Chunks)
-const VERSION = "v02.1.39 (Patch 8)";
+const VERSION = "v02.1.39 (Patch 9)";
 const PIPES = 3; 
 const CHANNELS = 12;
 const CHANNELS_PER_PIPE = 4;
@@ -79,17 +79,6 @@ function InstantDropContent() {
 
     const wsRef = useRef<WebSocket | null>(null);
     const capturedLogsRef = useRef<string[]>([]);
-    const logDebug = (msg: string) => {
-        // v02.1.20: Privacy Masking fixed [0-0] -> [0-9]
-        const maskedMsg = msg.replace(/([a-zA-Z0-9._-]+)@([a-zA-Z0-9._-]+\.[a-zA-Z0-9_-]+)/g, (match, p1, p2) => {
-            return p1.charAt(0) + "***@" + p2;
-        });
-        const time = new Date().toISOString();
-        const formattedMsg = `[${time}] ${maskedMsg}`;
-        console.log(formattedMsg);
-        capturedLogsRef.current.push(formattedMsg);
-        if (capturedLogsRef.current.length > 2000) capturedLogsRef.current.shift(); // Cap at 2k lines
-    };
     const peersRef = useRef<RTCPeerConnection[]>([]);
     const dataChannelsRef = useRef<RTCDataChannel[]>([]);
     const remoteDescriptionSetsRef = useRef<boolean[]>([false, false, false]);
@@ -100,9 +89,153 @@ function InstantDropContent() {
     const isProRef = useRef(isPro);
     const emailRef = useRef(email);
     const deviceIdRef = useRef(deviceId);
-    const isInitializingRef = useRef(false); // v02.0.13: Obsidian initialization lock
-    const isReceiverReadyRef = useRef(true); // v02.0.26: Tracking receiver flow control status
-    const relayServersRef = useRef<any[]>([...ICE_SERVERS.iceServers]); // v02.0.14: Pre-fetched relay cache
+    const isInitializingRef = useRef(false);
+    const isReceiverReadyRef = useRef(true);
+    const relayServersRef = useRef<any[]>([...ICE_SERVERS.iceServers]);
+    const speedTimerRef = useRef<any>(null);
+    const totalSentBytesRef = useRef(0);
+    const totalReceivedBytesRef = useRef(0);
+    const reassembledCount = useRef(0);
+    const expectedTotalFiles = useRef(-1);
+    const lastBytesRef = useRef(0);
+    const channelFileIndex = useRef<number[]>(new Array(CHANNELS).fill(0));
+    const fileBuffers = useRef<Map<number, ArrayBuffer[]>>(new Map());
+    const expectedTotalChunks = useRef<Map<number, number>>(new Map());
+    const receivedChunksCount = useRef<Map<number, number>>(new Map());
+    const fileMetas = useRef<Map<number, any>>(new Map());
+    const currentFileReceivedRef = useRef<Map<number, number>>(new Map());
+    const isActive = useRef(false);
+    const fileInputRef = useRef<HTMLInputElement>(null);
+    const roomRef = useRef<string | null>(null);
+    const heartbeatIntervalRef = useRef<any>(null);
+    const wakeLockRef = useRef<any>(null);
+    const workerRef = useRef<Worker | null>(null);
+
+    function logDebug(msg: string) {
+        const maskedMsg = msg.replace(/([a-zA-Z0-9._-]+)@([a-zA-Z0-9._-]+\.[a-zA-Z0-9_-]+)/g, (match, p1, p2) => {
+            return p1.charAt(0) + "***@" + p2;
+        });
+        const time = new Date().toISOString();
+        const formattedMsg = `[${time}] ${maskedMsg}`;
+        console.log(formattedMsg);
+        capturedLogsRef.current.push(formattedMsg);
+        if (capturedLogsRef.current.length > 2000) capturedLogsRef.current.shift();
+    }
+
+    function sendControlMsg(payload: any) {
+        const msgStr = JSON.stringify(payload);
+        if (wsRef.current?.readyState === WebSocket.OPEN) {
+            wsRef.current.send(msgStr);
+            return true;
+        }
+        dataChannelsRef.current.forEach(dc => {
+            if (dc?.readyState === 'open') {
+                try { dc.send(msgStr); } catch(e) {}
+            }
+        });
+        return true;
+    }
+
+    function disconnectEverything() {
+        logDebug(`${VERSION}: Full Multiplexed Session Reset...`);
+        if (wsRef.current) { try { wsRef.current.close(); } catch(e) {} wsRef.current = null; }
+        peersRef.current.forEach(p => { if (p) try { p.close(); } catch (e) {} });
+        peersRef.current = [];
+        isActive.current = false;
+        isInitializingRef.current = false;
+        remoteDescriptionSetsRef.current = [false, false, false];
+        iceBuffersRef.current = [[], [], []];
+        dataChannelsRef.current = [];
+        
+        if (fileBuffers.current) fileBuffers.current.clear();
+        if (expectedTotalChunks.current) expectedTotalChunks.current.clear();
+        if (receivedChunksCount.current) receivedChunksCount.current.clear();
+        if (fileMetas.current) fileMetas.current.clear();
+        
+        reassembledCount.current = 0;
+        expectedTotalFiles.current = -1;
+        if (currentFileReceivedRef.current) currentFileReceivedRef.current.clear();
+        releaseWakeLock(); 
+    }
+
+    function handleControlMessage(msg: any) {
+        if (!msg || !msg.type) return;
+        
+        // v02.1.39 (Patch 9): Unified Signal Routing
+        switch (msg.type) {
+            case 'metadata':
+                if (modeRef.current === 'receive') {
+                    logDebug(`Receiver: Metadata for ${msg.name} (File ${msg.currentIdx})`);
+                    setIncomingMeta(msg);
+                    if (msg.currentIdx !== undefined) setCurrentFileIndex(msg.currentIdx);
+                    if (msg.totalFiles !== undefined) expectedTotalFiles.current = msg.totalFiles;
+                    workerRef.current?.postMessage({ type: 'metadata', fileIdx: msg.currentIdx, meta: msg });
+                    setStatus('transferring');
+                }
+                break;
+            case 'batch-eof':
+                if (modeRef.current === 'receive') {
+                    logDebug("Receiver: Batch EOF received.");
+                    if (msg.totalFiles !== undefined) expectedTotalFiles.current = msg.totalFiles;
+                    setStatus('done-waiting');
+                    workerRef.current?.postMessage({ type: 'chunk', fileIdx: 0, chunkIdx: 0xFFFFFFFD, payloadCount: msg.totalFiles });
+                }
+                break;
+            case 'batch-ack':
+                window.dispatchEvent(new CustomEvent('webrtc-sender-msg', { detail: msg }));
+                if (modeRef.current === 'send' && statusRef.current === 'done-waiting') {
+                    logDebug("Sender: Final sync ACK received. Closing session.");
+                    setStatus('done');
+                }
+                break;
+            case 'request-metadata':
+                if (modeRef.current === 'send') {
+                    logDebug(`Sender: Metadata requested for index ${msg.fileIdx}. Resending...`);
+                    broadcastMetadata();
+                }
+                break;
+            case 'flow':
+                if (modeRef.current === 'send') {
+                    isReceiverReadyRef.current = (msg.status === 'ready');
+                }
+                break;
+            case 'force-verify':
+                if (modeRef.current === 'receive') {
+                    logDebug("Receiver: Force-Verify signal received.");
+                    if (reassembledCount.current >= expectedTotalFiles.current && expectedTotalFiles.current !== -1) {
+                         sendControlMsg({ type: 'batch-ack' });
+                         setStatus('done');
+                    }
+                }
+                break;
+        }
+    }
+
+    function broadcastMetadata() {
+        const currentFiles = filesRef.current;
+        if (!currentFiles || currentFiles.length === 0) return;
+        
+        for (let i = 0; i < currentFiles.length; i++) {
+            const file = currentFiles[i];
+            const metaPayload = {
+                type: 'metadata',
+                name: file.name,
+                size: file.size,
+                fileType: file.type,
+                currentIdx: i,
+                totalFiles: currentFiles.length,
+                isParallel: true,
+                parallelChannels: dataChannelsRef.current.length
+            };
+            const msgStr = JSON.stringify(metaPayload);
+            dataChannelsRef.current.forEach(dc => { 
+                if (dc?.readyState === 'open') {
+                    try { dc.send(msgStr); } catch(e) {}
+                }
+            });
+            sendControlMsg(metaPayload);
+        }
+    }
 
     useEffect(() => {
         isProRef.current = isPro;
@@ -110,7 +243,6 @@ function InstantDropContent() {
         deviceIdRef.current = deviceId;
         logDebug(`Syncing Refs: isPro=${isPro}, email=${email}`);
 
-        // v02.0.14: Pre-fetch Relays the moment we have user details (Zero-Gap Startup)
         const preFetchRelays = async () => {
             try {
                 const turnRes = await fetch(`${BACKEND_HTTP_URL}/api/turn?deviceId=${deviceId}&email=${encodeURIComponent(email || "")}`);
@@ -153,14 +285,10 @@ function InstantDropContent() {
         }
     }, [status]);
 
-    // Speed tracking
-    const lastBytesRef = useRef(0);
-    const speedTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
-
-    // Compress an image file to JPG using canvas (works for JPEG, PNG, WEBP)
+    // Compress an image file to JPG using canvas
     const compressImageFile = async (file: File): Promise<File> => {
         const compressableTypes = ['image/jpeg', 'image/jpg', 'image/png', 'image/webp'];
-        if (!compressableTypes.includes(file.type)) return file; // skip DNG/HEIC/raw
+        if (!compressableTypes.includes(file.type)) return file;
         return new Promise((resolve) => {
             const img = new Image();
             const url = URL.createObjectURL(file);
@@ -183,30 +311,6 @@ function InstantDropContent() {
         });
     };
 
-
-
-    // --- PIPELINED IN-BAND REASSEMBLY STATE (v02.0.28 Quantum Flow) ---
-    const channelFileIndex = useRef<number[]>(new Array(CHANNELS).fill(0));
-    const fileBuffers = useRef<Map<number, ArrayBuffer[]>>(new Map());
-    const expectedTotalChunks = useRef<Map<number, number>>(new Map());
-    const receivedChunksCount = useRef<Map<number, number>>(new Map());
-    const fileMetas = useRef<Map<number, any>>(new Map());
-    const reassembledCount = useRef<number>(0);
-    const expectedTotalFiles = useRef<number>(-1);
-    const currentFileReceivedRef = useRef<Map<number, number>>(new Map()); // v02.0.23: O(1) Progress Counter
-
-
-    const totalReceivedBytesRef = useRef(0);
-    const totalSentBytesRef = useRef(0);
-
-    // Transfer state
-    const isActive = useRef(false);
-
-    const fileInputRef = useRef<HTMLInputElement>(null);
-    const roomRef = useRef<string | null>(null);
-    const heartbeatIntervalRef = useRef<any>(null); // v02.0.0: NAT Heartbeat
-    const wakeLockRef = useRef<any>(null); // v02.1.33: Anti-Throttling Lock
-    const workerRef = useRef<Worker | null>(null); // v02.1.32 Titan-Pulse Worker
     // v02.1.32: Inline Hydra Worker Script (Zero-Copy Reassembly)
     useEffect(() => {
         const workerScript = `
@@ -338,21 +442,6 @@ function InstantDropContent() {
         }
     };
 
-    // --- SIGNALING HELPER (v01.5.0 Out-of-Band) ---
-    const sendControlMsg = (payload: any) => {
-        const msgStr = JSON.stringify(payload);
-        // Priority 1: WebSocket (Bypasses DataChannel congestion)
-        if (wsRef.current?.readyState === WebSocket.OPEN) {
-            wsRef.current.send(msgStr);
-            return true;
-        }
-        // Fallback: DataChannel (If WS is down)
-        if (dataChannelsRef.current[0]?.readyState === 'open') {
-            dataChannelsRef.current[0].send(msgStr);
-            return true;
-        }
-        return false;
-    };
 
     // --- SENDER LOGIC (Turbo Drop 2.0) ---
     const startSending = async (selectedFiles: FileList | File[]) => {
@@ -436,13 +525,11 @@ function InstantDropContent() {
                         } else {
                             try { await peersRef.current[pIdx]?.addIceCandidate(new RTCIceCandidate(data.candidate)); } catch (e) {}
                         }
-                    } else if (data.type === 'flow' && data.status === 'slow') {
-                        isReceiverReadyRef.current = false;
                     } else if (data.type === 'flow' && data.status === 'ready') {
                         isReceiverReadyRef.current = true;
-                    } else if (data.type === 'metadata' || data.type === 'sector-eof' || data.type === 'batch-eof') {
-                        window.dispatchEvent(new CustomEvent('webrtc-sender-msg', { detail: data }));
                     }
+                    
+                    handleControlMessage(data);
                 } catch (err: any) {
                     logDebug("❌ Sender WS Msg Error: " + err.message);
                 }
@@ -592,43 +679,14 @@ function InstantDropContent() {
                         return;
                     }
                 }
-                try {
                     if (typeof e.data === 'string') {
-                        const msg = JSON.parse(e.data);
-                        if (msg.type === 'request-metadata' || (e.data.includes('0xFFFFFFF8') && typeof e.data === 'string' && e.data.includes('chunkIdx'))) { 
-                             // v02.1.39 (Patch 6): Improved Request Metadata Handling
-                             const reqIdx = (msg.type === 'request-metadata') ? msg.fileIdx : (msg.fileIndex || 0);
-                             console.log(`Receiver requested metadata for ${reqIdx}, resending...`);
-                             const file = filesRef.current[reqIdx];
-                             if (file) {
-                                 const metaPayload = {
-                                     type: 'metadata',
-                                     name: file.name,
-                                     size: file.size,
-                                     fileType: file.type,
-                                     currentIdx: reqIdx,
-                                     totalFiles: filesRef.current.length
-                                 };
-                                 const metaStr = JSON.stringify(metaPayload);
-                                 dataChannelsRef.current.forEach(c => { if (c?.readyState === 'open') c.send(metaStr); });
-                                 sendControlMsg(metaPayload);
-                             }
-                        } else if (msg.type === 'flow') {
-                            if (msg.status === 'slow') {
-                                isReceiverReadyRef.current = false;
-                                logDebug("Receiver struggling, paused pacing...");
-                            } else if (msg.status === 'ready') {
-                                isReceiverReadyRef.current = true;
-                            }
-                        } else {
-                            window.dispatchEvent(new CustomEvent('webrtc-sender-msg', { detail: msg }));
-                        }
+                        try {
+                            const msg = JSON.parse(e.data);
+                            handleControlMessage(msg);
+                        } catch(e) {}
                     }
-                } catch (err) {
-                    console.error("Sender message parse error:", err);
                 }
-            }
-        };
+            };
         dc.onclose = () => {
             console.log("DataChannel Closed");
             // v02.1.39 (Patch 3): Do NOT set isActive=false on channel close.
@@ -651,24 +709,6 @@ function InstantDropContent() {
         setStatus('transferring');
         
         // v02.1.39 (Patch 6): Initial Metadata Sweep (Redundant)
-        const broadcastMetadata = () => {
-             for (let i = 0; i < currentFiles.length; i++) {
-                 const file = currentFiles[i];
-                 const metaPayload = {
-                    type: 'metadata',
-                    name: file.name,
-                    size: file.size,
-                    fileType: file.type,
-                    currentIdx: i,
-                    totalFiles: currentFiles.length,
-                    isParallel: true,
-                    parallelChannels: dataChannelsRef.current.length
-                };
-                const msgStr = JSON.stringify(metaPayload);
-                dataChannelsRef.current.forEach(dc => { if (dc?.readyState === 'open') dc.send(msgStr); });
-                sendControlMsg(metaPayload);
-             }
-        };
         broadcastMetadata();
         
         for (let i = 0; i < currentFiles.length; i++) {
@@ -699,8 +739,12 @@ function InstantDropContent() {
         batchView.setUint32(4, 0xFFFFFFFD, true);
         batchView.setUint32(8, currentFiles.length, true);
         dataChannelsRef.current.forEach(dc => {
-            if (dc.readyState === 'open') dc.send(batchEofPkt);
+            if (dc.readyState === 'open') {
+                dc.send(batchEofPkt);
+                try { dc.send(JSON.stringify({ type: 'batch-eof', totalFiles: currentFiles.length })); } catch(e) {}
+            }
         });
+        sendControlMsg({ type: 'batch-eof', totalFiles: currentFiles.length });
         
         // v02.1.33 Finalization Handshake: Wait for receiver to confirm local save
         logDebug("Sender: Batch sent. Awaiting receiver verification...");
@@ -901,13 +945,8 @@ function InstantDropContent() {
                         } else {
                             try { await peersRef.current[pIdx]?.addIceCandidate(new RTCIceCandidate(data.candidate)); } catch (e) {}
                         }
-                    } else if (data.type === 'force-verify') {
-                        if (reassembledCount.current >= expectedTotalFiles.current && expectedTotalFiles.current !== -1) {
-                            sendControlMsg({ type: 'batch-ack' });
-                        }
-                    } else if (data.type === 'metadata' || data.type === 'batch-eof') {
-                        handleIncomingData(data, 0);
                     }
+                    handleControlMessage(data);
                 } catch (err: any) {
                     logDebug("❌ Receiver WS Error: " + err.message);
                 }
@@ -923,16 +962,7 @@ function InstantDropContent() {
         if (typeof data === 'string') {
             try {
                 const msg = JSON.parse(data);
-                if (msg.type === 'metadata') {
-                    logDebug(`Receiver: Metadata for ${msg.name}`);
-                    setIncomingMeta(msg);
-                    setStatus('transferring');
-                    workerRef.current.postMessage({ type: 'metadata', fileIdx: msg.currentIdx, meta: msg });
-                } else if (msg.type === 'sector-eof') {
-                    workerRef.current.postMessage({ type: 'sector-eof', fileIdx: msg.fileIndex, totalChunks: msg.totalChunks });
-                } else if (msg.type === 'batch-eof') {
-                    workerRef.current.postMessage({ type: 'batch-eof', totalFiles: msg.totalFiles });
-                }
+                handleControlMessage(msg);
             } catch (e) {}
         } else if (data instanceof ArrayBuffer) {
             const view = new DataView(data);
@@ -979,25 +1009,7 @@ function InstantDropContent() {
         }
     };
 
-    const disconnectEverything = () => {
-        logDebug(`${VERSION}: Full Multiplexed Session Reset...`);
-        if (wsRef.current) { wsRef.current.close(); wsRef.current = null; }
-        peersRef.current.forEach(p => { if (p) try { p.close(); } catch (e) {} });
-        peersRef.current = [];
-        isActive.current = false;
-        isInitializingRef.current = false;
-        remoteDescriptionSetsRef.current = [false, false, false];
-        iceBuffersRef.current = [[], [], []];
-        dataChannelsRef.current = [];
-        fileBuffers.current.clear();
-        expectedTotalChunks.current.clear();
-        receivedChunksCount.current.clear();
-        fileMetas.current.clear();
-        reassembledCount.current = 0;
-        expectedTotalFiles.current = -1;
-        currentFileReceivedRef.current.clear();
-        releaseWakeLock(); // v02.1.33
-    };
+    // v02.1.39 (Patch 9): Helper logic moved to top-level scope for hoisting safety
 
     useEffect(() => {
         if (initialRoom && status === 'disconnected') {
@@ -1175,7 +1187,7 @@ function InstantDropContent() {
                         <Smartphone className="w-12 h-12 text-indigo-500" />
                     </div>
                     <h1 className="text-4xl md:text-5xl font-bold text-foreground mb-4">Turbo Drop</h1>
-                    <p className="text-xs text-indigo-600 font-black tracking-[0.2em] uppercase mb-2">v02.1.39 (Patch 8) 
+                    <p className="text-xs text-indigo-600 font-black tracking-[0.2em] uppercase mb-2">v02.1.39 (Patch 9) 
  Titan-Singularity (Sustain: 5MB/s+)</p>
                     <p className="text-lg text-muted-foreground max-w-2xl mx-auto">
                         The ultimate high-speed file sharing app. Transfer photos and large files (up to 200MB) from desktop to mobile or mobile to mobile instantly.
@@ -1406,7 +1418,7 @@ function InstantDropContent() {
 
                     {mode === 'receive' && (
                         <div className="space-y-8 animate-in fade-in zoom-in-95 duration-300 w-full max-w-md mx-auto">
-                            {(status === 'connecting' || status === 'transferring') && (
+                            {(status === 'connecting' || status === 'transferring' || status === 'done-waiting') && (
                                 <>
                                     <h2 className="text-2xl font-bold">Receiving File</h2>
                                     <p className="mt-2 text-indigo-600 dark:text-indigo-400 font-bold tracking-widest text-[10px] animate-pulse">
