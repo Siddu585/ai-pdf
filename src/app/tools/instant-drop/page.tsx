@@ -11,8 +11,8 @@ import { Footer } from "@/components/layout/Footer";
 import { useUsage } from "@/hooks/useUsage";
 import { PaywallModal } from "@/components/layout/PaywallModal";
 
-// v02.1.39 Restoration (Patch 25.2: Anti-Stall Cellular Goal)
-const VERSION = "v02.1.39 (Patch 25.2)";
+// v02.1.39 Restoration (Patch 25.3: Stable Anti-Stall Goal)
+const VERSION = "v02.1.39 (Patch 25.3)";
 const PIPES = 3; // Patch 17-24: 3-Pipe (12 Channels total)
 const CHANNELS_PER_PIPE = 4;
 const CHANNELS = 12; // v02.1.39 (Patch 18): Critical Sync
@@ -665,14 +665,7 @@ function InstantDropContent() {
             peer.oniceconnectionstatechange = () => {
                 logDebug(`Pipe-${pipeIdx} ICE State: ${peer.iceConnectionState}`);
                 if (peer.iceConnectionState === 'disconnected' || peer.iceConnectionState === 'failed') {
-                    // v02.1.39 (Patch 25.2): Graceful Resurrection (Phoenix Lite)
-                    // If we are mid-transfer and a pipe fails, attempt a silent re-init ONCE.
-                    if (isActive.current && statusRef.current === 'transferring' && !useFallback) {
-                        logDebug(`🔥 Pipe-${pipeIdx} Graceful Resurrection: Attempting Re-init...`);
-                        setupWebRTC(ws, isSender, pipeIdx, true); // Fallback to TCP/Relay
-                    } else {
-                        try { peer.restartIce(); } catch (e) {}
-                    }
+                    try { peer.restartIce(); } catch (e) {}
                 }
             };
 
