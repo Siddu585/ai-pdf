@@ -12,7 +12,7 @@ import { useUsage } from "@/hooks/useUsage";
 import { PaywallModal } from "@/components/layout/PaywallModal";
 
 // v02.1.39 Titan-Singularity (Triple-Pipe Multiplexing + Jumbo Chunks)
-const VERSION = "v02.1.39 (Patch 7)";
+const VERSION = "v02.1.39 (Patch 8)";
 const PIPES = 3; 
 const CHANNELS = 12;
 const CHANNELS_PER_PIPE = 4;
@@ -944,7 +944,10 @@ function InstantDropContent() {
             if (chunkIdx === 0xFFFFFFFD || chunkIdx === 0xFFFFFFFE) {
                 // v02.1.36: 12-byte Rich Signaling Parsing
                 const payloadCount = (data.byteLength >= 12) ? view.getUint32(8, true) : -1;
-                if (chunkIdx === 0xFFFFFFFD) expectedTotalFiles.current = payloadCount;
+                if (chunkIdx === 0xFFFFFFFD) {
+                    expectedTotalFiles.current = payloadCount;
+                    setStatus('done-waiting'); // Transition to verification UI
+                }
                 workerRef.current?.postMessage({
                     type: 'chunk',
                     fileIdx: fileIdx,
@@ -960,15 +963,13 @@ function InstantDropContent() {
                 logDebug(`Receiver: Symmetry Pulse for ${fileIdx}.`);
             } else {
                 // Regular Chunk
-                const pureData = data.slice(8);
-                totalReceivedBytesRef.current += pureData.byteLength;
-
+                // v02.1.39 (Patch 8): Align with 12-byte binary header (fileIdx, chunkIdx, numChunks)
                 workerRef.current.postMessage({
                     type: 'chunk',
                     fileIdx,
                     chunkIdx,
                     originalBuffer: data,
-                    offset: 8
+                    offset: 12
                 }, [data]);
             }
 
@@ -1174,7 +1175,7 @@ function InstantDropContent() {
                         <Smartphone className="w-12 h-12 text-indigo-500" />
                     </div>
                     <h1 className="text-4xl md:text-5xl font-bold text-foreground mb-4">Turbo Drop</h1>
-                    <p className="text-xs text-indigo-600 font-black tracking-[0.2em] uppercase mb-2">v02.1.39 (Patch 7) 
+                    <p className="text-xs text-indigo-600 font-black tracking-[0.2em] uppercase mb-2">v02.1.39 (Patch 8) 
  Titan-Singularity (Sustain: 5MB/s+)</p>
                     <p className="text-lg text-muted-foreground max-w-2xl mx-auto">
                         The ultimate high-speed file sharing app. Transfer photos and large files (up to 200MB) from desktop to mobile or mobile to mobile instantly.
