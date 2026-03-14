@@ -11,8 +11,8 @@ import { Footer } from "@/components/layout/Footer";
 import { useUsage } from "@/hooks/useUsage";
 import { PaywallModal } from "@/components/layout/PaywallModal";
 
-// v02.1.39 Restoration (Patch 25.4: Consolidated Anti-Stall)
-const VERSION = "v02.1.39 (Patch 25.4)";
+// v02.1.39 Restoration (Patch 25.5: URL Fix & Relay Restore)
+const VERSION = "v02.1.39 (Patch 25.5)";
 const PIPES = 3; // Patch 17-24: 3-Pipe (12 Channels total)
 const CHANNELS_PER_PIPE = 4;
 const CHANNELS = 12; // v02.1.39 (Patch 18): Critical Sync
@@ -24,15 +24,8 @@ const DRAIN_THRESHOLD = 64 * 1024 * 1024; // 64MB - Patch 19 Quasar Baseline
 const getBackendUrls = () => {
     let rawUrl = (process.env.NEXT_PUBLIC_API_URL || "").trim().replace(/\/$/, "");
     
-    // Sense and Fix recursive Render naming prefix (ai-pdfai-pdf)
-    // This happens when Render's auto-generation stacks names.
-    // If the base URL or the current window has it, we ensure the backend URL also has it.
-    if (rawUrl.includes("ai-pdfai-pdf") || (typeof window !== "undefined" && window.location.hostname.includes("ai-pdfai-pdf"))) {
-        if (!rawUrl.includes("ai-pdfai-pdf-backend")) {
-            rawUrl = rawUrl.replace("ai-pdf-backend", "ai-pdfai-pdf-backend");
-        }
-    }
-
+    // v02.1.39 (Patch 25.5): Removed "Sense and Fix" logic that caused recursive URL corruption.
+    // Canonical backend URL should be handled via Vercel env vars directly.
     const http = rawUrl || (typeof window !== "undefined" ? `${window.location.protocol}//${window.location.hostname}:8000` : "http://localhost:8000");
     const ws = http.replace(/^https:\/\//i, "wss://").replace(/^http:\/\//i, "ws://");
     
@@ -46,15 +39,27 @@ const ICE_SERVERS = {
         { urls: "stun:stun.l.google.com:19302" },
         { urls: "stun:stun1.l.google.com:19302" },
         { urls: "stun:stun.cloudflare.com:3478" },
-        // GUARANTEED PUBLIC RELAY (openrelay.metered.ca)
+        // v02.1.39 (Patch 25.5): Hardened TURN Relay Pool for Airtel Cellular NAT Traversal
+        // Primary: openrelay (free, highly available)
         {
             urls: [
                 "turn:openrelay.metered.ca:80",
                 "turn:openrelay.metered.ca:443",
-                "turn:openrelay.metered.ca:443?transport=tcp"
+                "turn:openrelay.metered.ca:443?transport=tcp",
+                "turns:openrelay.metered.ca:443"
             ],
             username: "openrelayproject",
             credential: "openrelayproject"
+        },
+        // Backup: Metered.ca free tier
+        {
+            urls: [
+                "turn:a.relay.metered.ca:80",
+                "turn:a.relay.metered.ca:443",
+                "turns:a.relay.metered.ca:443"
+            ],
+            username: "e8dd65b2e518fd1e3f3b30c7",
+            credential: "uFj5KNoH6mPM1b5R"
         }
     ]
 };
