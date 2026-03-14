@@ -12,7 +12,7 @@ import { useUsage } from "@/hooks/useUsage";
 import { PaywallModal } from "@/components/layout/PaywallModal";
 
 // v02.1.39 Titan-Singularity (Triple-Pipe Multiplexing + Jumbo Chunks)
-const VERSION = "v02.1.39 (Patch 6)";
+const VERSION = "v02.1.39 (Patch 7)";
 const PIPES = 3; 
 const CHANNELS = 12;
 const CHANNELS_PER_PIPE = 4;
@@ -20,7 +20,7 @@ const CHUNK_SIZE = 224 * 1024; // v02.1.39 (Patch 4): Reduced from 256KB to fit 
 const HIGH_WATER_MARK_MAX = 2 * 1024 * 1024;
 const PACER_THRESHOLD = 1024 * 1024;
 const MAX_IN_FLIGHT = 512;
-const DRAIN_THRESHOLD = 24 * 1024 * 1024; // v02.1.39 (Patch 6): Optimized to 24MB for 12-Channel sat.
+const DRAIN_THRESHOLD = 16 * 1024 * 1024; // v02.1.39 (Patch 7): Dialed back to 16MB to reduce SCTP congestion.
 const getBackendUrls = () => {
     let rawUrl = (process.env.NEXT_PUBLIC_API_URL || "").trim().replace(/\/$/, "");
     
@@ -212,7 +212,7 @@ function InstantDropContent() {
         const workerScript = `
             let fileBuffers = new Map();
             let fileMetas = new Map();
-            let receivedChunksCount = new Map();
+            let receivedChunkIndices = new Map(); // v02.1.39 (Patch 7): Track specific indices for integrity
             let reassembledFiles = new Set();
             let expectedTotalChunks = new Map();
             let expectedTotalFiles = -1;
@@ -223,35 +223,45 @@ function InstantDropContent() {
                 if (type === 'metadata') {
                     fileMetas.set(fileIdx, meta);
                     if (!fileBuffers.has(fileIdx)) fileBuffers.set(fileIdx, []);
+                    if (!receivedChunkIndices.has(fileIdx)) receivedChunkIndices.set(fileIdx, new Set());
                 } else if (type === 'chunk') {
+                    if (reassembledFiles.has(fileIdx)) return; // Ignore duplicate packets for finished files
+
                     if (chunkIdx === 0xFFFFFFFE) { // Sector EOF
-                        const totalChunks = e.data.payloadCount; // Titan-Nova Payload
+                        const totalChunks = e.data.payloadCount;
                         expectedTotalChunks.set(fileIdx, totalChunks);
-                        const current = (receivedChunksCount.get(fileIdx) || 0);
-                        if (current === totalChunks) {
+                        
+                        const indices = receivedChunkIndices.get(fileIdx);
+                        if (indices && indices.size === totalChunks) {
                              const meta = fileMetas.get(fileIdx);
                              if (meta) {
                                  self.postMessage({ type: 'reassembled', fileIdx, name: meta.name, fileType: meta.fileType, chunks: fileBuffers.get(fileIdx) });
-                                 fileBuffers.delete(fileIdx); fileMetas.delete(fileIdx); receivedChunksCount.delete(fileIdx); expectedTotalChunks.delete(fileIdx); reassembledFiles.add(fileIdx);
+                                 fileBuffers.delete(fileIdx); fileMetas.delete(fileIdx); receivedChunkIndices.get(fileIdx).clear(); expectedTotalChunks.delete(fileIdx); reassembledFiles.add(fileIdx);
                              } else {
                                  self.postMessage({ type: 'need-metadata', fileIdx });
                              }
                         }
                     } else if (chunkIdx === 0xFFFFFFFD) { // Batch EOF
-                        expectedTotalFiles = e.data.payloadCount; // Titan-Nova Payload
+                        expectedTotalFiles = e.data.payloadCount;
                     } else {
                         if (!fileBuffers.has(fileIdx)) fileBuffers.set(fileIdx, []);
+                        if (!receivedChunkIndices.has(fileIdx)) receivedChunkIndices.set(fileIdx, new Set());
+
                         const chunks = fileBuffers.get(fileIdx);
-                        chunks[chunkIdx] = new Uint8Array(e.data.originalBuffer, e.data.offset);
-                        const current = (receivedChunksCount.get(fileIdx) || 0) + 1;
-                        receivedChunksCount.set(fileIdx, current);
+                        const indices = receivedChunkIndices.get(fileIdx);
+                        
+                        // Only add and count if we haven't seen this chunk yet
+                        if (!indices.has(chunkIdx)) {
+                            chunks[chunkIdx] = new Uint8Array(e.data.originalBuffer, e.data.offset);
+                            indices.add(chunkIdx);
+                        }
                         
                         const expected = expectedTotalChunks.get(fileIdx);
-                        if (expected !== undefined && current === expected) {
+                        if (expected !== undefined && indices.size === expected) {
                             const meta = fileMetas.get(fileIdx);
                             if (meta) {
                                 self.postMessage({ type: 'reassembled', fileIdx, name: meta.name, fileType: meta.fileType, chunks });
-                                fileBuffers.delete(fileIdx); fileMetas.delete(fileIdx); receivedChunksCount.delete(fileIdx); expectedTotalChunks.set(fileIdx, undefined); reassembledFiles.add(fileIdx);
+                                fileBuffers.delete(fileIdx); fileMetas.delete(fileIdx); indices.clear(); expectedTotalChunks.delete(fileIdx); reassembledFiles.add(fileIdx);
                             } else {
                                 self.postMessage({ type: 'need-metadata', fileIdx });
                             }
@@ -660,11 +670,6 @@ function InstantDropContent() {
              }
         };
         broadcastMetadata();
-        // v02.1.39 (Patch 6): Periodically rebroadcast metadata if transfer is slow or channels open staggered
-        const metaInterval = setInterval(() => {
-            if (isActive.current && statusRef.current === 'transferring') broadcastMetadata();
-            else clearInterval(metaInterval);
-        }, 3000);
         
         for (let i = 0; i < currentFiles.length; i++) {
             if (!isActive.current) break; // v02.1.1: Catch disconnection
@@ -1169,8 +1174,8 @@ function InstantDropContent() {
                         <Smartphone className="w-12 h-12 text-indigo-500" />
                     </div>
                     <h1 className="text-4xl md:text-5xl font-bold text-foreground mb-4">Turbo Drop</h1>
-                    <p className="text-xs text-indigo-600 font-black tracking-[0.2em] uppercase mb-2">v02.1.39 (Patch 6) 
-Titan-Singularity (Sustain: 5MB/s+)</p>
+                    <p className="text-xs text-indigo-600 font-black tracking-[0.2em] uppercase mb-2">v02.1.39 (Patch 7) 
+ Titan-Singularity (Sustain: 5MB/s+)</p>
                     <p className="text-lg text-muted-foreground max-w-2xl mx-auto">
                         The ultimate high-speed file sharing app. Transfer photos and large files (up to 200MB) from desktop to mobile or mobile to mobile instantly.
                     </p>
