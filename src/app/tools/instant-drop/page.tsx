@@ -12,15 +12,15 @@ import { useUsage } from "@/hooks/useUsage";
 import { PaywallModal } from "@/components/layout/PaywallModal";
 
 // v02.1.39 Titan-Singularity (Triple-Pipe Multiplexing + Jumbo Chunks)
-const VERSION = "v02.1.39 (Patch 11)";
+const VERSION = "v02.1.39 (Patch 12)";
 const PIPES = 3; 
 const CHANNELS = 12;
 const CHANNELS_PER_PIPE = 4;
 const CHUNK_SIZE = 224 * 1024; // v02.1.39 (Patch 4): Reduced from 256KB to fit within max-message-size
 const HIGH_WATER_MARK_MAX = 2 * 1024 * 1024;
-const PACER_THRESHOLD = 1024 * 1024;
+const PACER_THRESHOLD = 4 * 1024 * 1024; // v02.1.39 (Patch 12): Boosted to 4MB
 const MAX_IN_FLIGHT = 512;
-const DRAIN_THRESHOLD = 16 * 1024 * 1024; // v02.1.39 (Patch 7): Dialed back to 16MB to reduce SCTP congestion.
+const DRAIN_THRESHOLD = 64 * 1024 * 1024; // v02.1.39 (Patch 12): Boosted to 64MB for Superfast recovery.
 const getBackendUrls = () => {
     let rawUrl = (process.env.NEXT_PUBLIC_API_URL || "").trim().replace(/\/$/, "");
     
@@ -111,6 +111,8 @@ function InstantDropContent() {
     const heartbeatIntervalRef = useRef<any>(null);
     const wakeLockRef = useRef<any>(null);
     const workerRef = useRef<Worker | null>(null);
+    const totalReceivedChunksCountRef = useRef(0); // v02.1.39 (Patch 12): Lightweight Flow Control
+    const doneWaitingTimeoutRef = useRef<any>(null); // v02.1.39 (Patch 12): Receiver Safety Net
 
     function logDebug(msg: string) {
         const maskedMsg = msg.replace(/([a-zA-Z0-9._-]+)@([a-zA-Z0-9._-]+\.[a-zA-Z0-9_-]+)/g, (match, p1, p2) => {
@@ -401,6 +403,8 @@ function InstantDropContent() {
             if (e.data.type === 'reassembled') {
                  reassembledCount.current++; 
                  const { fileIdx, name, fileType, chunks } = e.data;
+                 // v02.1.39 (Patch 12): Decrement global chunk counter to allow more data in
+                 if (chunks) totalReceivedChunksCountRef.current = Math.max(0, totalReceivedChunksCountRef.current - chunks.length);
                  const blob = new Blob(chunks, { type: fileType || 'application/octet-stream' });
                  setReceivedFiles(prev => [...prev, { blob, name }]);
                  logDebug(`Receiver: Worker reassembly complete for ${name}.`);
@@ -410,6 +414,7 @@ function InstantDropContent() {
                  sendControlMsg({ type: 'request-metadata', fileIdx: fIdx });
             } else if (e.data.type === 'all-done') {
                  logDebug("Receiver: Data fully reassembled. Verifying...");
+                 if (doneWaitingTimeoutRef.current) { clearTimeout(doneWaitingTimeoutRef.current); doneWaitingTimeoutRef.current = null; }
                  setStatus('done');
                  
                  // v02.1.38: Heartbeat Handshake (Repeated Broadcast)
@@ -610,13 +615,8 @@ function InstantDropContent() {
                 if (pipeIdx === 0) {
                     setInterval(() => {
                         if (statusRef.current === 'transferring') {
-                            let totalBufferedChunks = 0;
-                            fileBuffers.current.forEach((chunksArray) => {
-                                for (let i = 0; i < chunksArray.length; i++) {
-                                     if (chunksArray[i]) totalBufferedChunks++;
-                                }
-                            });
-                            if (totalBufferedChunks > 1000) sendControlMsg({ type: 'flow', status: 'slow' });
+                            // v02.1.39 (Patch 12): Replaced expensive Map loop with simple ref counter
+                            if (totalReceivedChunksCountRef.current > 1000) sendControlMsg({ type: 'flow', status: 'slow' });
                             else sendControlMsg({ type: 'flow', status: 'ready' });
                         } else {
                             sendControlMsg({ type: 'flow', status: 'ready' });
@@ -996,6 +996,15 @@ function InstantDropContent() {
                 if (chunkIdx === 0xFFFFFFFD) {
                     expectedTotalFiles.current = payloadCount;
                     setStatus('done-waiting'); // Transition to verification UI
+                    
+                    // v02.1.39 (Patch 12): Receiver Safety Net
+                    if (doneWaitingTimeoutRef.current) clearTimeout(doneWaitingTimeoutRef.current);
+                    doneWaitingTimeoutRef.current = setTimeout(() => {
+                        if (statusRef.current === 'done-waiting') {
+                            logDebug("Receiver: Safety Net (10s) triggered in done-waiting. Forcing completion.");
+                            setStatus('done');
+                        }
+                    }, 10000);
                 }
                 workerRef.current?.postMessage({
                     type: 'chunk',
@@ -1012,6 +1021,7 @@ function InstantDropContent() {
                 logDebug(`Receiver: Symmetry Pulse for ${fileIdx}.`);
             } else {
                 // Regular Chunk
+                totalReceivedChunksCountRef.current++; // v02.1.39 (Patch 12): Global Tracking
                 // v02.1.39 (Patch 8): Align with 12-byte binary header (fileIdx, chunkIdx, numChunks)
                 workerRef.current.postMessage({
                     type: 'chunk',
@@ -1315,9 +1325,25 @@ function InstantDropContent() {
                             {(status === 'connecting' || status === 'transferring' || status === 'done-waiting' || (status === 'done' && mode === 'send')) && (
                                 <div className="space-y-6 w-full max-w-md mx-auto">
                                     {status === 'done-waiting' && (
-                                        <div className="flex items-center justify-center text-indigo-600 bg-indigo-50 dark:bg-indigo-900/20 p-4 rounded-xl font-bold animate-pulse">
-                                            <Loader2 className="w-5 h-5 animate-spin mr-2" />
-                                            Verifying Reassembly...
+                                        <div className="flex flex-col gap-3">
+                                            <div className="flex items-center justify-center text-indigo-600 bg-indigo-50 dark:bg-indigo-900/20 p-4 rounded-xl font-bold animate-pulse">
+                                                <Loader2 className="w-5 h-5 animate-spin mr-2" />
+                                                Verifying Reassembly...
+                                            </div>
+                                            {mode === 'receive' && (
+                                                <Button 
+                                                    variant="outline" 
+                                                    size="sm" 
+                                                    className="text-xs border-indigo-200 text-indigo-600 hover:bg-indigo-50"
+                                                    onClick={() => {
+                                                        logDebug("User-Triggered Force Finish");
+                                                        if (doneWaitingTimeoutRef.current) { clearTimeout(doneWaitingTimeoutRef.current); doneWaitingTimeoutRef.current = null; }
+                                                        setStatus('done');
+                                                    }}
+                                                >
+                                                    Force Finish & Download
+                                                </Button>
+                                            )}
                                         </div>
                                     )}
                                     <div className="flex items-center justify-between p-4 bg-muted rounded-xl border mb-4">
