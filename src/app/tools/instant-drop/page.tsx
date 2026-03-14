@@ -11,16 +11,16 @@ import { Footer } from "@/components/layout/Footer";
 import { useUsage } from "@/hooks/useUsage";
 import { PaywallModal } from "@/components/layout/PaywallModal";
 
-// v02.1.39 Restoration (Patch 23: Zero-Copy & Reactive Handshake)
-const VERSION = "v02.1.39 (Patch 23)";
-const PIPES = 3; // Patch 17-23: 3-Pipe (12 Channels total)
+// v02.1.39 Restoration (Patch 24: Safe Zero-Copy & Meta-Deduplication)
+const VERSION = "v02.1.39 (Patch 24)";
+const PIPES = 3; // Patch 17-24: 3-Pipe (12 Channels total)
 const CHANNELS_PER_PIPE = 4;
 const CHANNELS = 12; // v02.1.39 (Patch 18): Critical Sync
 const CHUNK_SIZE = 64 * 1024; // 64KB - Authentic Patch 8 Baseline
-const HIGH_WATER_MARK_MAX = 16 * 1024 * 1024; // 16MB - Silk Performance Baseline
+const HIGH_WATER_MARK_MAX = 64 * 1024 * 1024; // 64MB - Patch 19 Quasar Baseline
 const PACER_THRESHOLD = 1 * 1024 * 1024; // 1MB - Authentic Patch 8 Baseline
 const MAX_IN_FLIGHT = 128; // Patch 8 Balance
-const DRAIN_THRESHOLD = 16 * 1024 * 1024; // 16MB - Silk Performance Baseline
+const DRAIN_THRESHOLD = 64 * 1024 * 1024; // 64MB - Patch 19 Quasar Baseline
 const getBackendUrls = () => {
     let rawUrl = (process.env.NEXT_PUBLIC_API_URL || "").trim().replace(/\/$/, "");
     
@@ -114,6 +114,23 @@ function InstantDropContent() {
     const totalReceivedChunksCountRef = useRef(0); // v02.1.39 (Patch 12): Lightweight Flow Control
     const doneWaitingTimeoutRef = useRef<any>(null); // v02.1.39 (Patch 12): Receiver Safety Net
 
+    // v02.1.39 (Patch 24): Autonomous Stress Test Hook
+    useEffect(() => {
+        if (typeof window !== 'undefined') {
+            (window as any).__RUN_STRESS_TEST__ = (fileCount = 2, sizeMB = 60) => {
+                logDebug(`[TEST] Starting Autonomous Stress Test: ${fileCount} files x ${sizeMB}MB`);
+                const dummyFiles = Array.from({ length: fileCount }, (_, i) => {
+                    const blob = new Blob([new Uint8Array(sizeMB * 1024 * 1024)], { type: 'application/pdf' });
+                    return new File([blob], `StressTest_${i + 1}.pdf`, { type: 'application/pdf' });
+                });
+                setFiles(dummyFiles);
+                setMode('send');
+                setStatus('waiting');
+                // The handleUpload logic will trigger via useEffect on files
+            };
+        }
+    }, [logDebug]);
+
     function logDebug(msg: string) {
         const maskedMsg = msg.replace(/([a-zA-Z0-9._-]+)@([a-zA-Z0-9._-]+\.[a-zA-Z0-9_-]+)/g, (match, p1, p2) => {
             return p1.charAt(0) + "***@" + p2;
@@ -170,6 +187,9 @@ function InstantDropContent() {
         switch (msg.type) {
             case 'metadata':
                 if (modeRef.current === 'receive') {
+                    // v02.1.39 (Patch 24): Deduplicate Metadata Processing (Spam Guard)
+                    if (fileMetas.current.has(msg.currentIdx)) return;
+                    
                     logDebug(`Receiver: Metadata for ${msg.name} (File ${msg.currentIdx})`);
                     setIncomingMeta(msg);
                     if (msg.currentIdx !== undefined) setCurrentFileIndex(msg.currentIdx);
@@ -359,7 +379,13 @@ function InstantDropContent() {
                     const indices = receivedChunkIndices.get(fileIdx);
                     if (expected !== undefined && indices.size === expected) {
                          const chunks = fileBuffers.get(fileIdx);
-                         self.postMessage({ type: 'reassembled', fileIdx, name: meta.name, fileType: meta.fileType, chunks }, chunks.map(c => c.buffer));
+                         // v02.1.39 (Patch 24): Filter undefined to prevent Transferable mapping crash
+                         const transferList = chunks.filter(c => c && c.buffer).map(c => c.buffer);
+                         try {
+                            self.postMessage({ type: 'reassembled', fileIdx, name: meta.name, fileType: meta.fileType, chunks }, transferList);
+                         } catch (err) {
+                            self.postMessage({ type: 'error', msg: 'PostMessage Transfer Failed: ' + err });
+                         }
                          fileBuffers.delete(fileIdx); fileMetas.delete(fileIdx); indices.clear(); expectedTotalChunks.delete(fileIdx); reassembledFiles.add(fileIdx);
                     }
                 } else if (type === 'chunk') {
@@ -392,8 +418,13 @@ function InstantDropContent() {
                             const meta = fileMetas.get(fileIdx);
                             if (meta) {
                                 const chunks = fileBuffers.get(fileIdx);
-                                // v02.1.39 (Patch 23): Zero-Copy Transfer
-                                self.postMessage({ type: 'reassembled', fileIdx, name: meta.name, fileType: meta.fileType, chunks }, chunks.map(c => c.buffer));
+                                // v02.1.39 (Patch 24): Filter undefined to prevent Transferable mapping crash
+                                const transferList = chunks.filter(c => c && c.buffer).map(c => c.buffer);
+                                try {
+                                    self.postMessage({ type: 'reassembled', fileIdx, name: meta.name, fileType: meta.fileType, chunks }, transferList);
+                                } catch (err) {
+                                    self.postMessage({ type: 'error', msg: 'PostMessage Transfer Failed: ' + err });
+                                }
                                 fileBuffers.delete(fileIdx); fileMetas.delete(fileIdx); indices.clear(); expectedTotalChunks.delete(fileIdx); reassembledFiles.add(fileIdx);
                             } else {
                                 self.postMessage({ type: 'need-metadata', fileIdx });
