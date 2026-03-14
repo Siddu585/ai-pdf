@@ -1587,8 +1587,8 @@ function InstantDropContent() {
                                         {receivedFiles.map((rf, idx) => (
                                             <div key={idx} className="flex items-center justify-between p-3 bg-card border rounded-lg">
                                                 <p className="text-xs font-semibold text-left truncate flex-1 mr-2">{rf.name}</p>
-                                                <Button size="sm" variant="secondary" onClick={() => smartSaveFile(rf.blob, rf.name)}>
-                                                    {isImageFile(rf.blob, rf.name) ? '≡ƒô╖ Save' : '≡ƒÆ╛ Save'}
+                                                <Button size="sm" variant="secondary" onClick={() => rf.blob && smartSaveFile(rf.blob, rf.name)} disabled={!rf.blob}>
+                                                    {(rf.blob && isImageFile(rf.blob, rf.name)) ? '📸 Save' : '💾 Save'}
                                                 </Button>
                                             </div>
                                         ))}
