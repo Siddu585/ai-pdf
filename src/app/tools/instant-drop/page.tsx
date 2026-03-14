@@ -11,8 +11,8 @@ import { Footer } from "@/components/layout/Footer";
 import { useUsage } from "@/hooks/useUsage";
 import { PaywallModal } from "@/components/layout/PaywallModal";
 
-// v02.1.39 Restoration (Patch 25.3: Stable Anti-Stall Goal)
-const VERSION = "v02.1.39 (Patch 25.3)";
+// v02.1.39 Restoration (Patch 25.4: Consolidated Anti-Stall)
+const VERSION = "v02.1.39 (Patch 25.4)";
 const PIPES = 3; // Patch 17-24: 3-Pipe (12 Channels total)
 const CHANNELS_PER_PIPE = 4;
 const CHANNELS = 12; // v02.1.39 (Patch 18): Critical Sync
@@ -313,8 +313,15 @@ function InstantDropContent() {
     useEffect(() => {
         statusRef.current = status;
         if (status === 'transferring') {
+            let prevBytesStats = totalSentBytesRef.current + totalReceivedBytesRef.current;
             const statsInterval = setInterval(async () => {
                 try {
+                    // Update Speed Statistics
+                    const currentTotal = totalSentBytesRef.current + totalReceivedBytesRef.current;
+                    const instantSpeed = ((currentTotal - prevBytesStats) / 5 / 1024 / 1024).toFixed(2);
+                    currentMBpsRef.current = parseFloat(instantSpeed);
+                    prevBytesStats = currentTotal;
+
                     let reportStr = "--- WebRTC Stats (Singularity Triple-Pipe) ---\n";
                     let rttSum = 0;
                     let rttCount = 0;
@@ -334,6 +341,7 @@ function InstantDropContent() {
                     }
                     if (rttCount > 0) avgRTTRef.current = rttSum / rttCount;
                     logDebug(reportStr);
+                    console.log(`%c [HYDRA MONITOR] INSTANT SPEED: ${instantSpeed} MB/s (RTT: ${avgRTTRef.current.toFixed(3)})`, "color: #00ff00; font-weight: bold;");
                 } catch (e) {}
             }, 5000);
             return () => clearInterval(statsInterval);
@@ -701,19 +709,10 @@ function InstantDropContent() {
                 setTimeout(() => {
                     logDebug("Starting Ultimate-Gold parallel transfer...");
                     setStatus('transferring');
-                    // Start speed timer
+                    // Reset bytes trackers
                     lastBytesRef.current = 0;
-                    if (speedTimerRef.current) clearInterval(speedTimerRef.current);
-                    // v02.1.32: Performance Monitor (5s Interval)
-                    let prevBytes = 0;
-                    setInterval(() => {
-                        const currentTotal = totalSentBytesRef.current + totalReceivedBytesRef.current;
-                        const speed = ((currentTotal - prevBytes) / 5 / 1024 / 1024).toFixed(2);
-                        currentMBpsRef.current = parseFloat(speed); // v02.1.39 (Patch 25): Update speed for BDP
-                        console.log(`%c [HYDRA MONITOR] INSTANT SPEED: ${speed} MB/s (RTT: ${avgRTTRef.current.toFixed(3)})`, "color: #00ff00; font-weight: bold;");
-                        prevBytes = currentTotal;
-                    }, 5000);
-
+                    if (speedTimerRef.current) { clearInterval(speedTimerRef.current); speedTimerRef.current = null; }
+                    
                     startFileTransfer();
                 }, 500);
             }
