@@ -11,8 +11,8 @@ import { Footer } from "@/components/layout/Footer";
 import { useUsage } from "@/hooks/useUsage";
 import { PaywallModal } from "@/components/layout/PaywallModal";
 
-// v02.1.39 Restoration (Patch 25.6: Metered Turbo)
-const VERSION = "v02.1.39 (Patch 25.6)";
+// v02.1.39 Restoration (Patch 25.7: Cellular Force-Relay)
+const VERSION = "v02.1.39 (Patch 25.7)";
 const PIPES = 3; // Patch 17-24: 3-Pipe (12 Channels total)
 const CHANNELS_PER_PIPE = 4;
 const CHANNELS = 12; // v02.1.39 (Patch 18): Critical Sync
@@ -22,33 +22,13 @@ const PACER_THRESHOLD = 1 * 1024 * 1024; // 1MB - Authentic Patch 8 Baseline
 const MAX_IN_FLIGHT = 128; // Patch 8 Balance
 const DRAIN_THRESHOLD = 64 * 1024 * 1024; // 64MB - Patch 19 Quasar Baseline
 
-// v02.1.39 (Patch 25.6): Extreme URL Sanitization
-// Strips recursive prefixes like ai-pdfai-pdf from environment variables
-const sanitizeBackendUrl = (url: string) => {
-    if (!url) return "";
-    let clean = url.trim().replace(/\/$/, "");
-    
-    // Remove recursive Render/Vercel name stacking (e.g., ai-pdfai-pdf)
-    // Matches the pattern: duplicate-part | duplicate-part
-    if (clean.includes("ai-pdfai-pdf")) {
-        clean = clean.replace(/ai-pdfai-pdf/g, "ai-pdf");
-    }
-    
-    // Ensure the backend-specific part is present but not duplicated
-    if (!clean.includes("-backend") && clean.includes("onrender.com")) {
-        clean = clean.replace("ai-pdf", "ai-pdf-backend");
-    }
-    
-    return clean;
-};
-
+// v02.1.39 (Patch 25.7): NO SANITIZATION. 
+// The recursive ai-pdfai-pdf hostnames are actually correct for this Render environment.
 const getBackendUrls = () => {
-    let rawUrl = process.env.NEXT_PUBLIC_API_URL || "";
-    const sanitized = sanitizeBackendUrl(rawUrl);
+    let rawUrl = (process.env.NEXT_PUBLIC_API_URL || "").trim().replace(/\/$/, "");
     
-    console.log(`[CONFIG] Backend URL Sanitized: ${sanitized || "Localhost"}`);
-    
-    const http = sanitized || (typeof window !== "undefined" ? `${window.location.protocol}//${window.location.hostname}:8000` : "http://localhost:8000");
+    // Restoration of the 25.1 base logic
+    const http = rawUrl || (typeof window !== "undefined" ? `${window.location.protocol}//${window.location.hostname}:8000` : "http://localhost:8000");
     const ws = http.replace(/^https:\/\//i, "wss://").replace(/^http:\/\//i, "ws://");
     
     return { http, ws };
@@ -60,23 +40,21 @@ const ICE_SERVERS = {
     iceServers: [
         { urls: "stun:stun.l.google.com:19302" },
         { urls: "stun:stun1.l.google.com:19302" },
-        { urls: "stun:stun.cloudflare.com:3478" },
-        // v02.1.39 (Patch 25.6): Metered Turbo (TLS/443)
-        // Prioritizing turns: transport=tcp to bypass cellular carrier throttling/NAT blocks
+        // v02.1.39 (Patch 25.7): Hyper-Stable Relay Pool (TCP/443 Priority)
+        // We force TLS (turns:) as standard UDP is often blocked on cellular.
         {
             urls: [
                 "turns:openrelay.metered.ca:443?transport=tcp",
                 "turn:openrelay.metered.ca:443?transport=tcp",
-                "turn:openrelay.metered.ca:80?transport=tcp",
+                "turn:openrelay.metered.ca:80?transport=tcp"
             ],
             username: "openrelayproject",
             credential: "openrelayproject"
         },
-        // Account Fallback (50GB Free Tier)
         {
             urls: [
                 "turns:swap-pdf.metered.live:443?transport=tcp",
-                "turn:swap-pdf.metered.live:443?transport=tcp",
+                "turn:swap-pdf.metered.live:443?transport=tcp"
             ],
             username: "e8dd65b2e518fd1e3f3b30c7",
             credential: "uFj5KNoH6mPM1b5R"
@@ -323,8 +301,23 @@ function InstantDropContent() {
                 if (turnRes.ok) {
                     const turnData = await turnRes.json();
                     if (Array.isArray(turnData)) {
-                        relayServersRef.current = [...ICE_SERVERS.iceServers, ...turnData];
-                        logDebug(`✅ Relays Pre-fetched: ${turnData.length} servers ready.`);
+                        // v02.1.39 (Patch 25.7): Standardize all pre-fetched relays to use TCP/TLS
+                        const hardenedRelays = turnData.map((s: any) => {
+                            if (s.urls && Array.isArray(s.urls)) {
+                                return {
+                                    ...s,
+                                    urls: s.urls.map((u: string) => u.includes('?') ? (u.includes('transport=tcp') ? u : `${u}&transport=tcp`) : `${u}?transport=tcp`)
+                                };
+                            } else if (typeof s.urls === 'string') {
+                                return {
+                                    ...s,
+                                    urls: s.urls.includes('?') ? (s.urls.includes('transport=tcp') ? s.urls : `${s.urls}&transport=tcp`) : `${s.urls}?transport=tcp`
+                                };
+                            }
+                            return s;
+                        });
+                        relayServersRef.current = [...ICE_SERVERS.iceServers, ...hardenedRelays];
+                        logDebug(`✅ Relays Pre-fetched & Hardened: ${hardenedRelays.length} servers ready.`);
                     }
                 }
             } catch (e) { console.error("Relay pre-fetch failed", e); }
@@ -664,7 +657,13 @@ function InstantDropContent() {
                                     ? relayServersRef.current 
                                     : [...ICE_SERVERS.iceServers];
                                     
-            const peer = new RTCPeerConnection({ iceServers: currentRelays });
+            // v02.1.39 (Patch 25.7): 'relay' ONLY Policy for Cellular
+            // Direct P2P on Airtel/Jio always fails or takes 15s to timeout.
+            // Forcing 'relay' ensures we use the stable TLS-443 tunnel immediately.
+            const peer = new RTCPeerConnection({ 
+                iceServers: currentRelays,
+                iceTransportPolicy: 'relay' 
+            });
             peersRef.current[pipeIdx] = peer;
 
             if (isSender) {
