@@ -11,16 +11,16 @@ import { Footer } from "@/components/layout/Footer";
 import { useUsage } from "@/hooks/useUsage";
 import { PaywallModal } from "@/components/layout/PaywallModal";
 
-// v02.1.39 Titan-Singularity (Triple-Pipe Multiplexing + Jumbo Chunks)
-const VERSION = "v02.1.39 (Patch 12)";
-const PIPES = 3; 
-const CHANNELS = 12;
+// v02.1.39 Restoration (Patch 13: Smooth Return)
+const VERSION = "v02.1.39 (Patch 13)";
+const PIPES = 2; // v02.1.39 (Patch 13): 2-Pipe (8 Channels total)
+const CHANNELS = 8;
 const CHANNELS_PER_PIPE = 4;
-const CHUNK_SIZE = 224 * 1024; // v02.1.39 (Patch 4): Reduced from 256KB to fit within max-message-size
+const CHUNK_SIZE = 64 * 1024; // v02.1.39 (Patch 13): Reverted to 64KB for maximum SCTP smoothness
 const HIGH_WATER_MARK_MAX = 2 * 1024 * 1024;
-const PACER_THRESHOLD = 4 * 1024 * 1024; // v02.1.39 (Patch 12): Boosted to 4MB
-const MAX_IN_FLIGHT = 512;
-const DRAIN_THRESHOLD = 64 * 1024 * 1024; // v02.1.39 (Patch 12): Boosted to 64MB for Superfast recovery.
+const PACER_THRESHOLD = 1 * 1024 * 1024; // v02.1.39 (Patch 13): 1MB Yield
+const MAX_IN_FLIGHT = 128;
+const DRAIN_THRESHOLD = 16 * 1024 * 1024; // v02.1.39 (Patch 13): 16MB (Proven speed of Patch 7/8/9)
 const getBackendUrls = () => {
     let rawUrl = (process.env.NEXT_PUBLIC_API_URL || "").trim().replace(/\/$/, "");
     
@@ -1032,8 +1032,19 @@ function InstantDropContent() {
                 }, [data]);
             }
 
-            if (chunkIdx % 100 === 0) {
-                setProgress(p => Math.min(99, p + 1)); 
+            if (chunkIdx % 20 === 0) {
+                // v02.1.39 (Patch 13): Granular high-speed progress tracking
+                if (incomingMeta && incomingMeta.size) {
+                    const totalChunksExpected = Math.ceil(incomingMeta.size / CHUNK_SIZE);
+                    const currentChunksReceived = (currentFileReceivedRef.current.get(fileIdx) || 0) + 1;
+                    currentFileReceivedRef.current.set(fileIdx, currentChunksReceived);
+                    
+                    const fileProgress = Math.floor((currentChunksReceived / totalChunksExpected) * 100);
+                    // Satisfaction Jumps: Update progress in multiples of 5 for that "feeling" of speed
+                    setProgress(Math.max(progress, Math.floor(fileProgress / 5) * 5));
+                } else {
+                    setProgress(p => Math.min(99, p + 2)); 
+                }
             }
         }
     };
@@ -1511,7 +1522,7 @@ function InstantDropContent() {
                                 </>
                             )}
 
-                            {status === 'done' && receivedFiles.length > 0 && (
+                            {(status === 'done' || (status === 'done-waiting' && reassembledCount.current > 0)) && (
                                 <div className="flex flex-col items-center justify-center p-6 bg-green-50 dark:bg-green-900/10 border border-green-200 dark:border-green-800 rounded-xl space-y-4">
                                     <CheckCircle className="w-12 h-12 text-green-500" />
                                     <h2 className="text-xl font-bold text-green-700 dark:text-green-400">{receivedFiles.length} Files Received</h2>
