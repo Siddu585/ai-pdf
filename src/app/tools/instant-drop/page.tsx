@@ -11,8 +11,8 @@ import { Footer } from "@/components/layout/Footer";
 import { useUsage } from "@/hooks/useUsage";
 import { PaywallModal } from "@/components/layout/PaywallModal";
 
-// v02.1.39 Restoration (Patch 25.8: Relay Fix)
-const VERSION = "v02.1.39 (Patch 25.8)";
+// v02.1.39 Restoration (Patch 25.1: Stable Cellular Goal)
+const VERSION = "v02.1.39 (Patch 25.9: Baseline 25.1 Restoration)";
 const PIPES = 3; // Patch 17-24: 3-Pipe (12 Channels total)
 const CHANNELS_PER_PIPE = 4;
 const CHANNELS = 12; // v02.1.39 (Patch 18): Critical Sync
@@ -22,12 +22,18 @@ const PACER_THRESHOLD = 1 * 1024 * 1024; // 1MB - Authentic Patch 8 Baseline
 const MAX_IN_FLIGHT = 128; // Patch 8 Balance
 const DRAIN_THRESHOLD = 64 * 1024 * 1024; // 64MB - Patch 19 Quasar Baseline
 
-// v02.1.39 (Patch 25.7): NO SANITIZATION. 
-// The recursive ai-pdfai-pdf hostnames are actually correct for this Render environment.
+// Restoration of Patch 25.1 Backend URL Logic
 const getBackendUrls = () => {
     let rawUrl = (process.env.NEXT_PUBLIC_API_URL || "").trim().replace(/\/$/, "");
     
-    // Restoration of the 25.1 base logic
+    // Sense and Fix recursive Render naming prefix (ai-pdfai-pdf)
+    // This happens when Render's auto-generation stacks names.
+    if (rawUrl.includes("ai-pdfai-pdf") || (typeof window !== "undefined" && window.location.hostname.includes("ai-pdfai-pdf"))) {
+        if (!rawUrl.includes("ai-pdfai-pdf-backend")) {
+            rawUrl = rawUrl.replace("ai-pdf-backend", "ai-pdfai-pdf-backend");
+        }
+    }
+
     const http = rawUrl || (typeof window !== "undefined" ? `${window.location.protocol}//${window.location.hostname}:8000` : "http://localhost:8000");
     const ws = http.replace(/^https:\/\//i, "wss://").replace(/^http:\/\//i, "ws://");
     
@@ -40,24 +46,16 @@ const ICE_SERVERS = {
     iceServers: [
         { urls: "stun:stun.l.google.com:19302" },
         { urls: "stun:stun1.l.google.com:19302" },
-        // v02.1.39 (Patch 25.7): Hyper-Stable Relay Pool (TCP/443 Priority)
-        // We force TLS (turns:) as standard UDP is often blocked on cellular.
+        { urls: "stun:stun.cloudflare.com:3478" },
+        // Restoration of 25.1 Guaranteed Public Relay (Metered OpenRelay)
         {
             urls: [
-                "turns:openrelay.metered.ca:443?transport=tcp",
-                "turn:openrelay.metered.ca:443?transport=tcp",
-                "turn:openrelay.metered.ca:80?transport=tcp"
+                "turn:openrelay.metered.ca:80",
+                "turn:openrelay.metered.ca:443",
+                "turn:openrelay.metered.ca:443?transport=tcp"
             ],
             username: "openrelayproject",
             credential: "openrelayproject"
-        },
-        {
-            urls: [
-                "turns:swap-pdf.metered.live:443?transport=tcp",
-                "turn:swap-pdf.metered.live:443?transport=tcp"
-            ],
-            username: "e8dd65b2e518fd1e3f3b30c7",
-            credential: "uFj5KNoH6mPM1b5R"
         }
     ]
 };
@@ -301,29 +299,8 @@ function InstantDropContent() {
                 if (turnRes.ok) {
                     const turnData = await turnRes.json();
                     if (Array.isArray(turnData)) {
-                        // v02.1.39 (Patch 25.7): Standardize all pre-fetched relays to use TCP/TLS
-                        const hardenedRelays = turnData.map((s: any) => {
-                            const isTurn = (u: string) => u.startsWith('turn:') || u.startsWith('turns:');
-                            if (s.urls && Array.isArray(s.urls)) {
-                                return {
-                                    ...s,
-                                    urls: s.urls.map((u: string) => {
-                                        if (!isTurn(u)) return u; // Skip STUN
-                                        return u.includes('?') ? (u.includes('transport=tcp') ? u : `${u}&transport=tcp`) : `${u}?transport=tcp`;
-                                    })
-                                };
-                            } else if (typeof s.urls === 'string') {
-                                const u = s.urls;
-                                if (!isTurn(u)) return s;
-                                return {
-                                    ...s,
-                                    urls: u.includes('?') ? (u.includes('transport=tcp') ? u : `${u}&transport=tcp`) : `${u}?transport=tcp`
-                                };
-                            }
-                            return s;
-                        });
-                        relayServersRef.current = [...ICE_SERVERS.iceServers, ...hardenedRelays];
-                        logDebug(`✅ Relays Pre-fetched & Hardened: ${hardenedRelays.length} servers ready.`);
+                        relayServersRef.current = [...ICE_SERVERS.iceServers, ...turnData];
+                        logDebug(`✅ Relays Pre-fetched (Baseline Restoration): ${turnData.length} servers ready.`);
                     }
                 }
             } catch (e) { console.error("Relay pre-fetch failed", e); }
@@ -663,13 +640,8 @@ function InstantDropContent() {
                                     ? relayServersRef.current 
                                     : [...ICE_SERVERS.iceServers];
                                     
-            // v02.1.39 (Patch 25.7): 'relay' ONLY Policy for Cellular
-            // Direct P2P on Airtel/Jio always fails or takes 15s to timeout.
-            // Forcing 'relay' ensures we use the stable TLS-443 tunnel immediately.
-            const peer = new RTCPeerConnection({ 
-                iceServers: currentRelays,
-                iceTransportPolicy: 'relay' 
-            });
+            // v02.1.39: Reverting to 25.1 Baseline (DEFAULT Policy)
+            const peer = new RTCPeerConnection({ iceServers: currentRelays });
             peersRef.current[pipeIdx] = peer;
 
             if (isSender) {
