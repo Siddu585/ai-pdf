@@ -11,8 +11,8 @@ import { Footer } from "@/components/layout/Footer";
 import { useUsage } from "@/hooks/useUsage";
 import { PaywallModal } from "@/components/layout/PaywallModal";
 
-// v02.1.39 Restoration (Patch 13: Smooth Return)
-const VERSION = "v02.1.39 (Patch 13)";
+// v02.1.39 Restoration (Patch 14: Sync & Flow)
+const VERSION = "v02.1.39 (Patch 14)";
 const PIPES = 2; // v02.1.39 (Patch 13): 2-Pipe (8 Channels total)
 const CHANNELS = 8;
 const CHANNELS_PER_PIPE = 4;
@@ -158,6 +158,7 @@ function InstantDropContent() {
         reassembledCount.current = 0;
         expectedTotalFiles.current = -1;
         if (currentFileReceivedRef.current) currentFileReceivedRef.current.clear();
+        totalReceivedChunksCountRef.current = 0;
         releaseWakeLock(); 
     }
 
@@ -339,6 +340,14 @@ function InstantDropContent() {
                     fileMetas.set(fileIdx, meta);
                     if (!fileBuffers.has(fileIdx)) fileBuffers.set(fileIdx, []);
                     if (!receivedChunkIndices.has(fileIdx)) receivedChunkIndices.set(fileIdx, new Set());
+                    
+                    // v02.1.39 (Patch 14): Metadata may arrive LATE. Check if reassembly is now possible.
+                    const expected = expectedTotalChunks.get(fileIdx);
+                    const indices = receivedChunkIndices.get(fileIdx);
+                    if (expected !== undefined && indices.size === expected) {
+                         self.postMessage({ type: 'reassembled', fileIdx, name: meta.name, fileType: meta.fileType, chunks: fileBuffers.get(fileIdx) });
+                         fileBuffers.delete(fileIdx); fileMetas.delete(fileIdx); indices.clear(); expectedTotalChunks.delete(fileIdx); reassembledFiles.add(fileIdx);
+                    }
                 } else if (type === 'chunk') {
                     if (chunkIdx === 0xFFFFFFFD) { // Batch EOF - DO NOT IGNORE based on reassembledFiles
                         expectedTotalFiles = e.data.payloadCount;
@@ -615,8 +624,8 @@ function InstantDropContent() {
                 if (pipeIdx === 0) {
                     setInterval(() => {
                         if (statusRef.current === 'transferring') {
-                            // v02.1.39 (Patch 12): Replaced expensive Map loop with simple ref counter
-                            if (totalReceivedChunksCountRef.current > 1000) sendControlMsg({ type: 'flow', status: 'slow' });
+                            // v02.1.39 (Patch 14): Increased threshold to 4000 (256MB window for 64KB chunks)
+                            if (totalReceivedChunksCountRef.current > 4000) sendControlMsg({ type: 'flow', status: 'slow' });
                             else sendControlMsg({ type: 'flow', status: 'ready' });
                         } else {
                             sendControlMsg({ type: 'flow', status: 'ready' });
@@ -807,7 +816,8 @@ function InstantDropContent() {
                 (acc, c) => acc + (c?.readyState === 'open' ? c.bufferedAmount : 0), 0
             );
 
-            if (totalBuffered < DRAIN_THRESHOLD) {
+            // v02.1.39 (Patch 14): Respect backpressure to prevent deadlock
+            if (totalBuffered < DRAIN_THRESHOLD && isReceiverReadyRef.current) {
                 // v02.1.39 (Patch 2): Dynamically pick first available open channel
                 let dcCandidate: RTCDataChannel | undefined = dataChannelsRef.current[chunkIdx % CHANNELS];
                 if (!dcCandidate || dcCandidate.readyState !== 'open') {
@@ -1030,20 +1040,24 @@ function InstantDropContent() {
                     originalBuffer: data,
                     offset: 12
                 }, [data]);
-            }
-
-            if (chunkIdx % 20 === 0) {
-                // v02.1.39 (Patch 13): Granular high-speed progress tracking
-                if (incomingMeta && incomingMeta.size) {
-                    const totalChunksExpected = Math.ceil(incomingMeta.size / CHUNK_SIZE);
+                if (chunkIdx % 10 === 0) {
+                    // v02.1.39 (Patch 14): Correct progress pulse logic
                     const currentChunksReceived = (currentFileReceivedRef.current.get(fileIdx) || 0) + 1;
                     currentFileReceivedRef.current.set(fileIdx, currentChunksReceived);
-                    
-                    const fileProgress = Math.floor((currentChunksReceived / totalChunksExpected) * 100);
-                    // Satisfaction Jumps: Update progress in multiples of 5 for that "feeling" of speed
-                    setProgress(Math.max(progress, Math.floor(fileProgress / 5) * 5));
+                    totalReceivedChunksCountRef.current++; // Global Tracking
+
+                    if (incomingMeta && incomingMeta.size) {
+                        const totalChunksExpected = Math.ceil(incomingMeta.size / CHUNK_SIZE);
+                        const fileProgress = Math.floor((currentChunksReceived / totalChunksExpected) * 100);
+                        setProgress(Math.max(progress, Math.floor(fileProgress / 5) * 5));
+                    } else {
+                        setProgress(p => Math.min(99, p + 2)); 
+                    }
                 } else {
-                    setProgress(p => Math.min(99, p + 2)); 
+                    // Background increment even if not updating UI
+                    const currentChunksReceived = (currentFileReceivedRef.current.get(fileIdx) || 0) + 1;
+                    currentFileReceivedRef.current.set(fileIdx, currentChunksReceived);
+                    totalReceivedChunksCountRef.current++;
                 }
             }
         }
