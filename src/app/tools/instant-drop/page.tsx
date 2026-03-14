@@ -191,25 +191,6 @@ function InstantDropContent() {
                     workerRef.current?.postMessage({ type: 'chunk', fileIdx: 0, chunkIdx: 0xFFFFFFFD, payloadCount: msg.totalFiles });
                 }
                 break;
-            case 'batch-ack':
-            case 'verification-complete':
-                window.dispatchEvent(new CustomEvent('webrtc-sender-msg', { detail: msg }));
-                if (modeRef.current === 'send' && (statusRef.current === 'done-waiting' || statusRef.current === 'transferring')) {
-                    logDebug(`Sender: Final verification (${msg.type}) received. Closing session.`);
-                    setStatus('done');
-                }
-                break;
-            case 'request-metadata':
-                if (modeRef.current === 'send') {
-                    logDebug(`Sender: Metadata requested for index ${msg.fileIdx}. Resending...`);
-                    broadcastMetadata();
-                }
-                break;
-            case 'flow':
-                if (modeRef.current === 'send') {
-                    isReceiverReadyRef.current = (msg.status === 'ready');
-                }
-                break;
             case 'force-verify':
                 if (modeRef.current === 'receive') {
                     logDebug("Receiver: Force-Verify signal received.");
@@ -218,6 +199,27 @@ function InstantDropContent() {
                          sendControlMsg({ type: 'verification-complete', status: 'success' });
                          setStatus('done');
                     }
+                }
+                break;
+            case 'verification-complete':
+                // v02.1.39 (Patch 20): Unified Handshake Routing
+                window.dispatchEvent(new CustomEvent('webrtc-sender-msg', { detail: msg }));
+                if (modeRef.current === 'send' && (statusRef.current === 'done-waiting' || statusRef.current === 'transferring')) {
+                    logDebug(`Sender: Final verification (${msg.type}) received. Closing session.`);
+                    setStatus('done');
+                }
+                if (modeRef.current === 'receive' && statusRef.current === 'done-waiting') {
+                    if (msg.status === 'success') {
+                        logDebug("Receiver: Handshake sync detected. Hydrating UI...");
+                        setStatus('done');
+                    }
+                }
+                break;
+            case 'batch-ack':
+                window.dispatchEvent(new CustomEvent('webrtc-sender-msg', { detail: msg }));
+                if (modeRef.current === 'send' && (statusRef.current === 'done-waiting' || statusRef.current === 'transferring')) {
+                    logDebug(`Sender: Batch ACK received. Closing session.`);
+                    setStatus('done');
                 }
                 break;
         }
@@ -376,7 +378,7 @@ function InstantDropContent() {
                         const indices = receivedChunkIndices.get(fileIdx);
                         
                         // Only add and count if we haven't seen this chunk yet
-                        if (!indices.has(chunkIdx)) {
+                        if (!indices.has(chunkIdx) && chunkIdx < 0xEFFFFFFF) {
                             chunks[chunkIdx] = new Uint8Array(e.data.originalBuffer, e.data.offset);
                             indices.add(chunkIdx);
                         }
@@ -424,23 +426,20 @@ function InstantDropContent() {
             } else if (e.data.type === 'all-done') {
                  logDebug("Receiver: Data fully reassembled. Verifying...");
                  if (doneWaitingTimeoutRef.current) { clearTimeout(doneWaitingTimeoutRef.current); doneWaitingTimeoutRef.current = null; }
-                 setStatus('done');
                  
-                 // v02.1.38: Heartbeat Handshake (Repeated Broadcast)
-                 const sendAck = () => {
-                     if (statusRef.current === 'done') {
-                         const ackPkt = new Uint8Array(12);
-                         const ackView = new DataView(ackPkt.buffer);
-                         ackView.setUint32(0, 0, true);
-                         ackView.setUint32(4, 0xFFFFFFFB, true); // Batch-ACK Pulsar
-                         dataChannelsRef.current.forEach(dc => {
-                             if (dc?.readyState === 'open') dc.send(ackPkt);
+                 // v02.1.39 (Patch 20): Capture final file names for state hydration
+                 setReceivedFiles(prev => {
+                     if (prev.length > 0) {
+                         sendControlMsg({ 
+                            type: 'verification-complete', 
+                            status: 'success', 
+                            fileNames: prev.map(f => f.name) 
                          });
-                         sendControlMsg({ type: 'verification-complete', status: 'success' }); // v02.1.39 (Patch 11)
-                         sendControlMsg({ type: 'batch-ack' });
                      }
-                 };
-                 // Manual trigger removed here, handled by useEffect below
+                     return prev;
+                 });
+                 
+                 setStatus('done');
             }
         };
 
@@ -1062,7 +1061,7 @@ function InstantDropContent() {
         }
     }, [initialRoom]);
 
-    // v02.1.39 (Patch 16): Robust Handshake Logic
+    // v02.1.39 (Patch 20): Robust Handshake Logic
     useEffect(() => {
         let ackTimer: any = null;
         if (mode === 'receive' && status === 'done') {
@@ -1075,9 +1074,15 @@ function InstantDropContent() {
                     dataChannelsRef.current.forEach(dc => {
                         if (dc?.readyState === 'open') dc.send(ackPkt);
                     });
-                    sendControlMsg({ type: 'verification-complete', status: 'success' });
+                    
+                    // v02.1.39 (Patch 20): Anchored verification including reassembled count
+                    sendControlMsg({ 
+                        type: 'verification-complete', 
+                        status: 'success',
+                        count: reassembledCount.current 
+                    });
                     sendControlMsg({ type: 'batch-ack' });
-                    ackTimer = setTimeout(sendAck, 2000);
+                    ackTimer = setTimeout(sendAck, 3000);
                 }
             };
             sendAck();
