@@ -11,16 +11,16 @@ import { Footer } from "@/components/layout/Footer";
 import { useUsage } from "@/hooks/useUsage";
 import { PaywallModal } from "@/components/layout/PaywallModal";
 
-// v02.1.39 Restoration (Patch 17: Quasar Hyper-Speed)
-const VERSION = "v02.1.39 (Patch 17)";
-const PIPES = 3; // Patch 17: 3-Pipe (12 Channels total)
-const CHANNELS = 8;
+// v02.1.39 Restoration (Patch 18: Silk-Performance & 12-Ch Sync)
+const VERSION = "v02.1.39 (Patch 18)";
+const PIPES = 3; // Patch 17/18: 3-Pipe (12 Channels total)
 const CHANNELS_PER_PIPE = 4;
+const CHANNELS = 12; // v02.1.39 (Patch 18): Critical Sync (Fixed Mismatch)
 const CHUNK_SIZE = 64 * 1024; // 64KB - Authentic Patch 8 Baseline
-const HIGH_WATER_MARK_MAX = 64 * 1024 * 1024; // 64MB - Quasar Hyper-Speed
+const HIGH_WATER_MARK_MAX = 16 * 1024 * 1024; // 16MB - Silk Performance Baseline
 const PACER_THRESHOLD = 1 * 1024 * 1024; // 1MB - Authentic Patch 8 Baseline
 const MAX_IN_FLIGHT = 128; // Patch 8 Balance
-const DRAIN_THRESHOLD = 64 * 1024 * 1024; // 64MB - Quasar Hyper-Speed
+const DRAIN_THRESHOLD = 16 * 1024 * 1024; // 16MB - Silk Performance Baseline
 const getBackendUrls = () => {
     let rawUrl = (process.env.NEXT_PUBLIC_API_URL || "").trim().replace(/\/$/, "");
     
@@ -774,15 +774,15 @@ function InstantDropContent() {
                 }
             };
             window.addEventListener('webrtc-sender-msg', handler);
-            // v02.1.39 (Patch 11/15): Increased from 10s to 20s to accommodate large batches
+            // v02.1.39 (Patch 11/18): Increased to 40s to allow receiver 30s reassembly breathing room
             setTimeout(() => {
                 window.removeEventListener('webrtc-sender-msg', handler);
                 if (statusRef.current === 'done-waiting') {
-                    logDebug('Sender: Verification Safety Net (20s) Triggered. Forcing UI Done.');
+                    logDebug('Sender: Verification Safety Net (40s) Triggered. Forcing UI Done.');
                     setStatus('done');
                 }
                 resolve();
-            }, 20 * 1000);
+            }, 40 * 1000);
         });
 
         // symmetry-pacing trigger: Send one final pulse
@@ -1024,8 +1024,12 @@ function InstantDropContent() {
             } else {
                 // Regular Chunk
                 const incomingMeta = fileMetas.current.get(fileIdx);
-                // totalReceivedChunksCountRef.current++; // v02.1.39 (Patch 17): DELETED double-increment
-                // v02.1.39 (Patch 8): Align with 12-byte binary header (fileIdx, chunkIdx, numChunks)
+                
+                // v02.1.39 (Patch 18): Reassembled Count Decoupling (Ensuring UI trigger)
+                const currentChunksReceived = (currentFileReceivedRef.current.get(fileIdx) || 0) + 1;
+                currentFileReceivedRef.current.set(fileIdx, currentChunksReceived);
+                totalReceivedChunksCountRef.current++; 
+
                 workerRef.current.postMessage({
                     type: 'chunk',
                     fileIdx,
@@ -1034,10 +1038,6 @@ function InstantDropContent() {
                     offset: 12
                 }, [data]);
                 
-                const currentChunksReceived = (currentFileReceivedRef.current.get(fileIdx) || 0) + 1;
-                currentFileReceivedRef.current.set(fileIdx, currentChunksReceived);
-                totalReceivedChunksCountRef.current++; // Primary increment
-
                 if (chunkIdx % 10 === 0) {
                     if (incomingMeta && incomingMeta.size) {
                         const totalChunksExpected = Math.ceil(incomingMeta.size / CHUNK_SIZE);
