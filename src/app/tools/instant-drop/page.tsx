@@ -1155,8 +1155,8 @@ function InstantDropContent() {
     };
 
     const downloadAll = async () => {
-        const images = receivedFiles.filter(rf => isImageFile(rf.blob, rf.name));
-        const docs = receivedFiles.filter(rf => !isImageFile(rf.blob, rf.name));
+        const images = receivedFiles.filter(rf => rf.blob && isImageFile(rf.blob, rf.name));
+        const docs = receivedFiles.filter(rf => rf.blob && !isImageFile(rf.blob, rf.name));
 
         // Batch-share 3+ images in one native share sheet (one tap ΓåÆ Save to Photos/Google Photos)
         if (images.length >= 3 && navigator.canShare) {
@@ -1167,7 +1167,7 @@ function InstantDropContent() {
                 } catch (_) {
                     // Cancelled or failed ΓÇö fall back to per-image downloads
                     for (const rf of images) {
-                        await smartSaveFile(rf.blob, rf.name);
+                        if (rf.blob) await smartSaveFile(rf.blob, rf.name);
                         await new Promise(res => setTimeout(res, 400));
                     }
                 }
@@ -1175,14 +1175,14 @@ function InstantDropContent() {
         } else {
             // < 3 images: save one by one
             for (const rf of images) {
-                await smartSaveFile(rf.blob, rf.name);
+                if (rf.blob) await smartSaveFile(rf.blob, rf.name);
                 await new Promise(res => setTimeout(res, 400));
             }
         }
 
         // Always download non-image files individually
         for (const rf of docs) {
-            await smartSaveFile(rf.blob, rf.name);
+            if (rf.blob) await smartSaveFile(rf.blob, rf.name);
             await new Promise(res => setTimeout(res, 400));
         }
     };
@@ -1192,7 +1192,7 @@ function InstantDropContent() {
         try {
             const zip = new JSZip();
             receivedFiles.forEach(rf => {
-                zip.file(rf.name, rf.blob);
+                if (rf.blob) zip.file(rf.name, rf.blob);
             });
             const content = await zip.generateAsync({ type: "blob" });
             await smartSaveFile(content, `TurboDrop_Batch_${Math.floor(Date.now() / 1000)}.zip`);
