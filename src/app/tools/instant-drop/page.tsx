@@ -11,8 +11,8 @@ import { Footer } from "@/components/layout/Footer";
 import { useUsage } from "@/hooks/useUsage";
 import { PaywallModal } from "@/components/layout/PaywallModal";
 
-// v02.1.39 Restoration (Patch 25.7: Cellular Force-Relay)
-const VERSION = "v02.1.39 (Patch 25.7)";
+// v02.1.39 Restoration (Patch 25.8: Relay Fix)
+const VERSION = "v02.1.39 (Patch 25.8)";
 const PIPES = 3; // Patch 17-24: 3-Pipe (12 Channels total)
 const CHANNELS_PER_PIPE = 4;
 const CHANNELS = 12; // v02.1.39 (Patch 18): Critical Sync
@@ -303,15 +303,21 @@ function InstantDropContent() {
                     if (Array.isArray(turnData)) {
                         // v02.1.39 (Patch 25.7): Standardize all pre-fetched relays to use TCP/TLS
                         const hardenedRelays = turnData.map((s: any) => {
+                            const isTurn = (u: string) => u.startsWith('turn:') || u.startsWith('turns:');
                             if (s.urls && Array.isArray(s.urls)) {
                                 return {
                                     ...s,
-                                    urls: s.urls.map((u: string) => u.includes('?') ? (u.includes('transport=tcp') ? u : `${u}&transport=tcp`) : `${u}?transport=tcp`)
+                                    urls: s.urls.map((u: string) => {
+                                        if (!isTurn(u)) return u; // Skip STUN
+                                        return u.includes('?') ? (u.includes('transport=tcp') ? u : `${u}&transport=tcp`) : `${u}?transport=tcp`;
+                                    })
                                 };
                             } else if (typeof s.urls === 'string') {
+                                const u = s.urls;
+                                if (!isTurn(u)) return s;
                                 return {
                                     ...s,
-                                    urls: s.urls.includes('?') ? (s.urls.includes('transport=tcp') ? s.urls : `${s.urls}&transport=tcp`) : `${s.urls}?transport=tcp`
+                                    urls: u.includes('?') ? (u.includes('transport=tcp') ? u : `${u}&transport=tcp`) : `${u}?transport=tcp`
                                 };
                             }
                             return s;
