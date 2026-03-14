@@ -1160,7 +1160,7 @@ function InstantDropContent() {
 
         // Batch-share 3+ images in one native share sheet (one tap ΓåÆ Save to Photos/Google Photos)
         if (images.length >= 3 && navigator.canShare) {
-            const imageFiles = images.map(rf => new File([rf.blob], rf.name, { type: rf.blob.type || 'image/jpeg' }));
+            const imageFiles = images.map(rf => new File([rf.blob!], rf.name, { type: (rf.blob && rf.blob.type) || 'image/jpeg' }));
             if (navigator.canShare({ files: imageFiles })) {
                 try {
                     await navigator.share({ files: imageFiles, title: `${images.length} Photos` });
