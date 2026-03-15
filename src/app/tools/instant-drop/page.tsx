@@ -12,7 +12,7 @@ import { useUsage } from "@/hooks/useUsage";
 import { PaywallModal } from "@/components/layout/PaywallModal";
 
 // v02.1.39 Restoration (Patch 24.4: Fortress Velocity)
-const VERSION = "v02.1.39 (Patch 24.4)";
+const VERSION = "v02.1.40 (Deep Insight Phase 1)";
 const PIPES = 3; 
 const CHANNELS_PER_PIPE = 4;
 const CHANNELS = 12; 
@@ -102,6 +102,17 @@ function InstantDropContent() {
     const isResumingRef = useRef(false);
     const stallWatchdogRef = useRef<any>(null);
     const wakeLockRef = useRef<any>(null);
+    const diagnosticMetricsRef = useRef({
+        retransmissions: 0,
+        packetsSent: 0,
+        owtt: 0,
+        jitter: 0,
+        eventLoopLag: 0,
+        mtuCeiling: CHUNK_SIZE,
+        bufferBloatGrade: 0,
+        lastAckTs: 0
+    });
+    const eventLoopIntervalRef = useRef<any>(null);
     const reassembledCount = useRef(0);
     const expectedTotalFiles = useRef(-1);
     const lastBytesRef = useRef(0);
@@ -120,6 +131,19 @@ function InstantDropContent() {
     const workerRef = useRef<Worker | null>(null);
     const totalReceivedChunksCountRef = useRef(0); // v02.1.39 (Patch 12): Lightweight Flow Control
     const doneWaitingTimeoutRef = useRef<any>(null); // v02.1.39 (Patch 12): Receiver Safety Net
+
+    // v02.1.40 (Phase 1): JS-Event-Loop Lag Detector
+    useEffect(() => {
+        let lastTime = Date.now();
+        const checkLag = () => {
+            const now = Date.now();
+            const lag = now - lastTime - 100; // Expected 100ms interval
+            diagnosticMetricsRef.current.eventLoopLag = Math.max(0, lag);
+            lastTime = now;
+        };
+        eventLoopIntervalRef.current = setInterval(checkLag, 100);
+        return () => clearInterval(eventLoopIntervalRef.current);
+    }, []);
 
     // v02.1.39 (Patch 24): Autonomous Stress Test Hook
     useEffect(() => {
@@ -250,6 +274,16 @@ function InstantDropContent() {
                             });
                         }
                         setStatus('done');
+                    }
+                }
+                break;
+            case 'chunk-ack':
+                if (modeRef.current === 'send') {
+                    const rtt = Date.now() - msg.ts;
+                    diagnosticMetricsRef.current.owtt = rtt / 2; // Approximation of OWTT
+                    diagnosticMetricsRef.current.lastAckTs = msg.ts;
+                    if (msg.ts % 1000 === 0) { // Log every ~10th ACK to avoid spam
+                        logDebug(`📊 Deep-Insight: OWTT=${diagnosticMetricsRef.current.owtt}ms (Pipe-${msg.pipeIdx})`);
                     }
                 }
                 break;
@@ -502,6 +536,42 @@ function InstantDropContent() {
             }
         }
     };
+
+    // v02.1.40 (Phase 1): Transport Stats Poller
+    useEffect(() => {
+        if (status !== 'transferring') return;
+        
+        const pollStats = async () => {
+            let totalRetransmits = 0;
+            let totalSent = 0;
+            
+            for (const peer of peersRef.current) {
+                if (!peer) continue;
+                try {
+                    const stats = await peer.getStats();
+                    stats.forEach((report: any) => {
+                        if (report.type === 'transport') {
+                            totalRetransmits += (report.packetsRetransmitted || 0);
+                            totalSent += (report.packetsSent || 0);
+                        }
+                    });
+                } catch (e) {}
+            }
+            
+            if (totalSent > 0) {
+                diagnosticMetricsRef.current.retransmissions = totalRetransmits;
+                diagnosticMetricsRef.current.packetsSent = totalSent;
+                const ratio = ((totalRetransmits / totalSent) * 100).toFixed(2);
+                if (totalRetransmits > 0) {
+                    logDebug(`⚠️ Deep-Insight: Retransmit Ratio = ${ratio}% (${totalRetransmits}/${totalSent})`);
+                }
+            }
+        };
+        
+        const timer = setInterval(pollStats, 2000);
+        return () => clearInterval(timer);
+    }, [status]);
+
     const releaseWakeLock = () => {
         if (wakeLockRef.current) {
             wakeLockRef.current.release().then(() => {
@@ -929,6 +999,16 @@ function InstantDropContent() {
                     packet.set(chunkData, 12);
 
                     try {
+                        // v02.1.40 (Phase 1): Deep-Insight Timed ACK Probe (Every 100 chunks)
+                        if (chunkIdx % 100 === 0) {
+                            const probePkt = new Uint8Array(16);
+                            const probeView = new DataView(probePkt.buffer);
+                            probeView.setUint32(0, index, true);
+                            probeView.setUint32(4, 0xFFFFFFFA, true); // Timed ACK Opcode
+                            probeView.setBigUint64(8, BigInt(Date.now()), true);
+                            dc.send(probePkt);
+                        }
+
                         dc.send(packet);
                         totalSentBytesRef.current += packet.byteLength;
                         chunkIdx++;
@@ -1119,6 +1199,12 @@ function InstantDropContent() {
                 }
             } else if (chunkIdx === 0xFFFFFFFC) {
                 logDebug(`Receiver: Symmetry Pulse for ${fileIdx}.`);
+            } else if (chunkIdx === 0xFFFFFFFA) {
+                // v02.1.40 (Phase 1): Deep-Insight Timed ACK
+                const senderTs = (data.byteLength >= 16) ? view.getBigUint64(8, true) : BigInt(0);
+                if (senderTs > BigInt(0)) {
+                    sendControlMsg({ type: 'chunk-ack', ts: Number(senderTs), pipeIdx: _channelIdx });
+                }
             } else {
                 // Regular Chunk
                 const incomingMeta = fileMetas.current.get(fileIdx);
@@ -1333,7 +1419,19 @@ function InstantDropContent() {
     };
 
     const downloadDiagnostics = () => {
-        const content = capturedLogsRef.current.join('\n');
+        const d = diagnosticMetricsRef.current;
+        const deepInsight = `
+--- DEEP DIAGNOSTIC INSIGHT ---
+Retransmissions: ${d.retransmissions}
+Total Packets Sent: ${d.packetsSent}
+Retransmit Ratio: ${d.packetsSent > 0 ? ((d.retransmissions / d.packetsSent) * 100).toFixed(4) : 0}%
+One-Way-Trip-Time (OWTT): ${d.owtt.toFixed(2)}ms
+JS-Event-Loop Lag: ${d.eventLoopLag}ms
+MTU Ceiling (Probe): ${d.mtuCeiling}
+Buffer-Bloat Grade: ${d.bufferBloatGrade}
+-------------------------------
+`;
+        const content = deepInsight + capturedLogsRef.current.join('\n');
         const blob = new Blob([content], { type: 'text/plain' });
         const url = URL.createObjectURL(blob);
         const a = document.createElement('a');
