@@ -11,8 +11,8 @@ import { Footer } from "@/components/layout/Footer";
 import { useUsage } from "@/hooks/useUsage";
 import { PaywallModal } from "@/components/layout/PaywallModal";
 
-// v02.1.39 Restoration (Patch 24.2: Velocity Prime)
-const VERSION = "v02.1.39 (Patch 24.2)";
+// v02.1.39 Restoration (Patch 24.3: Pulse Load-Balancer)
+const VERSION = "v02.1.39 (Patch 24.3)";
 const PIPES = 3; 
 const CHANNELS_PER_PIPE = 4;
 const CHANNELS = 12; 
@@ -631,8 +631,9 @@ function InstantDropContent() {
                                     ? relayServersRef.current 
                                     : [...ICE_SERVERS.iceServers];
                                     
-            // v02.1.39 (Patch 24.2): Hybrid Entry Strategy 
-            // Pipe-0: Forced Relay (Guaranteed link) | Pipe-1,2: All (Max P2P Speed)
+            // v02.1.39 (Patch 24.3): Hybrid Anchor Strategy 
+            // Pipe-0: Forced Relay (Guaranteed link for ALL users)
+            // Pipe-1,2: All (High-speed Booster paths)
             const pipePolicy = (pipeIdx === 0 || useFallback) ? 'relay' : 'all';
             const peer = new RTCPeerConnection({ 
                 iceServers: currentRelays,
@@ -640,16 +641,16 @@ function InstantDropContent() {
             });
             peersRef.current[pipeIdx] = peer;
 
-            // v02.1.39 (Patch 24.1): 10s Relay Fallback Watchdog (Airtel-Killer)
-            if (!useFallback) {
+            if (!useFallback && (pipeIdx > 0)) {
+                // Booster Pipe Watchdog: If no link in 15s, try Relay too (Universal Safety)
                 setTimeout(() => {
                     const pc = peersRef.current[pipeIdx];
                     if (pc && (pc.iceConnectionState === 'new' || pc.iceConnectionState === 'checking')) {
-                        logDebug(`⚠️ Pipe-${pipeIdx} Stuck in ${pc.iceConnectionState} for 10s. Forcing Relay Fallback...`);
+                        logDebug(`⚠️ Booster Pipe-${pipeIdx} Stuck. Escalating to Relay...`);
                         pc.close();
                         setupWebRTC(ws, isSender, pipeIdx, true);
                     }
-                }, 10 * 1000);
+                }, 15 * 1000);
             }
 
             if (isSender) {
@@ -864,16 +865,24 @@ function InstantDropContent() {
                 (acc, c) => acc + (c?.readyState === 'open' ? c.bufferedAmount : 0), 0
             );
 
-            // v02.1.39 (Patch 24.2): Velocity BDP (16MB Floor)
-            const bdpLimit = Math.max(16 * 1024 * 1024, Math.min(128 * 1024 * 1024, (currentMBpsRef.current * 1024 * 1024 * avgRTTRef.current * 2.5)));
+            // v02.1.39 (Patch 24.3): Pulse BDP (Dynamic Power Pacer)
+            const bdpLimit = Math.max(16 * 1024 * 1024, Math.min(256 * 1024 * 1024, (currentMBpsRef.current * 1024 * 1024 * avgRTTRef.current * 3.0)));
 
             if (totalBuffered < bdpLimit) {
-                // v02.1.39 (Patch 2): Dynamically pick first available open channel
-                let dcCandidate: RTCDataChannel | undefined = dataChannelsRef.current[chunkIdx % CHANNELS];
-                if (!dcCandidate || dcCandidate.readyState !== 'open') {
-                    dcCandidate = dataChannelsRef.current.find(c => c?.readyState === 'open');
+                // v02.1.39 (Patch 24.3): Dual-Pool Pulse Load-Balancer
+                const openChannels = dataChannelsRef.current.filter(c => c?.readyState === 'open');
+                
+                // Categorize into Booster (P2P) and Anchor (Relay)
+                const boosters = openChannels.filter(c => parseInt(c.label.split('-').pop() || '0') >= 4);
+                const anchors = openChannels.filter(c => parseInt(c.label.split('-').pop() || '0') < 4);
+
+                let dc: RTCDataChannel | undefined;
+                if (boosters.length > 0 && Math.random() < 0.98) {
+                    // Shift 98% of traffic to High-Speed Boosters if available
+                    dc = boosters[chunkIdx % boosters.length];
+                } else if (openChannels.length > 0) {
+                    dc = openChannels[chunkIdx % openChannels.length];
                 }
-                const dc: RTCDataChannel | undefined = dcCandidate;
 
                 if (dc && dc.readyState === 'open') {
                     const offset = chunkIdx * CHUNK_SIZE;
@@ -891,8 +900,10 @@ function InstantDropContent() {
                         totalSentBytesRef.current += packet.byteLength;
                         chunkIdx++;
 
-                        // v02.1.39 (Patch 24.2): UI Debounce (Update every 100 chunks on mobile)
-                        if (chunkIdx % 100 === 0) {
+                        // v02.1.39 (Patch 24.3): Device-Aware UI Pacing (Universal Scale)
+                        // At high speeds (>10MB/s), update less frequently to save CPU for the network pipe.
+                        const pulseFreq = currentMBpsRef.current > 5 ? 200 : 100;
+                        if (chunkIdx % pulseFreq === 0 || chunkIdx === numChunks - 1) {
                             setProgress(Math.floor((chunkIdx / numChunks) * 100));
                         }
                     } catch (e) {
