@@ -11,8 +11,8 @@ import { Footer } from "@/components/layout/Footer";
 import { useUsage } from "@/hooks/useUsage";
 import { PaywallModal } from "@/components/layout/PaywallModal";
 
-// v02.1.52 (Patch 25.2: GPE Reset & Sync)
-const VERSION = "v02.1.52 (Quasar GPE)";
+// v02.1.53 (Patch 25.3: GPE Pin-Point Tuning)
+const VERSION = "v02.1.53 (Quasar GPE)";
 const PIPES = 3; 
 const CHANNELS_PER_PIPE = 4;
 const CHANNELS = 12; 
@@ -302,6 +302,9 @@ function InstantDropContent() {
                 if (modeRef.current === 'send') {
                     gpeInFlightBytesRef.current = Math.max(0, gpeInFlightBytesRef.current - msg.bytesCleared);
                     gpePullRequestsRef.current++;
+                    if (gpePullRequestsRef.current % 10 === 0) {
+                        logDebug(`📥 GPE Pull [${gpePullRequestsRef.current}]: Cleared ${Math.round(msg.bytesCleared/1024)}KB. In-Flight: ${Math.round(gpeInFlightBytesRef.current/1024)}KB`);
+                    }
                 }
                 break;
             case 'batch-ack':
@@ -997,9 +1000,9 @@ function InstantDropContent() {
             // v02.1.39 (Patch 24.4): Fortress BDP (Aggressive 4.0x Pressure)
             const bdpLimit = Math.max(16 * 1024 * 1024, Math.min(256 * 1024 * 1024, (currentMBpsRef.current * 1024 * 1024 * avgRTTRef.current * 4.0)));
 
-            // v02.1.51 (Phase 3): GPE Engine - Gated In-Flight Cap (16MB pressure)
-            // Increased to 16MB to allow for high BDP on 300ms+ mobile networks.
-            const GPE_CAP = 16 * 1024 * 1024;
+            // v02.1.53 (Phase 3): GPE Engine - Gated In-Flight Cap (2MB Pin-Point)
+            // 2MB window at 350ms RTT = ~5.7MB/s. This prevents the "Buffer-Sludge" effect.
+            const GPE_CAP = 2 * 1024 * 1024;
             const isGPEBlocked = gpeInFlightBytesRef.current > GPE_CAP;
 
             if (totalBuffered < bdpLimit && !isGPEBlocked) {
@@ -1038,12 +1041,12 @@ function InstantDropContent() {
                     packet.set(chunkData, 12);
 
                     try {
-                        // v02.1.40 (Phase 1): Deep-Insight Timed ACK Probe (Every 100 chunks)
-                        if (chunkIdx % 100 === 0) {
+                        // v02.1.53 (Phase 3): Frequent OWTT Probing (Every 10 chunks)
+                        if (chunkIdx % 10 === 0) {
                             const probePkt = new Uint8Array(16);
                             const probeView = new DataView(probePkt.buffer);
                             probeView.setUint32(0, index, true);
-                            probeView.setUint32(4, 0xFFFFFFFA, true); // Timed ACK Opcode
+                            probeView.setUint32(4, 0xFFFFFFFA, true); 
                             probeView.setBigUint64(8, BigInt(Date.now()), true);
                             dc.send(probePkt);
                         }
