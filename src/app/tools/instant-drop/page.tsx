@@ -11,8 +11,8 @@ import { Footer } from "@/components/layout/Footer";
 import { useUsage } from "@/hooks/useUsage";
 import { PaywallModal } from "@/components/layout/PaywallModal";
 
-// v02.1.39 Restoration (Patch 25.17: Singularity Bridge)
-const VERSION = "v02.1.39 (Patch 25.17)";
+// v02.1.39 Restoration (Patch 25.18: Hyper-Resilient Bridge)
+const VERSION = "v02.1.39 (Patch 25.18)";
 const PIPES = 3; // Patch 17-24: 3-Pipe (12 Channels total)
 const CHANNELS_PER_PIPE = 4;
 const CHANNELS = 12; // v02.1.39 (Patch 18): Critical Sync
@@ -720,13 +720,23 @@ function InstantDropContent() {
                     try { peer.restartIce(); } catch (e) {}
                 }
                 
-                // v02.1.39 (Patch 25.17): Candidate Pulse - re-emit if stuck in checking
+                // v02.1.39 (Patch 25.18): Hyper-Pulse + Relay Escalation
                 if (peer.iceConnectionState === 'checking' && !pulseIntervalsRef.current[pipeIdx]) {
+                    const checkStart = Date.now();
                     pulseIntervalsRef.current[pipeIdx] = setInterval(() => {
+                        const elapsed = (Date.now() - checkStart) / 1000;
                         if (peer.iceConnectionState === 'checking') {
-                            logDebug(`Pipe-${pipeIdx} Pulse: Re-broadcasting candidates...`);
-                            // We don't have the last candidates handy, but we can trigger a refresh via renegotiation or just keep waiting
-                            // Re-emitting known candidates from recent state is better
+                            if (elapsed > 8) {
+                                logDebug(`Pipe-${pipeIdx} Relay Escalation: Forcing ICE Restart...`);
+                                clearInterval(pulseIntervalsRef.current[pipeIdx]!);
+                                pulseIntervalsRef.current[pipeIdx] = null;
+                                setupWebRTC(ws, isSender, pipeIdx, true); // Active Fallback
+                                return;
+                            }
+                            logDebug(`Pipe-${pipeIdx} Active Pulse: Re-sending SDP...`);
+                            if (peer.localDescription) {
+                                ws.send(JSON.stringify({ type: isSender ? 'offer' : 'answer', pipeIdx, sdp: peer.localDescription }));
+                            }
                         } else {
                             if (pulseIntervalsRef.current[pipeIdx]) {
                                 clearInterval(pulseIntervalsRef.current[pipeIdx]!);
@@ -919,11 +929,11 @@ function InstantDropContent() {
                 (acc, c) => acc + (c?.readyState === 'open' ? c.bufferedAmount : 0), 0
             );
 
-            // v02.1.39 (Patch 25.17): Nitro Pacer (Restoration of Patch 25.1 Speed Baseline)
-            // Increase cap and floor for the first 60s to force Airtel/Jio ramp-up.
+            // v02.1.39 (Patch 25.18): Hyper-Nitro Pacer (Extended Baseline Speed)
+            // Floors speed at 32MB for 3 mins to sustain 10MB/s+ on unstable Airtel links.
             const elapsed = (Date.now() - transferStartTimeRef.current) / 1000;
-            const isNitroPhase = elapsed < 60;
-            const calculatedLimit = currentMBpsRef.current * 1024 * 1024 * avgRTTRef.current * 4; // *4 for cellular headroom
+            const isNitroPhase = elapsed < 180; // 3 minutes
+            const calculatedLimit = currentMBpsRef.current * 1024 * 1024 * avgRTTRef.current * 8; // *8 for cellular headroom
             const floor = isNitroPhase ? 32 * 1024 * 1024 : 8 * 1024 * 1024;
             const bdpLimit = (currentMBpsRef.current < 0.1) 
                              ? 64 * 1024 * 1024 // Restart Burst (64MB)
