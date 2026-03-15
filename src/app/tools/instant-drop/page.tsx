@@ -11,8 +11,8 @@ import { Footer } from "@/components/layout/Footer";
 import { useUsage } from "@/hooks/useUsage";
 import { PaywallModal } from "@/components/layout/PaywallModal";
 
-// v02.1.50 (Phase 3: Quasar GPE)
-const VERSION = "v02.1.50 (Quasar GPE)";
+// v02.1.51 (Patch 25.1: GPE Pressure Prime)
+const VERSION = "v02.1.51 (Quasar GPE)";
 const PIPES = 3; 
 const CHANNELS_PER_PIPE = 4;
 const CHANNELS = 12; 
@@ -286,11 +286,11 @@ function InstantDropContent() {
                     diagnosticMetricsRef.current.owtt = rtt / 2; // Approximation of OWTT
                     diagnosticMetricsRef.current.lastAckTs = msg.ts;
                     
-                    // v02.1.50 (Phase 3): Adaptive MTU Logic
-                    if (rtt > 600) {
+                    // v02.1.51 (Phase 3): Adaptive MTU Logic (Zero-Loss Pressure)
+                    if (rtt > 800 && diagnosticMetricsRef.current.retransmissions > 0) {
                         dynamicChunkSizeRef.current = Math.max(64 * 1024, dynamicChunkSizeRef.current - 16 * 1024);
-                    } else if (rtt < 200) {
-                        dynamicChunkSizeRef.current = Math.min(CHUNK_SIZE * 2, dynamicChunkSizeRef.current + 16 * 1024);
+                    } else if (rtt < 300) {
+                        dynamicChunkSizeRef.current = Math.min(CHUNK_SIZE * 4, dynamicChunkSizeRef.current + 32 * 1024);
                     }
 
                     if (msg.ts % 1000 === 0) { 
@@ -993,9 +993,9 @@ function InstantDropContent() {
             // v02.1.39 (Patch 24.4): Fortress BDP (Aggressive 4.0x Pressure)
             const bdpLimit = Math.max(16 * 1024 * 1024, Math.min(256 * 1024 * 1024, (currentMBpsRef.current * 1024 * 1024 * avgRTTRef.current * 4.0)));
 
-            // v02.1.50 (Phase 3): GPE Engine - Gated In-Flight Cap (4MB Guard)
-            // This prevents the "Zero-Loss Paradox" by never overfilling the hidden radio/OS buffers.
-            const GPE_CAP = 4 * 1024 * 1024;
+            // v02.1.51 (Phase 3): GPE Engine - Gated In-Flight Cap (16MB pressure)
+            // Increased to 16MB to allow for high BDP on 300ms+ mobile networks.
+            const GPE_CAP = 16 * 1024 * 1024;
             const isGPEBlocked = gpeInFlightBytesRef.current > GPE_CAP;
 
             if (totalBuffered < bdpLimit && !isGPEBlocked) {
