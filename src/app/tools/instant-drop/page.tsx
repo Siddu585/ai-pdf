@@ -11,8 +11,8 @@ import { Footer } from "@/components/layout/Footer";
 import { useUsage } from "@/hooks/useUsage";
 import { PaywallModal } from "@/components/layout/PaywallModal";
 
-// v02.1.56 (Patch 25.6: Unstoppable GPE)
-const VERSION = "v02.1.56 (Quasar GPE)";
+// v02.1.57 (Patch 25.7: Deterministic Flow Control)
+const VERSION = "v02.1.57 (Quasar GPE)";
 const PIPES = 3; 
 const CHANNELS_PER_PIPE = 4;
 const CHANNELS = 12; 
@@ -135,6 +135,7 @@ function InstantDropContent() {
     const workerRef = useRef<Worker | null>(null);
     const totalReceivedChunksCountRef = useRef(0); // v02.1.39 (Patch 12): Lightweight Flow Control
     const doneWaitingTimeoutRef = useRef<any>(null); // v02.1.39 (Patch 12): Receiver Safety Net
+    const blockedLoopCount = useRef(0); // v02.1.57: Diagnostic Flow Counter
 
     // v02.1.40 (Phase 1): JS-Event-Loop Lag Detector
     useEffect(() => {
@@ -197,23 +198,30 @@ function InstantDropContent() {
         if (wsRef.current) { try { wsRef.current.close(); } catch(e) {} wsRef.current = null; }
         peersRef.current.forEach(p => { if (p) try { p.close(); } catch (e) {} });
         peersRef.current = [];
+        resetSessionRefs();
+        releaseWakeLock(); 
+    }
+
+    const resetSessionRefs = () => {
+        logDebug("Clearing Session Refs for new transfer...");
+        dataChannelsRef.current = [];
+        channelFileIndex.current = new Array(CHANNELS).fill(0);
+        fileBuffers.current.clear();
+        expectedTotalChunks.current.clear();
+        receivedChunksCount.current.clear();
+        fileMetas.current.clear();
+        reassembledCount.current = 0;
+        expectedTotalFiles.current = -1;
+        gpeInFlightBytesRef.current = 0;
+        totalSentBytesRef.current = 0;
+        totalReceivedBytesRef.current = 0;
+        currentFileReceivedRef.current.clear();
+        totalReceivedChunksCountRef.current = 0;
         isActive.current = false;
         isInitializingRef.current = false;
         remoteDescriptionSetsRef.current = [false, false, false];
         iceBuffersRef.current = [[], [], []];
-        dataChannelsRef.current = [];
-        
-        if (fileBuffers.current) fileBuffers.current.clear();
-        if (expectedTotalChunks.current) expectedTotalChunks.current.clear();
-        if (receivedChunksCount.current) receivedChunksCount.current.clear();
-        if (fileMetas.current) fileMetas.current.clear();
-        
-        reassembledCount.current = 0;
-        expectedTotalFiles.current = -1;
-        if (currentFileReceivedRef.current) currentFileReceivedRef.current.clear();
-        totalReceivedChunksCountRef.current = 0;
-        releaseWakeLock(); 
-    }
+    };
 
     function handleControlMessage(msg: any) {
         if (!msg || !msg.type) return;
@@ -660,8 +668,8 @@ function InstantDropContent() {
                     } else if (data.type === 'receiver-ready') {
                         logDebug("Receiver is READY. Initializing 3x Parallel WebRTC Pipes...");
                         setStatus('connecting');
-                        gpeInFlightBytesRef.current = 0; // Reset for fresh session
-                        setupWebRTC(ws, true, 0); // Explicit Pipe-0 Setup
+                        resetSessionRefs(); // v02.1.57: Atomic session reset prevents race condition
+                        setupWebRTC(ws, true, 0); 
                         setupWebRTC(ws, true, 1);
                         setupWebRTC(ws, true, 2);
                     } else if (data.type === 'answer') {
@@ -709,18 +717,8 @@ function InstantDropContent() {
             iceBuffersRef.current[pipeIdx] = [];
 
             // v02.1.39: Parallel Signaling reset
-            // v02.1.39 (Patch 1): Parallel Signaling reset - Only clear if this is the start of a fresh session
-            if (pipeIdx === 0 && !isActive.current) {
-                dataChannelsRef.current = [];
-                capturedLogsRef.current = [];
-                channelFileIndex.current = new Array(CHANNELS).fill(0);
-                fileBuffers.current.clear();
-                expectedTotalChunks.current.clear();
-                receivedChunksCount.current.clear();
-                fileMetas.current.clear();
-                reassembledCount.current = 0;
-                expectedTotalFiles.current = -1;
-            }
+            // DELETED Reset logic from setupWebRTC to prevent race conditions.
+            // All resets now handled by resetSessionRefs() called once per session.
 
             const currentRelays = (!useFallback && relayServersRef.current && relayServersRef.current.length > 0) 
                                     ? relayServersRef.current 
@@ -1008,9 +1006,16 @@ function InstantDropContent() {
             // 12MB window = ~8MB/s @ 1.5s latency (Ultra-Resilient).
             const GPE_CAP = 12 * 1024 * 1024;
             const isGPEBlocked = gpeInFlightBytesRef.current > GPE_CAP;
+            const openChannels = dataChannelsRef.current.filter(c => c?.readyState === 'open');
 
-            if (isGPEBlocked && chunkIdx % 20 === 0) {
-                logDebug(`🛰️ GPE Gate: Blocking flow. In-Flight: ${Math.round(gpeInFlightBytesRef.current/1024)}KB`);
+            // v02.1.57: Unified Block Diagnostic
+            if (isGPEBlocked || totalBuffered >= bdpLimit || openChannels.length === 0) {
+                blockedLoopCount.current++;
+                if (blockedLoopCount.current % 500 === 0) {
+                    logDebug(`🛰️ FLOW BLOCKED: GPE=${isGPEBlocked} (${Math.round(gpeInFlightBytesRef.current/1024)}KB), BDP=${totalBuffered >= bdpLimit} (${Math.round(totalBuffered/1024)}KB), Pipes=${openChannels.length}`);
+                }
+            } else {
+                blockedLoopCount.current = 0;
             }
 
             // v02.1.56: GPE Self-Unblock Logic (5s Safety)
@@ -1025,9 +1030,7 @@ function InstantDropContent() {
                 gpeBlockedSinceRef.current = null;
             }
 
-            if (totalBuffered < bdpLimit && !isGPEBlocked) {
-                const openChannels = dataChannelsRef.current.filter(c => c?.readyState === 'open');
-                
+            if (totalBuffered < bdpLimit && !isGPEBlocked && openChannels.length > 0) {
                 // v02.1.39 (Patch 24.4): Booster-Skewed Load Balancer
                 const boosters = openChannels.filter(c => {
                     const label = c.label || "";
