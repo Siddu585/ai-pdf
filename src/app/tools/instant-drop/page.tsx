@@ -11,8 +11,8 @@ import { Footer } from "@/components/layout/Footer";
 import { useUsage } from "@/hooks/useUsage";
 import { PaywallModal } from "@/components/layout/PaywallModal";
 
-// v02.1.61 (Patch 26.1: Remote Diagnostic Hub)
-const VERSION = "v02.1.61 (Quasar GPE)";
+// v02.1.62 (Patch 26.2: Autonomous Diagnostic Hook)
+const VERSION = "v02.1.62 (Quasar GPE)";
 const PIPES = 3; 
 const CHANNELS_PER_PIPE = 4;
 const CHANNELS = 12; 
@@ -160,6 +160,10 @@ function InstantDropContent() {
                     return new File([blob], `StressTest_${i + 1}.pdf`, { type: 'application/pdf' });
                 });
                 startSending(dummyFiles);
+            };
+            (window as any).requestRemoteDiagnostics = () => {
+                logDebug("Requesting Remote Diagnostics...");
+                sendControlMsg({ type: 'request-diagnostics' });
             };
         }
     }, [logDebug]);
