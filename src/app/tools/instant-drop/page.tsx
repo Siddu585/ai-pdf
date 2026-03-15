@@ -11,8 +11,8 @@ import { Footer } from "@/components/layout/Footer";
 import { useUsage } from "@/hooks/useUsage";
 import { PaywallModal } from "@/components/layout/PaywallModal";
 
-// v02.1.63 (Patch 26.3: Hydra Zero-Stall Calibration)
-const VERSION = "v02.1.63 (Quasar GPE)";
+// v02.1.64 (Patch 26.4: Fortress Session Idempotency)
+const VERSION = "v02.1.64 (Fortress GPE)";
 const PIPES = 3; 
 const CHANNELS_PER_PIPE = 4;
 const CHANNELS = 12; 
@@ -700,9 +700,15 @@ ${capturedLogsRef.current.join('\n')}
                     if (data.type === 'peer-connected') {
                         logDebug("Peer joined, waiting for receiver-ready signal...");
                     } else if (data.type === 'receiver-ready') {
+                        // v02.1.64: Fortress Handshake Guard
+                        // Prevents mid-transfer state wipes if the WS reconnects and resends 'ready'.
+                        if (isActive.current) {
+                            logDebug("⚠️ Receiver Re-Ready Sig. Session already active. Ignoring reset.");
+                            return;
+                        }
                         logDebug("Receiver is READY. Initializing 3x Parallel WebRTC Pipes...");
                         setStatus('connecting');
-                        resetSessionRefs(); // v02.1.57: Atomic session reset prevents race condition
+                        resetSessionRefs(); 
                         setupWebRTC(ws, true, 0); 
                         setupWebRTC(ws, true, 1);
                         setupWebRTC(ws, true, 2);
@@ -1040,8 +1046,8 @@ ${capturedLogsRef.current.join('\n')}
             // 8MB limit prevents Airtel/Jio carrier buffer bloat (keeps RTT < 300ms).
             const GPE_CAP = 8 * 1024 * 1024;
             const isGPEBlocked = gpeInFlightBytesRef.current > GPE_CAP;
-            // v02.1.63: Robust array filter (Fixes sparse array empty Pipes bug)
-            const openChannels = Array.from(dataChannelsRef.current || []).filter(c => c && c.readyState === 'open');
+            // v02.1.64: Fortress Array Census (Resilient to holes/mutation)
+            const openChannels = Object.values(dataChannelsRef.current || {}).filter(c => c && c.readyState === 'open');
 
             // v02.1.57: Unified Block Diagnostic
             if (isGPEBlocked || totalBuffered >= bdpLimit || openChannels.length === 0) {
@@ -1058,7 +1064,7 @@ ${capturedLogsRef.current.join('\n')}
                 if (!gpeBlockedSinceRef.current) gpeBlockedSinceRef.current = Date.now();
                 if (Date.now() - gpeBlockedSinceRef.current > 3000) {
                     logDebug("⚠️ GPE Deadlock detected (3s). Performing Heartbeat Pulse...");
-                    gpeInFlightBytesRef.current = Math.max(0, gpeInFlightBytesRef.current - (1024 * 1024)); // Soft release
+                    gpeInFlightBytesRef.current = Math.max(0, gpeInFlightBytesRef.current - (2048 * 1024)); // v02.1.64: 2MB Cleared
                     gpeBlockedSinceRef.current = Date.now(); // Reset timer
                     sendControlMsg({ type: 'heartbeat', ts: Date.now() }); // Ping receiver
                 }
