@@ -11,8 +11,8 @@ import { Footer } from "@/components/layout/Footer";
 import { useUsage } from "@/hooks/useUsage";
 import { PaywallModal } from "@/components/layout/PaywallModal";
 
-// v02.1.39 Restoration (Patch 25.14: Resilience Workaround)
-const VERSION = "v02.1.39 (Patch 25.14)";
+// v02.1.39 Restoration (Patch 25.15: Adaptive Resilience)
+const VERSION = "v02.1.39 (Patch 25.15)";
 const PIPES = 3; // Patch 17-24: 3-Pipe (12 Channels total)
 const CHANNELS_PER_PIPE = 4;
 const CHANNELS = 12; // v02.1.39 (Patch 18): Critical Sync
@@ -22,22 +22,17 @@ const PACER_THRESHOLD = 1 * 1024 * 1024; // 1MB - Authentic Patch 8 Baseline
 const MAX_IN_FLIGHT = 128; // Patch 8 Balance
 const DRAIN_THRESHOLD = 64 * 1024 * 1024; // 64MB - Patch 19 Quasar Baseline
 
-// Restoration of Patch 25.1 Backend URL Logic (HARDENED FALLBACK)
+// Restoration of Patch 25.1 Backend URL Logic (INDUSTRIAL WORKAROUND)
 const getBackendUrls = () => {
     let rawUrl = (process.env.NEXT_PUBLIC_API_URL || "").trim().replace(/\/$/, "");
     
-    // v02.1.39 (Patch 25.14): Emergency URL Recovery
-    // Fixes the "ai-pdfai-pdf" corruption by forcing the known-good production backend
-    const isCorrupted = (u: string) => u.includes("ai-pdfai-pdf") || u.includes("backendai-pdf");
-    
+    // v02.1.39 (Patch 25.15): Production Force-Fetch
+    // Stop guessing for production environments. Force the known-good address.
     if (typeof window !== "undefined") {
         const hostname = window.location.hostname;
         const isProdEnv = hostname.includes("ai-pdf") || hostname.includes("turbodrop") || hostname.includes("vercel.app");
-        
         if (isProdEnv) {
-            if (!rawUrl || rawUrl.includes("localhost") || isCorrupted(rawUrl)) {
-                rawUrl = "https://ai-pdf-backend.onrender.com";
-            }
+            rawUrl = "https://ai-pdf-backend.onrender.com";
         }
     }
 
@@ -689,11 +684,15 @@ function InstantDropContent() {
                                     ? relayServersRef.current 
                                     : [...ICE_SERVERS.iceServers];
                                     
-            // v02.1.39 (Patch 25.13): Forcing 'relay' for Cellular success (Airtel/Jio)
-            const peer = new RTCPeerConnection({ 
+            // v02.1.39 (Patch 25.15): Adaptive Resilience Logic
+            // Pipe-0: Baseline Speed (All candidates, Default policy)
+            // Pipe-1/2: Resilience Hammer (Relay only, forced bypass)
+            const rtcConfig: RTCConfiguration = {
                 iceServers: currentRelays,
-                iceTransportPolicy: 'relay'
-            });
+                iceTransportPolicy: (pipeIdx === 0) ? 'all' : 'relay'
+            };
+            
+            const peer = new RTCPeerConnection(rtcConfig);
             peersRef.current[pipeIdx] = peer;
 
             if (isSender) {
@@ -1401,7 +1400,7 @@ function InstantDropContent() {
                     </div>
                     <h1 className="text-4xl md:text-5xl font-bold text-foreground mb-4">Turbo Drop</h1>
                     <p className="text-xs text-indigo-600 font-black tracking-[0.2em] uppercase mb-2">{VERSION} 
- Liquid Fidelity (Smooth Batching)</p>
+  Adaptive Resilience Layer</p>
                     <p className="text-lg text-muted-foreground max-w-2xl mx-auto">
                         The ultimate high-speed file sharing app. Transfer photos and large files (up to 200MB) from desktop to mobile or mobile to mobile instantly.
                     </p>
