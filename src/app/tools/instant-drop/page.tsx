@@ -11,16 +11,16 @@ import { Footer } from "@/components/layout/Footer";
 import { useUsage } from "@/hooks/useUsage";
 import { PaywallModal } from "@/components/layout/PaywallModal";
 
-// v02.1.39 Restoration (Patch 24.1: Sync & Solve)
-const VERSION = "v02.1.39 (Patch 24.1)";
+// v02.1.39 Restoration (Patch 24.2: Velocity Prime)
+const VERSION = "v02.1.39 (Patch 24.2)";
 const PIPES = 3; 
 const CHANNELS_PER_PIPE = 4;
-const CHANNELS = 12; // v02.1.39 (Patch 18): Critical Sync
-const CHUNK_SIZE = 64 * 1024; // 64KB - Authentic Patch 8 Baseline
-const HIGH_WATER_MARK_MAX = 64 * 1024 * 1024; // 64MB - Patch 19 Quasar Baseline
-const PACER_THRESHOLD = 1 * 1024 * 1024; // 1MB - Authentic Patch 8 Baseline
-const MAX_IN_FLIGHT = 128; // Patch 8 Balance
-const DRAIN_THRESHOLD = 64 * 1024 * 1024; // 64MB - Patch 19 Quasar Baseline
+const CHANNELS = 12; 
+const CHUNK_SIZE = 128 * 1024; // 128KB - Velocity Prime
+const HIGH_WATER_MARK_MAX = 128 * 1024 * 1024; // 128MB - Velocity Prime
+const PACER_THRESHOLD = 1 * 1024 * 1024; 
+const MAX_IN_FLIGHT = 128; 
+const DRAIN_THRESHOLD = 128 * 1024 * 1024; // 128MB - Velocity Prime
 const getBackendUrls = () => {
     let rawUrl = (process.env.NEXT_PUBLIC_API_URL || "").trim().replace(/\/$/, "");
     
@@ -45,7 +45,9 @@ const ICE_SERVERS = {
     iceServers: [
         { urls: "stun:stun.l.google.com:19302" },
         { urls: "stun:stun1.l.google.com:19302" },
+        { urls: "stun:stun2.l.google.com:19302" },
         { urls: "stun:stun.cloudflare.com:3478" },
+        { urls: "stun:stun.nextcloud.com:3478" },
         // GUARANTEED PUBLIC RELAY (openrelay.metered.ca)
         {
             urls: [
@@ -629,9 +631,12 @@ function InstantDropContent() {
                                     ? relayServersRef.current 
                                     : [...ICE_SERVERS.iceServers];
                                     
+            // v02.1.39 (Patch 24.2): Hybrid Entry Strategy 
+            // Pipe-0: Forced Relay (Guaranteed link) | Pipe-1,2: All (Max P2P Speed)
+            const pipePolicy = (pipeIdx === 0 || useFallback) ? 'relay' : 'all';
             const peer = new RTCPeerConnection({ 
                 iceServers: currentRelays,
-                iceTransportPolicy: useFallback ? 'relay' : 'all'
+                iceTransportPolicy: pipePolicy
             });
             peersRef.current[pipeIdx] = peer;
 
@@ -859,8 +864,8 @@ function InstantDropContent() {
                 (acc, c) => acc + (c?.readyState === 'open' ? c.bufferedAmount : 0), 0
             );
 
-            // v02.1.39 (Patch 24.1): BDP-Snap (Dynamic Adaptive Buffering)
-            const bdpLimit = Math.max(8 * 1024 * 1024, Math.min(64 * 1024 * 1024, (currentMBpsRef.current * 1024 * 1024 * avgRTTRef.current * 2)));
+            // v02.1.39 (Patch 24.2): Velocity BDP (16MB Floor)
+            const bdpLimit = Math.max(16 * 1024 * 1024, Math.min(128 * 1024 * 1024, (currentMBpsRef.current * 1024 * 1024 * avgRTTRef.current * 2.5)));
 
             if (totalBuffered < bdpLimit) {
                 // v02.1.39 (Patch 2): Dynamically pick first available open channel
@@ -886,7 +891,8 @@ function InstantDropContent() {
                         totalSentBytesRef.current += packet.byteLength;
                         chunkIdx++;
 
-                        if (chunkIdx % 20 === 0) {
+                        // v02.1.39 (Patch 24.2): UI Debounce (Update every 100 chunks on mobile)
+                        if (chunkIdx % 100 === 0) {
                             setProgress(Math.floor((chunkIdx / numChunks) * 100));
                         }
                     } catch (e) {
