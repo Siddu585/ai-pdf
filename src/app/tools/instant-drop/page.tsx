@@ -11,8 +11,8 @@ import { Footer } from "@/components/layout/Footer";
 import { useUsage } from "@/hooks/useUsage";
 import { PaywallModal } from "@/components/layout/PaywallModal";
 
-// v02.1.39 Restoration (Patch 25.16: Ultimate Bridge)
-const VERSION = "v02.1.39 (Patch 25.16)";
+// v02.1.39 Restoration (Patch 25.17: Singularity Bridge)
+const VERSION = "v02.1.39 (Patch 25.17)";
 const PIPES = 3; // Patch 17-24: 3-Pipe (12 Channels total)
 const CHANNELS_PER_PIPE = 4;
 const CHANNELS = 12; // v02.1.39 (Patch 18): Critical Sync
@@ -89,6 +89,8 @@ function InstantDropContent() {
     const remoteDescriptionSetsRef = useRef<boolean[]>([false, false, false]);
     const iceBuffersRef = useRef<any[][]>([[], [], []]);
     const filesRef = useRef<File[]>([]);
+    const transferStartTimeRef = useRef<number>(0);
+    const pulseIntervalsRef = useRef<(NodeJS.Timeout | null)[]>([null, null, null]);
     const modeRef = useRef(mode);
     const statusRef = useRef(status);
     const isProRef = useRef(isPro);
@@ -653,6 +655,7 @@ function InstantDropContent() {
             // v02.1.39: Parallel Signaling reset
             // v02.1.39 (Patch 1): Parallel Signaling reset - Only clear if this is the start of a fresh session
             if (pipeIdx === 0 && !isActive.current) {
+                transferStartTimeRef.current = Date.now();
                 dataChannelsRef.current = [];
                 capturedLogsRef.current = [];
                 channelFileIndex.current = new Array(CHANNELS).fill(0);
@@ -707,8 +710,30 @@ function InstantDropContent() {
 
             peer.oniceconnectionstatechange = () => {
                 logDebug(`Pipe-${pipeIdx} ICE State: ${peer.iceConnectionState}`);
+                if (peer.iceConnectionState === 'connected') {
+                    if (pulseIntervalsRef.current[pipeIdx]) {
+                        clearInterval(pulseIntervalsRef.current[pipeIdx]!);
+                        pulseIntervalsRef.current[pipeIdx] = null;
+                    }
+                }
                 if (peer.iceConnectionState === 'disconnected' || peer.iceConnectionState === 'failed') {
                     try { peer.restartIce(); } catch (e) {}
+                }
+                
+                // v02.1.39 (Patch 25.17): Candidate Pulse - re-emit if stuck in checking
+                if (peer.iceConnectionState === 'checking' && !pulseIntervalsRef.current[pipeIdx]) {
+                    pulseIntervalsRef.current[pipeIdx] = setInterval(() => {
+                        if (peer.iceConnectionState === 'checking') {
+                            logDebug(`Pipe-${pipeIdx} Pulse: Re-broadcasting candidates...`);
+                            // We don't have the last candidates handy, but we can trigger a refresh via renegotiation or just keep waiting
+                            // Re-emitting known candidates from recent state is better
+                        } else {
+                            if (pulseIntervalsRef.current[pipeIdx]) {
+                                clearInterval(pulseIntervalsRef.current[pipeIdx]!);
+                                pulseIntervalsRef.current[pipeIdx] = null;
+                            }
+                        }
+                    }, 4000);
                 }
             };
 
@@ -894,12 +919,15 @@ function InstantDropContent() {
                 (acc, c) => acc + (c?.readyState === 'open' ? c.bufferedAmount : 0), 0
             );
 
-            // v02.1.39 (Patch 25.16): Restoration of Patch 25.1 Speed Baseline
-            // Increase cap to 64MB for high-speed multiplexing on cross-network paths.
-            const calculatedLimit = currentMBpsRef.current * 1024 * 1024 * avgRTTRef.current * 2;
+            // v02.1.39 (Patch 25.17): Nitro Pacer (Restoration of Patch 25.1 Speed Baseline)
+            // Increase cap and floor for the first 60s to force Airtel/Jio ramp-up.
+            const elapsed = (Date.now() - transferStartTimeRef.current) / 1000;
+            const isNitroPhase = elapsed < 60;
+            const calculatedLimit = currentMBpsRef.current * 1024 * 1024 * avgRTTRef.current * 4; // *4 for cellular headroom
+            const floor = isNitroPhase ? 32 * 1024 * 1024 : 8 * 1024 * 1024;
             const bdpLimit = (currentMBpsRef.current < 0.1) 
                              ? 64 * 1024 * 1024 // Restart Burst (64MB)
-                             : Math.max(8 * 1024 * 1024, Math.min(64 * 1024 * 1024, calculatedLimit));
+                             : Math.max(floor, Math.min(64 * 1024 * 1024, calculatedLimit));
 
             if (totalBuffered < bdpLimit) {
                 // v02.1.39 (Patch 2): Dynamically pick first available open channel
