@@ -11,16 +11,16 @@ import { Footer } from "@/components/layout/Footer";
 import { useUsage } from "@/hooks/useUsage";
 import { PaywallModal } from "@/components/layout/PaywallModal";
 
-// v02.1.39 Restoration (Patch 25.15: Adaptive Resilience)
-const VERSION = "v02.1.39 (Patch 25.15)";
+// v02.1.39 Restoration (Patch 25.16: Ultimate Bridge)
+const VERSION = "v02.1.39 (Patch 25.16)";
 const PIPES = 3; // Patch 17-24: 3-Pipe (12 Channels total)
 const CHANNELS_PER_PIPE = 4;
 const CHANNELS = 12; // v02.1.39 (Patch 18): Critical Sync
 const CHUNK_SIZE = 64 * 1024; // 64KB - Authentic Patch 8 Baseline
-const HIGH_WATER_MARK_MAX = 64 * 1024 * 1024; // 64MB - Patch 19 Quasar Baseline
+const HIGH_WATER_MARK_MAX = 64 * 1024 * 1024; // 64MB - Patch 19 Quasar Baseline (Restored for 25.16)
 const PACER_THRESHOLD = 1 * 1024 * 1024; // 1MB - Authentic Patch 8 Baseline
 const MAX_IN_FLIGHT = 128; // Patch 8 Balance
-const DRAIN_THRESHOLD = 64 * 1024 * 1024; // 64MB - Patch 19 Quasar Baseline
+const DRAIN_THRESHOLD = 64 * 1024 * 1024; // 64MB - Patch 19 Quasar Baseline (Restored for 25.16)
 
 // Restoration of Patch 25.1 Backend URL Logic (INDUSTRIAL WORKAROUND)
 const getBackendUrls = () => {
@@ -49,24 +49,15 @@ const ICE_SERVERS = {
         { urls: "stun:stun.l.google.com:19302" },
         { urls: "stun:stun1.l.google.com:19302" },
         { urls: "stun:stun.cloudflare.com:3478" },
-        // v02.1.39 (Patch 25.10): Augmented Relay Pool (Hybrid Resilience)
+        // GUARANTEED PUBLIC RELAY (openrelay.metered.ca - RESTORED FROM PATCH 25.1)
         {
             urls: [
-                "turns:openrelay.metered.ca:443?transport=tcp",
-                "turn:openrelay.metered.ca:443?transport=tcp",
                 "turn:openrelay.metered.ca:80",
-                "turn:openrelay.metered.ca:443"
+                "turn:openrelay.metered.ca:443",
+                "turn:openrelay.metered.ca:443?transport=tcp"
             ],
             username: "openrelayproject",
             credential: "openrelayproject"
-        },
-        {
-            urls: [
-                "turns:swap-pdf.metered.live:443?transport=tcp",
-                "turn:swap-pdf.metered.live:443?transport=tcp"
-            ],
-            username: "e8dd65b2e518fd1e3f3b30c7",
-            credential: "uFj5KNoH6mPM1b5R"
         }
     ]
 };
@@ -313,31 +304,24 @@ function InstantDropContent() {
                 const turnRes = await fetch(`${BACKEND_HTTP_URL}/api/turn?deviceId=${deviceId}&email=${encodeURIComponent(email || "")}`);
                 if (turnRes.ok) {
                     const turnData = await turnRes.json();
-                    if (Array.isArray(turnData)) {
-                        // v02.1.39 (Patch 25.10): Surgical Surgical Hardening 
                         const hardenedRelays = turnData.map((s: any) => {
-                            const isTurn = (u: string) => u.startsWith('turn:') || u.startsWith('turns:');
                             if (s.urls && Array.isArray(s.urls)) {
-                                return {
-                                    ...s,
-                                    urls: s.urls.map((u: string) => {
-                                        if (!isTurn(u)) return u; 
-                                        return u.includes('?') ? (u.includes('transport=tcp') ? u : `${u}&transport=tcp`) : `${u}?transport=tcp`;
-                                    })
-                                };
-                            } else if (typeof s.urls === 'string') {
-                                const u = s.urls;
-                                if (!isTurn(u)) return s;
-                                return {
-                                    ...s,
-                                    urls: u.includes('?') ? (u.includes('transport=tcp') ? u : `${u}&transport=tcp`) : `${u}?transport=tcp`
-                                };
+                                const newUrls: string[] = [];
+                                s.urls.forEach((u: string) => {
+                                    newUrls.push(u); // Original (UDP/Default)
+                                    // Add TCP variant for all turns/turn servers
+                                    if (u.startsWith('turn:') || u.startsWith('turns:')) {
+                                        if (!u.includes('transport=')) {
+                                            newUrls.push(u.includes('?') ? `${u}&transport=tcp` : `${u}?transport=tcp`);
+                                        }
+                                    }
+                                });
+                                return { ...s, urls: newUrls };
                             }
                             return s;
                         });
                         relayServersRef.current = [...ICE_SERVERS.iceServers, ...hardenedRelays];
-                        logDebug(`✅ Relays Pre-fetched (Hybrid Hardening): ${hardenedRelays.length} servers ready.`);
-                    }
+                        logDebug(`✅ Relays Pre-fetched (Ultimate Bridge): ${relayServersRef.current.length} server variants ready.`);
                 }
             } catch (e) { console.error("Relay pre-fetch failed", e); }
         };
@@ -684,15 +668,12 @@ function InstantDropContent() {
                                     ? relayServersRef.current 
                                     : [...ICE_SERVERS.iceServers];
                                     
-            // v02.1.39 (Patch 25.15): Adaptive Resilience Logic
-            // Pipe-0: Baseline Speed (All candidates, Default policy)
-            // Pipe-1/2: Resilience Hammer (Relay only, forced bypass)
-            const rtcConfig: RTCConfiguration = {
+            // v02.1.39 (Patch 25.16): Ultimate Bridge Logic
+            // Revert to Default 'all' policy (Reliable P2P + Relay fallback)
+            const peer = new RTCPeerConnection({ 
                 iceServers: currentRelays,
-                iceTransportPolicy: (pipeIdx === 0) ? 'all' : 'relay'
-            };
-            
-            const peer = new RTCPeerConnection(rtcConfig);
+                iceTransportPolicy: 'all'
+            });
             peersRef.current[pipeIdx] = peer;
 
             if (isSender) {
@@ -913,12 +894,12 @@ function InstantDropContent() {
                 (acc, c) => acc + (c?.readyState === 'open' ? c.bufferedAmount : 0), 0
             );
 
-            // v02.1.39 (Patch 25.11): Strict 32MB Backpressure (Fluidity Cap)
-            // Reduced from 64MB to prevent mobile carrier packet drop on saturated buffers.
+            // v02.1.39 (Patch 25.16): Restoration of Patch 25.1 Speed Baseline
+            // Increase cap to 64MB for high-speed multiplexing on cross-network paths.
             const calculatedLimit = currentMBpsRef.current * 1024 * 1024 * avgRTTRef.current * 2;
             const bdpLimit = (currentMBpsRef.current < 0.1) 
-                             ? 32 * 1024 * 1024 // Restart Burst
-                             : Math.max(8 * 1024 * 1024, Math.min(32 * 1024 * 1024, calculatedLimit));
+                             ? 64 * 1024 * 1024 // Restart Burst (64MB)
+                             : Math.max(8 * 1024 * 1024, Math.min(64 * 1024 * 1024, calculatedLimit));
 
             if (totalBuffered < bdpLimit) {
                 // v02.1.39 (Patch 2): Dynamically pick first available open channel
