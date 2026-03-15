@@ -11,8 +11,8 @@ import { Footer } from "@/components/layout/Footer";
 import { useUsage } from "@/hooks/useUsage";
 import { PaywallModal } from "@/components/layout/PaywallModal";
 
-// v02.1.66 (Patch 26.6: Ghost Watchdog Exorcism)
-const VERSION = "v02.1.66 (Exorcist GPE)";
+// v02.1.67 (Patch 26.7: Atomic Handshake Lock)
+const VERSION = "v02.1.67 (Sentinel GPE)";
 const PIPES = 3; 
 const CHANNELS_PER_PIPE = 4;
 const CHANNELS = 12; 
@@ -219,7 +219,13 @@ function InstantDropContent() {
             clearTimeout(stallWatchdogRef.current);
             stallWatchdogRef.current = null;
         }
+        
+        // v02.1.67: Atomic Cleanup of old objects before clearing refs
+        dataChannelsRef.current.forEach(dc => { if (dc) try { dc.close(); } catch(e) {} });
+        peersRef.current.forEach(p => { if (p) try { p.close(); } catch(e) {} });
+
         dataChannelsRef.current = [];
+        peersRef.current = [];
         channelFileIndex.current = new Array(CHANNELS).fill(0);
         fileBuffers.current.clear();
         expectedTotalChunks.current.clear();
@@ -705,13 +711,14 @@ ${capturedLogsRef.current.join('\n')}
                     if (data.type === 'peer-connected') {
                         logDebug("Peer joined, waiting for receiver-ready signal...");
                     } else if (data.type === 'receiver-ready') {
-                        // v02.1.64: Fortress Handshake Guard
-                        // Prevents mid-transfer state wipes if the WS reconnects and resends 'ready'.
-                        if (isActive.current) {
-                            logDebug("⚠️ Receiver Re-Ready Sig. Session already active. Ignoring reset.");
+                        // v02.1.67: Sentinel Handshake Lock
+                        // Prevents "Breath-Race" resets if multiple ready signals arrive during initialization.
+                        if (isActive.current || isInitializingRef.current) {
+                            logDebug("⚠️ Receiver Ready Signal Ignored: Session already active/initializing.");
                             return;
                         }
                         logDebug("Receiver is READY. Initializing 3x Parallel WebRTC Pipes...");
+                        isInitializingRef.current = true; // Lock the handshake
                         setStatus('connecting');
                         resetSessionRefs(); 
                         setupWebRTC(ws, true, 0); 
@@ -779,16 +786,19 @@ ${capturedLogsRef.current.join('\n')}
             });
             peersRef.current[pipeIdx] = peer;
 
-            if (!useFallback && (pipeIdx > 0)) {
-                // Booster Pipe Watchdog: If no link in 15s, try Relay too (Universal Safety)
+            if (!useFallback && (pipeIdx >= 0)) {
+                // v02.1.67: Sentinel Escalation Watchdog
+                // Pipe-0: 20s (Relay is the priority link, give it time)
+                // Booster Pipes: 15s (Faster escalation to Relay)
+                const escalationTimeout = (pipeIdx === 0) ? 20 * 1000 : 15 * 1000;
                 setTimeout(() => {
                     const pc = peersRef.current[pipeIdx];
                     if (pc && (pc.iceConnectionState === 'new' || pc.iceConnectionState === 'checking')) {
-                        logDebug(`⚠️ Booster Pipe-${pipeIdx} Stuck. Escalating to Relay...`);
+                        logDebug(`⚠️ Pipe-${pipeIdx} Stuck in ${pc.iceConnectionState}. Escalating to Relay Fallback...`);
                         pc.close();
                         setupWebRTC(ws, isSender, pipeIdx, true);
                     }
-                }, 15 * 1000);
+                }, escalationTimeout);
             }
 
             if (isSender) {
@@ -1007,13 +1017,13 @@ ${capturedLogsRef.current.join('\n')}
         while (chunkIdx < numChunks) {
             if (!isActive.current) return;
 
-            // v02.1.66 (Patch 26.6): Ghost Watchdog Exorcism
-            // Monitor real-time speed ref instead of state. 15s warmup guard.
+            // v02.1.67 (Patch 26.7): Sentinel Pacer Guard
+            // Increase warmup grace for high-speed Mobile starts. Monitor currentMBpsRef.
             const currentSpeed = currentMBpsRef.current || 0;
-            if (currentSpeed < 0.2 && statusRef.current === 'transferring' && chunkIdx > 20) {
+            if (currentSpeed < 0.2 && statusRef.current === 'transferring' && chunkIdx > 50) {
                 if (!stallWatchdogRef.current) {
                     stallWatchdogRef.current = setTimeout(() => {
-                        logDebug(`🛰️ Stall Detected (${currentSpeed.toFixed(2)}MB/s). Triggering Fortress Auto-Resume...`);
+                        logDebug(`🛰️ Stall Detected (${currentSpeed.toFixed(2)}MB/s). Triggering Sentinel Auto-Resume...`);
                         lastSuccessfulChunkIdxRef.current = chunkIdx;
                         isResumingRef.current = true;
                         
@@ -1030,8 +1040,7 @@ ${capturedLogsRef.current.join('\n')}
                             parallelChannels: dataChannelsRef.current.length
                         });
 
-                        dataChannelsRef.current.forEach(dc => { try { dc.close(); } catch(e) {} });
-                        peersRef.current.forEach(p => { try { p.close(); } catch(e) {} });
+                        resetSessionRefs(); // v02.1.67: Unified Atomic Reset
                         if (wsRef.current) setupWebRTC(wsRef.current, true, 0); 
                     }, 15000); // v02.1.66: 15s Resilience
                 }
