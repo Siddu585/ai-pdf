@@ -11,8 +11,8 @@ import { Footer } from "@/components/layout/Footer";
 import { useUsage } from "@/hooks/useUsage";
 import { PaywallModal } from "@/components/layout/PaywallModal";
 
-// v02.1.39 Restoration (Patch 25.12: URL Resilience)
-const VERSION = "v02.1.39 (Patch 25.12: URL Fix)";
+// v02.1.39 Restoration (Patch 25.13: Resilience Hammer)
+const VERSION = "v02.1.39 (Patch 25.13)";
 const PIPES = 3; // Patch 17-24: 3-Pipe (12 Channels total)
 const CHANNELS_PER_PIPE = 4;
 const CHANNELS = 12; // v02.1.39 (Patch 18): Critical Sync
@@ -22,15 +22,19 @@ const PACER_THRESHOLD = 1 * 1024 * 1024; // 1MB - Authentic Patch 8 Baseline
 const MAX_IN_FLIGHT = 128; // Patch 8 Balance
 const DRAIN_THRESHOLD = 64 * 1024 * 1024; // 64MB - Patch 19 Quasar Baseline
 
-// Restoration of Patch 25.1 Backend URL Logic (CLEAN)
+// Restoration of Patch 25.1 Backend URL Logic (CLEAN & SECURE)
 const getBackendUrls = () => {
-    // Priority: .env > Window Hostname > Localhost
     let rawUrl = (process.env.NEXT_PUBLIC_API_URL || "").trim().replace(/\/$/, "");
     
-    // Explicit failover for user's Render environment naming
+    // v02.1.39 (Patch 25.13): The Great URL Cleanse
+    // Definitive removal of recursive Render/Hostname naming stack-ups
+    if (rawUrl) {
+        rawUrl = rawUrl.replace(/(ai-pdf|ai-pdf-backend)(ai-pdf|ai-pdf-backend)+/g, "$1");
+    }
+
+    // Explicit failover for user's Production environment
     if (typeof window !== "undefined") {
         if (window.location.hostname.includes("ai-pdf") || window.location.hostname.includes("turbodrop")) {
-            // Only force the Render URL if we are actually on a live preview/prod
             if (!rawUrl || rawUrl.includes("localhost")) {
                 rawUrl = "https://ai-pdf-backend.onrender.com";
             }
@@ -685,8 +689,11 @@ function InstantDropContent() {
                                     ? relayServersRef.current 
                                     : [...ICE_SERVERS.iceServers];
                                     
-            // v02.1.39: Reverting to 25.1 Baseline (DEFAULT Policy)
-            const peer = new RTCPeerConnection({ iceServers: currentRelays });
+            // v02.1.39 (Patch 25.13): Forcing 'relay' for Cellular success (Airtel/Jio)
+            const peer = new RTCPeerConnection({ 
+                iceServers: currentRelays,
+                iceTransportPolicy: 'relay'
+            });
             peersRef.current[pipeIdx] = peer;
 
             if (isSender) {
