@@ -11,8 +11,8 @@ import { Footer } from "@/components/layout/Footer";
 import { useUsage } from "@/hooks/useUsage";
 import { PaywallModal } from "@/components/layout/PaywallModal";
 
-// v02.1.59 (Patch 25.9: Engineering Stress Test Module)
-const VERSION = "v02.1.59 (Quasar GPE)";
+// v02.1.60 (Patch 26.0: Proactive Engineering Tools)
+const VERSION = "v02.1.60 (Quasar GPE)";
 const PIPES = 3; 
 const CHANNELS_PER_PIPE = 4;
 const CHANNELS = 12; 
@@ -1590,6 +1590,17 @@ Buffer-Bloat Grade: ${d.bufferBloatGrade}
                                 </div>
                             )}
 
+                            <div className="pt-2">
+                                <Button 
+                                    variant="outline" 
+                                    className="w-full border-indigo-200 text-indigo-600 hover:bg-indigo-50 font-bold py-6 gap-2"
+                                    onClick={() => (window as any).__RUN_STRESS_TEST__(2, 62)}
+                                >
+                                    <Zap className="w-5 h-5" />
+                                    Start 125MB Engineering Stress Test
+                                </Button>
+                            </div>
+
                             <div className="relative">
                                 <div className="absolute inset-0 flex items-center">
                                     <span className="w-full border-t" />
@@ -1642,20 +1653,6 @@ Buffer-Bloat Grade: ${d.bufferBloatGrade}
 
                                     <div className="text-3xl font-mono font-bold tracking-[0.5em] text-indigo-600 bg-indigo-50 dark:bg-indigo-950/30 py-4 rounded-xl">
                                         {roomId}
-                                    </div>
-
-                                    <div className="pt-4 border-t border-dashed w-full">
-                                        <Button 
-                                            variant="outline" 
-                                            className="w-full border-indigo-200 text-indigo-600 hover:bg-indigo-50 font-bold py-6 gap-2"
-                                            onClick={() => (window as any).__RUN_STRESS_TEST__(2, 62)}
-                                        >
-                                            <Zap className="w-5 h-5" />
-                                            Start 125MB Engineering Stress Test
-                                        </Button>
-                                        <p className="text-[10px] text-muted-foreground mt-2 uppercase tracking-widest font-bold">
-                                            For Engineering Calibration Only
-                                        </p>
                                     </div>
                                 </>
                             )}
