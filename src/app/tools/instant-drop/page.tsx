@@ -11,8 +11,8 @@ import { Footer } from "@/components/layout/Footer";
 import { useUsage } from "@/hooks/useUsage";
 import { PaywallModal } from "@/components/layout/PaywallModal";
 
-// v02.1.69 (Patch 26.9: Symmetric Quasar)
-const VERSION = "v02.1.69 (Symmetric GPE)";
+// v02.1.70 (Patch 27.0: NMI Deep ICE & Auto-Test)
+const VERSION = "v02.1.70 (NMI Sentinel)";
 const PIPES = 3; 
 const CHANNELS_PER_PIPE = 4;
 const CHANNELS = 12; 
@@ -845,6 +845,12 @@ ${capturedLogsRef.current.join('\n')}
                 }
             };
 
+            // v02.1.70: Deep ICE Error Tracker (NMI Diagnostics)
+            // @ts-ignore
+            peer.onicecandidateerror = (e: any) => {
+                logDebug(`🛰️ ICE Candidate Error (Pipe-${pipeIdx}): ${e.errorCode} - ${e.errorText} [${e.url}]`);
+            };
+
             if (isSender) {
                 const offer = await peer.createOffer({ offerToReceiveAudio: false, offerToReceiveVideo: false });
                 await peer.setLocalDescription(offer);
@@ -875,13 +881,34 @@ ${capturedLogsRef.current.join('\n')}
                     if (speedTimerRef.current) clearInterval(speedTimerRef.current);
                     // v02.1.32: Performance Monitor (5s Interval)
                     let prevBytes = 0;
-                    setInterval(() => {
+                    setInterval(async () => {
                         const currentTotal = totalSentBytesRef.current + totalReceivedBytesRef.current;
                         const speed = ((currentTotal - prevBytes) / 5 / 1024 / 1024).toFixed(2);
                         const speedNum = parseFloat(speed) || 0.001;
                         currentMBpsRef.current = speedNum;
-                        setTransferSpeed(speedNum); // v02.1.55: ACTIVATE STALL WATCHDOG
-                        console.log(`%c [HYDRA MONITOR] INSTANT SPEED: ${speed} MB/s (RTT: ${avgRTTRef.current.toFixed(3)})`, "color: #00ff00; font-weight: bold;");
+                        setTransferSpeed(speedNum); 
+                        
+                        // v02.1.70: Deep Peer Stats Pulse (GPE-7)
+                        const statsLogs: string[] = [];
+                        for (let i = 0; i < peersRef.current.length; i++) {
+                            const peer = peersRef.current[i];
+                            if (peer) {
+                                try {
+                                    const stats = await peer.getStats();
+                                    stats.forEach(report => {
+                                        if (report.type === 'candidate-pair' && report.state === 'succeeded') {
+                                            statsLogs.push(`Pipe-${i}: RTT=${report.currentRoundTripTime} [${report.localCandidateId} <=> ${report.remoteCandidateId}]`);
+                                        }
+                                    });
+                                } catch(e) {}
+                            }
+                        }
+                        if (statsLogs.length > 0) {
+                            logDebug("--- WebRTC Stats (Sentinel Multi-Pipe) ---");
+                            statsLogs.forEach(l => logDebug(l));
+                        }
+
+                        console.log(`%c [HYDRA MONITOR] INSTANT SPEED: ${speed} MB/s`, "color: #00ff00; font-weight: bold;");
                         prevBytes = currentTotal;
                     }, 5000);
 
@@ -926,6 +953,24 @@ ${capturedLogsRef.current.join('\n')}
             setTransferSpeed(null);
         };
     };
+
+    // v02.1.70: Autonomous Test Mode Hook (NMI)
+    useEffect(() => {
+        if (typeof window === 'undefined') return;
+        const params = new URLSearchParams(window.location.search);
+        if (params.get('test') === 'true') {
+            const testMode = params.get('mode');
+            setTimeout(() => {
+                if (testMode === 'receiver') {
+                    logDebug("🤖 NMI: Auto-starting Receiver Mode...");
+                    setMode('receive');
+                } else if (testMode === 'sender') {
+                    logDebug("🤖 NMI: Auto-starting Sender Mode...");
+                    setMode('send');
+                }
+            }, 2000);
+        }
+    }, [setMode]);
 
     const startFileTransfer = async () => {
         const currentFiles = filesRef.current;
