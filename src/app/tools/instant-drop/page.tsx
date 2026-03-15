@@ -11,9 +11,9 @@ import { Footer } from "@/components/layout/Footer";
 import { useUsage } from "@/hooks/useUsage";
 import { PaywallModal } from "@/components/layout/PaywallModal";
 
-// v02.1.39 Restoration (Patch 24: Safe Zero-Copy & Meta-Deduplication)
-const VERSION = "v02.1.39 (Patch 24)";
-const PIPES = 3; // Patch 17-24: 3-Pipe (12 Channels total)
+// v02.1.39 Restoration (Patch 24.1: Sync & Solve)
+const VERSION = "v02.1.39 (Patch 24.1)";
+const PIPES = 3; 
 const CHANNELS_PER_PIPE = 4;
 const CHANNELS = 12; // v02.1.39 (Patch 18): Critical Sync
 const CHUNK_SIZE = 64 * 1024; // 64KB - Authentic Patch 8 Baseline
@@ -99,6 +99,8 @@ function InstantDropContent() {
     const reassembledCount = useRef(0);
     const expectedTotalFiles = useRef(-1);
     const lastBytesRef = useRef(0);
+    const avgRTTRef = useRef<number>(0.1); // v02.1.39 (Patch 24.1): BDP-Snap Average RTT
+    const currentMBpsRef = useRef<number>(1.0); // v02.1.39 (Patch 24.1): Current Speed for BDP
     const channelFileIndex = useRef<number[]>(new Array(CHANNELS).fill(0));
     const fileBuffers = useRef<Map<number, ArrayBuffer[]>>(new Map());
     const expectedTotalChunks = useRef<Map<number, number>>(new Map());
@@ -313,6 +315,8 @@ function InstantDropContent() {
             const statsInterval = setInterval(async () => {
                 try {
                     let reportStr = "--- WebRTC Stats (Singularity Triple-Pipe) ---\n";
+                    let rttSum = 0;
+                    let rttCount = 0;
                     for (let i = 0; i < PIPES; i++) {
                         const peer = peersRef.current[i];
                         if (!peer) continue;
@@ -320,9 +324,14 @@ function InstantDropContent() {
                         stats.forEach(report => {
                             if (report.type === 'candidate-pair' && report.state === 'succeeded') {
                                 reportStr += `Pipe-${i}: RTT=${report.currentRoundTripTime} SpeedMultiplier=1.0\n`;
+                                if (report.currentRoundTripTime) {
+                                    rttSum += report.currentRoundTripTime;
+                                    rttCount++;
+                                }
                             }
                         });
                     }
+                    if (rttCount > 0) avgRTTRef.current = rttSum / rttCount;
                     logDebug(reportStr);
                 } catch (e) {}
             }, 5000);
@@ -620,8 +629,23 @@ function InstantDropContent() {
                                     ? relayServersRef.current 
                                     : [...ICE_SERVERS.iceServers];
                                     
-            const peer = new RTCPeerConnection({ iceServers: currentRelays });
+            const peer = new RTCPeerConnection({ 
+                iceServers: currentRelays,
+                iceTransportPolicy: useFallback ? 'relay' : 'all'
+            });
             peersRef.current[pipeIdx] = peer;
+
+            // v02.1.39 (Patch 24.1): 10s Relay Fallback Watchdog (Airtel-Killer)
+            if (!useFallback) {
+                setTimeout(() => {
+                    const pc = peersRef.current[pipeIdx];
+                    if (pc && (pc.iceConnectionState === 'new' || pc.iceConnectionState === 'checking')) {
+                        logDebug(`⚠️ Pipe-${pipeIdx} Stuck in ${pc.iceConnectionState} for 10s. Forcing Relay Fallback...`);
+                        pc.close();
+                        setupWebRTC(ws, isSender, pipeIdx, true);
+                    }
+                }, 10 * 1000);
+            }
 
             if (isSender) {
                 const startIdx = pipeIdx * CHANNELS_PER_PIPE;
@@ -699,7 +723,8 @@ function InstantDropContent() {
                     setInterval(() => {
                         const currentTotal = totalSentBytesRef.current + totalReceivedBytesRef.current;
                         const speed = ((currentTotal - prevBytes) / 5 / 1024 / 1024).toFixed(2);
-                        console.log(`%c [HYDRA MONITOR] INSTANT SPEED: ${speed} MB/s`, "color: #00ff00; font-weight: bold;");
+                        currentMBpsRef.current = parseFloat(speed) || 1.0; 
+                        console.log(`%c [HYDRA MONITOR] INSTANT SPEED: ${speed} MB/s (RTT: ${avgRTTRef.current.toFixed(3)})`, "color: #00ff00; font-weight: bold;");
                         prevBytes = currentTotal;
                     }, 5000);
 
@@ -834,8 +859,10 @@ function InstantDropContent() {
                 (acc, c) => acc + (c?.readyState === 'open' ? c.bufferedAmount : 0), 0
             );
 
-            // v02.1.39 (Patch 15): Removed isReceiverReadyRef check to restore authentic Patch 8 flow.
-            if (totalBuffered < DRAIN_THRESHOLD) {
+            // v02.1.39 (Patch 24.1): BDP-Snap (Dynamic Adaptive Buffering)
+            const bdpLimit = Math.max(8 * 1024 * 1024, Math.min(64 * 1024 * 1024, (currentMBpsRef.current * 1024 * 1024 * avgRTTRef.current * 2)));
+
+            if (totalBuffered < bdpLimit) {
                 // v02.1.39 (Patch 2): Dynamically pick first available open channel
                 let dcCandidate: RTCDataChannel | undefined = dataChannelsRef.current[chunkIdx % CHANNELS];
                 if (!dcCandidate || dcCandidate.readyState !== 'open') {
