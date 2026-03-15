@@ -11,8 +11,8 @@ import { Footer } from "@/components/layout/Footer";
 import { useUsage } from "@/hooks/useUsage";
 import { PaywallModal } from "@/components/layout/PaywallModal";
 
-// v02.1.39 Restoration (Patch 25.18: Hyper-Resilient Bridge)
-const VERSION = "v02.1.39 (Patch 25.18)";
+// v02.1.39 Restoration (Patch 25.19: Vortex Bridge)
+const VERSION = "v02.1.39 (Patch 25.19)";
 const PIPES = 3; // Patch 17-24: 3-Pipe (12 Channels total)
 const CHANNELS_PER_PIPE = 4;
 const CHANNELS = 12; // v02.1.39 (Patch 18): Critical Sync
@@ -929,15 +929,9 @@ function InstantDropContent() {
                 (acc, c) => acc + (c?.readyState === 'open' ? c.bufferedAmount : 0), 0
             );
 
-            // v02.1.39 (Patch 25.18): Hyper-Nitro Pacer (Extended Baseline Speed)
-            // Floors speed at 32MB for 3 mins to sustain 10MB/s+ on unstable Airtel links.
-            const elapsed = (Date.now() - transferStartTimeRef.current) / 1000;
-            const isNitroPhase = elapsed < 180; // 3 minutes
-            const calculatedLimit = currentMBpsRef.current * 1024 * 1024 * avgRTTRef.current * 8; // *8 for cellular headroom
-            const floor = isNitroPhase ? 32 * 1024 * 1024 : 8 * 1024 * 1024;
-            const bdpLimit = (currentMBpsRef.current < 0.1) 
-                             ? 64 * 1024 * 1024 // Restart Burst (64MB)
-                             : Math.max(floor, Math.min(64 * 1024 * 1024, calculatedLimit));
+            // v02.1.39 (Patch 25.19): Vortex Buffering (Zero-RTT Latency Bypass)
+            // Use a static 64MB buffer to saturate cellular pipes regardless of fluctuating RTT.
+            const bdpLimit = 64 * 1024 * 1024;
 
             if (totalBuffered < bdpLimit) {
                 // v02.1.39 (Patch 2): Dynamically pick first available open channel
