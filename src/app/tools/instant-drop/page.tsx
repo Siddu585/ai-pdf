@@ -11,8 +11,8 @@ import { Footer } from "@/components/layout/Footer";
 import { useUsage } from "@/hooks/useUsage";
 import { PaywallModal } from "@/components/layout/PaywallModal";
 
-// v02.1.51 (Patch 25.1: GPE Pressure Prime)
-const VERSION = "v02.1.51 (Quasar GPE)";
+// v02.1.52 (Patch 25.2: GPE Reset & Sync)
+const VERSION = "v02.1.52 (Quasar GPE)";
 const PIPES = 3; 
 const CHANNELS_PER_PIPE = 4;
 const CHANNELS = 12; 
@@ -293,8 +293,8 @@ function InstantDropContent() {
                         dynamicChunkSizeRef.current = Math.min(CHUNK_SIZE * 4, dynamicChunkSizeRef.current + 32 * 1024);
                     }
 
-                    if (msg.ts % 1000 === 0) { 
-                        logDebug(`📊 Deep-Insight: OWTT=${diagnosticMetricsRef.current.owtt}ms MTU=${Math.round(dynamicChunkSizeRef.current/1024)}KB`);
+                    if (msg.ts % 100 === 0) { 
+                        logDebug(`📊 Deep-Insight: OWTT=${diagnosticMetricsRef.current.owtt}ms MTU=${Math.round(dynamicChunkSizeRef.current/1024)}KB GPE=${Math.round(gpeInFlightBytesRef.current/1024)}KB`);
                     }
                 }
                 break;
@@ -950,6 +950,10 @@ function InstantDropContent() {
 
         logDebug(`Sender: ${VERSION} ${chunkIdx > 0 ? 'RESUMING' : 'Quasar Start'} for ${file.name} (${numChunks} chunks)`);
         
+        // v02.1.52 (Patch 25.2): GPE Counter Reset
+        // Prevents "Counter Leak" where orphan chunks (less than 10) stay in the gate between files.
+        gpeInFlightBytesRef.current = 0;
+
         while (chunkIdx < numChunks) {
             if (!isActive.current) return;
 
