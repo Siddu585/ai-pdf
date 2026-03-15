@@ -11,8 +11,8 @@ import { Footer } from "@/components/layout/Footer";
 import { useUsage } from "@/hooks/useUsage";
 import { PaywallModal } from "@/components/layout/PaywallModal";
 
-// v02.1.62 (Patch 26.2: Autonomous Diagnostic Hook)
-const VERSION = "v02.1.62 (Quasar GPE)";
+// v02.1.63 (Patch 26.3: Hydra Zero-Stall Calibration)
+const VERSION = "v02.1.63 (Quasar GPE)";
 const PIPES = 3; 
 const CHANNELS_PER_PIPE = 4;
 const CHANNELS = 12; 
@@ -179,17 +179,26 @@ function InstantDropContent() {
         if (capturedLogsRef.current.length > 2000) capturedLogsRef.current.shift();
     }
 
-    function sendControlMsg(payload: any) {
+    function sendControlMsg(payload: any, priority = false) {
         const msgStr = JSON.stringify(payload);
         let sent = false;
-        // v02.1.39 (Patch 21): Redundant Multicast (WS + DC)
         if (wsRef.current?.readyState === WebSocket.OPEN) {
             try { wsRef.current.send(msgStr); sent = true; } catch(e) {}
         }
-        dataChannelsRef.current.forEach(dc => {
-            if (dc?.readyState === 'open') {
-                try { dc.send(msgStr); sent = true; } catch(e) {}
+        // v02.1.63: Signal Priority - anchored signals (Pulls/ACKs) go to Pipe-0 first
+        const channels = dataChannelsRef.current.filter(c => c && c.readyState === 'open');
+        if (priority) {
+            const anchor = channels.find(c => {
+                const idx = parseInt(c.label.split('-').pop() || '0');
+                return idx < 4;
+            });
+            if (anchor) {
+                try { anchor.send(msgStr); sent = true; } catch(e) {}
+                if (payload.type === 'gpe-pull') return sent; // Pulls only need one path
             }
+        }
+        channels.forEach(dc => {
+            try { dc.send(msgStr); sent = true; } catch(e) {}
         });
         return sent;
     }
@@ -1027,11 +1036,12 @@ ${capturedLogsRef.current.join('\n')}
             // v02.1.39 (Patch 24.4): Fortress BDP (Aggressive 4.0x Pressure)
             const bdpLimit = Math.max(16 * 1024 * 1024, Math.min(256 * 1024 * 1024, (currentMBpsRef.current * 1024 * 1024 * avgRTTRef.current * 4.0)));
 
-            // v02.1.55 (Phase 3): GPE Engine - Gated In-Flight Cap (12MB Guard)
-            // 12MB window = ~8MB/s @ 1.5s latency (Ultra-Resilient).
-            const GPE_CAP = 12 * 1024 * 1024;
+            // v02.1.63 (Phase 3): GPE Engine - Gated In-Flight Cap (8MB Sweet Spot)
+            // 8MB limit prevents Airtel/Jio carrier buffer bloat (keeps RTT < 300ms).
+            const GPE_CAP = 8 * 1024 * 1024;
             const isGPEBlocked = gpeInFlightBytesRef.current > GPE_CAP;
-            const openChannels = dataChannelsRef.current.filter(c => c?.readyState === 'open');
+            // v02.1.63: Robust array filter (Fixes sparse array empty Pipes bug)
+            const openChannels = Array.from(dataChannelsRef.current || []).filter(c => c && c.readyState === 'open');
 
             // v02.1.57: Unified Block Diagnostic
             if (isGPEBlocked || totalBuffered >= bdpLimit || openChannels.length === 0) {
@@ -1046,10 +1056,11 @@ ${capturedLogsRef.current.join('\n')}
             // v02.1.56: GPE Self-Unblock Logic (5s Safety)
             if (isGPEBlocked) {
                 if (!gpeBlockedSinceRef.current) gpeBlockedSinceRef.current = Date.now();
-                if (Date.now() - gpeBlockedSinceRef.current > 5000) {
-                    logDebug("⚠️ GPE Deadlock detected (5s). Performing Self-Unblock...");
-                    gpeInFlightBytesRef.current = 0;
-                    gpeBlockedSinceRef.current = null;
+                if (Date.now() - gpeBlockedSinceRef.current > 3000) {
+                    logDebug("⚠️ GPE Deadlock detected (3s). Performing Heartbeat Pulse...");
+                    gpeInFlightBytesRef.current = Math.max(0, gpeInFlightBytesRef.current - (1024 * 1024)); // Soft release
+                    gpeBlockedSinceRef.current = Date.now(); // Reset timer
+                    sendControlMsg({ type: 'heartbeat', ts: Date.now() }); // Ping receiver
                 }
             } else {
                 gpeBlockedSinceRef.current = null;
@@ -1327,13 +1338,14 @@ ${capturedLogsRef.current.join('\n')}
                     
                     // v02.1.54 (Phase 3): GPE Gated-Pull Signal (Priming + Periodic)
                     // We pull more frequently at the start to "prime" the sender's flow.
-                    const pullInterval = currentChunksReceived < 10 ? 1 : 5;
+                    const pullInterval = currentChunksReceived < 10 ? 1 : 10;
                     if (currentChunksReceived % pullInterval === 0) {
+                        // v02.1.63: Priority Signaling (Reroute via Anchor)
                         sendControlMsg({ 
                             type: 'gpe-pull', 
                             bytesCleared: pullInterval * data.byteLength, 
                             pipeIdx: _channelIdx 
-                        });
+                        }, true);
                     }
                 }
             }
