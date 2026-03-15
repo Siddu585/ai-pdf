@@ -11,8 +11,8 @@ import { Footer } from "@/components/layout/Footer";
 import { useUsage } from "@/hooks/useUsage";
 import { PaywallModal } from "@/components/layout/PaywallModal";
 
-// v02.1.39 Restoration (Patch 24.4: Fortress Velocity)
-const VERSION = "v02.1.40 (Deep Insight Phase 1)";
+// v02.1.50 (Phase 3: Quasar GPE)
+const VERSION = "v02.1.50 (Quasar GPE)";
 const PIPES = 3; 
 const CHANNELS_PER_PIPE = 4;
 const CHANNELS = 12; 
@@ -102,6 +102,9 @@ function InstantDropContent() {
     const isResumingRef = useRef(false);
     const stallWatchdogRef = useRef<any>(null);
     const wakeLockRef = useRef<any>(null);
+    const gpeInFlightBytesRef = useRef(0); // v02.1.50: GPE Gated In-Flight Tracking
+    const gpePullRequestsRef = useRef(0); // v02.1.50: GPE Pull Request Counter
+    const dynamicChunkSizeRef = useRef(CHUNK_SIZE); // v02.1.50: Adaptive MTU
     const diagnosticMetricsRef = useRef({
         retransmissions: 0,
         packetsSent: 0,
@@ -282,9 +285,23 @@ function InstantDropContent() {
                     const rtt = Date.now() - msg.ts;
                     diagnosticMetricsRef.current.owtt = rtt / 2; // Approximation of OWTT
                     diagnosticMetricsRef.current.lastAckTs = msg.ts;
-                    if (msg.ts % 1000 === 0) { // Log every ~10th ACK to avoid spam
-                        logDebug(`📊 Deep-Insight: OWTT=${diagnosticMetricsRef.current.owtt}ms (Pipe-${msg.pipeIdx})`);
+                    
+                    // v02.1.50 (Phase 3): Adaptive MTU Logic
+                    if (rtt > 600) {
+                        dynamicChunkSizeRef.current = Math.max(64 * 1024, dynamicChunkSizeRef.current - 16 * 1024);
+                    } else if (rtt < 200) {
+                        dynamicChunkSizeRef.current = Math.min(CHUNK_SIZE * 2, dynamicChunkSizeRef.current + 16 * 1024);
                     }
+
+                    if (msg.ts % 1000 === 0) { 
+                        logDebug(`📊 Deep-Insight: OWTT=${diagnosticMetricsRef.current.owtt}ms MTU=${Math.round(dynamicChunkSizeRef.current/1024)}KB`);
+                    }
+                }
+                break;
+            case 'gpe-pull':
+                if (modeRef.current === 'send') {
+                    gpeInFlightBytesRef.current = Math.max(0, gpeInFlightBytesRef.current - msg.bytesCleared);
+                    gpePullRequestsRef.current++;
                 }
                 break;
             case 'batch-ack':
@@ -943,7 +960,20 @@ function InstantDropContent() {
                         logDebug("🛰️ Stall Detected (<0.2MB/s). Triggering Fortress Auto-Resume...");
                         lastSuccessfulChunkIdxRef.current = chunkIdx;
                         isResumingRef.current = true;
-                        // Restart pipes but keep progress
+                        
+                        // v02.1.50 (Phase 3): Booster-Anchor Symmetry Cloning
+                        // Force Pipe-0 to take over metadata broadcast to "re-ping" receiver
+                        sendControlMsg({
+                            type: 'metadata',
+                            name: file.name,
+                            size: file.size,
+                            fileType: file.type,
+                            currentIdx: index,
+                            totalFiles: expectedTotalFiles.current !== -1 ? expectedTotalFiles.current : 1,
+                            isParallel: true,
+                            parallelChannels: dataChannelsRef.current.length
+                        });
+
                         dataChannelsRef.current.forEach(dc => { try { dc.close(); } catch(e) {} });
                         peersRef.current.forEach(p => { try { p.close(); } catch(e) {} });
                         if (wsRef.current) setupWebRTC(wsRef.current, true, 0); 
@@ -963,7 +993,12 @@ function InstantDropContent() {
             // v02.1.39 (Patch 24.4): Fortress BDP (Aggressive 4.0x Pressure)
             const bdpLimit = Math.max(16 * 1024 * 1024, Math.min(256 * 1024 * 1024, (currentMBpsRef.current * 1024 * 1024 * avgRTTRef.current * 4.0)));
 
-            if (totalBuffered < bdpLimit) {
+            // v02.1.50 (Phase 3): GPE Engine - Gated In-Flight Cap (4MB Guard)
+            // This prevents the "Zero-Loss Paradox" by never overfilling the hidden radio/OS buffers.
+            const GPE_CAP = 4 * 1024 * 1024;
+            const isGPEBlocked = gpeInFlightBytesRef.current > GPE_CAP;
+
+            if (totalBuffered < bdpLimit && !isGPEBlocked) {
                 const openChannels = dataChannelsRef.current.filter(c => c?.readyState === 'open');
                 
                 // v02.1.39 (Patch 24.4): Booster-Skewed Load Balancer
@@ -1011,6 +1046,7 @@ function InstantDropContent() {
 
                         dc.send(packet);
                         totalSentBytesRef.current += packet.byteLength;
+                        gpeInFlightBytesRef.current += packet.byteLength; // Increment GPE tracking
                         chunkIdx++;
 
                         // v02.1.39 (Patch 24.4): Fortress UI Pacing
@@ -1026,9 +1062,10 @@ function InstantDropContent() {
                     await new Promise(res => setTimeout(res, 100));
                 }
             } else {
+                // v02.1.50: GPE Wait State (Yield nicely if blocked by gate or buffer)
                 await new Promise(res => {
                     requestAnimationFrame(() => res(null));
-                    setTimeout(res, 5);
+                    setTimeout(res, isGPEBlocked ? 2 : 5); 
                 });
             }
         }
@@ -1224,7 +1261,7 @@ function InstantDropContent() {
                     offset: 12
                 }, [data]);
                 
-                if (chunkIdx % 10 === 0) {
+                if (currentChunksReceived % 10 === 0) {
                     if (incomingMeta && incomingMeta.size) {
                         const totalChunksExpected = Math.ceil(incomingMeta.size / CHUNK_SIZE);
                         const fileProgress = Math.floor((currentChunksReceived / totalChunksExpected) * 100);
@@ -1232,6 +1269,14 @@ function InstantDropContent() {
                     } else {
                         setProgress(p => Math.min(99, p + 2)); 
                     }
+                    
+                    // v02.1.50 (Phase 3): GPE Gated-Pull Signal (Send after every 10 chunks)
+                    // We inform sender that ~2.5MB (10 * 256KB) has been cleared from physical radio buffer
+                    sendControlMsg({ 
+                        type: 'gpe-pull', 
+                        bytesCleared: 10 * data.byteLength, 
+                        pipeIdx: _channelIdx 
+                    });
                 }
             }
         }
