@@ -11,8 +11,8 @@ import { Footer } from "@/components/layout/Footer";
 import { useUsage } from "@/hooks/useUsage";
 import { PaywallModal } from "@/components/layout/PaywallModal";
 
-// v02.1.54 (Patch 25.4: Deadlock-Free GPE)
-const VERSION = "v02.1.54 (Quasar GPE)";
+// v02.1.56 (Patch 25.6: Unstoppable GPE)
+const VERSION = "v02.1.56 (Quasar GPE)";
 const PIPES = 3; 
 const CHANNELS_PER_PIPE = 4;
 const CHANNELS = 12; 
@@ -105,6 +105,7 @@ function InstantDropContent() {
     const gpeInFlightBytesRef = useRef(0); // v02.1.50: GPE Gated In-Flight Tracking
     const gpePullRequestsRef = useRef(0); // v02.1.50: GPE Pull Request Counter
     const dynamicChunkSizeRef = useRef(CHUNK_SIZE); // v02.1.50: Adaptive MTU
+    const gpeBlockedSinceRef = useRef<number | null>(null); // v02.1.56: Deadlock Safety
     const diagnosticMetricsRef = useRef({
         retransmissions: 0,
         packetsSent: 0,
@@ -659,9 +660,10 @@ function InstantDropContent() {
                     } else if (data.type === 'receiver-ready') {
                         logDebug("Receiver is READY. Initializing 3x Parallel WebRTC Pipes...");
                         setStatus('connecting');
-                        for (let i = 0; i < PIPES; i++) {
-                            setupWebRTC(ws, true, i);
-                        }
+                        gpeInFlightBytesRef.current = 0; // Reset for fresh session
+                        setupWebRTC(ws, true, 0); // Explicit Pipe-0 Setup
+                        setupWebRTC(ws, true, 1);
+                        setupWebRTC(ws, true, 2);
                     } else if (data.type === 'answer') {
                         const pIdx = data.pipeIdx || 0;
                         try {
@@ -822,7 +824,9 @@ function InstantDropContent() {
                     setInterval(() => {
                         const currentTotal = totalSentBytesRef.current + totalReceivedBytesRef.current;
                         const speed = ((currentTotal - prevBytes) / 5 / 1024 / 1024).toFixed(2);
-                        currentMBpsRef.current = parseFloat(speed) || 1.0; 
+                        const speedNum = parseFloat(speed) || 0.001;
+                        currentMBpsRef.current = speedNum;
+                        setTransferSpeed(speedNum); // v02.1.55: ACTIVATE STALL WATCHDOG
                         console.log(`%c [HYDRA MONITOR] INSTANT SPEED: ${speed} MB/s (RTT: ${avgRTTRef.current.toFixed(3)})`, "color: #00ff00; font-weight: bold;");
                         prevBytes = currentTotal;
                     }, 5000);
@@ -1000,13 +1004,25 @@ function InstantDropContent() {
             // v02.1.39 (Patch 24.4): Fortress BDP (Aggressive 4.0x Pressure)
             const bdpLimit = Math.max(16 * 1024 * 1024, Math.min(256 * 1024 * 1024, (currentMBpsRef.current * 1024 * 1024 * avgRTTRef.current * 4.0)));
 
-            // v02.1.54 (Phase 3): GPE Engine - Gated In-Flight Cap (8MB Balanced)
-            // 8MB window prevents deadlock with 5-chunk pulls and satisfies 8MB/s @ 500ms RTT.
-            const GPE_CAP = 8 * 1024 * 1024;
+            // v02.1.55 (Phase 3): GPE Engine - Gated In-Flight Cap (12MB Guard)
+            // 12MB window = ~8MB/s @ 1.5s latency (Ultra-Resilient).
+            const GPE_CAP = 12 * 1024 * 1024;
             const isGPEBlocked = gpeInFlightBytesRef.current > GPE_CAP;
 
-            if (isGPEBlocked && chunkIdx % 100 === 0) {
+            if (isGPEBlocked && chunkIdx % 20 === 0) {
                 logDebug(`🛰️ GPE Gate: Blocking flow. In-Flight: ${Math.round(gpeInFlightBytesRef.current/1024)}KB`);
+            }
+
+            // v02.1.56: GPE Self-Unblock Logic (5s Safety)
+            if (isGPEBlocked) {
+                if (!gpeBlockedSinceRef.current) gpeBlockedSinceRef.current = Date.now();
+                if (Date.now() - gpeBlockedSinceRef.current > 5000) {
+                    logDebug("⚠️ GPE Deadlock detected (5s). Performing Self-Unblock...");
+                    gpeInFlightBytesRef.current = 0;
+                    gpeBlockedSinceRef.current = null;
+                }
+            } else {
+                gpeBlockedSinceRef.current = null;
             }
 
             if (totalBuffered < bdpLimit && !isGPEBlocked) {
