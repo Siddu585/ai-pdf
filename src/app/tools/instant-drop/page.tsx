@@ -159,10 +159,7 @@ function InstantDropContent() {
                     const blob = new Blob([new Uint8Array(sizeMB * 1024 * 1024)], { type: 'application/pdf' });
                     return new File([blob], `StressTest_${i + 1}.pdf`, { type: 'application/pdf' });
                 });
-                setFiles(dummyFiles);
-                setMode('send');
-                setStatus('waiting');
-                // The handleUpload logic will trigger via useEffect on files
+                startSending(dummyFiles);
             };
         }
     }, [logDebug]);
