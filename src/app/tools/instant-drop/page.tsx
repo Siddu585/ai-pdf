@@ -11,8 +11,8 @@ import { Footer } from "@/components/layout/Footer";
 import { useUsage } from "@/hooks/useUsage";
 import { PaywallModal } from "@/components/layout/PaywallModal";
 
-// v02.1.53 (Patch 25.3: GPE Pin-Point Tuning)
-const VERSION = "v02.1.53 (Quasar GPE)";
+// v02.1.54 (Patch 25.4: Deadlock-Free GPE)
+const VERSION = "v02.1.54 (Quasar GPE)";
 const PIPES = 3; 
 const CHANNELS_PER_PIPE = 4;
 const CHANNELS = 12; 
@@ -1000,10 +1000,14 @@ function InstantDropContent() {
             // v02.1.39 (Patch 24.4): Fortress BDP (Aggressive 4.0x Pressure)
             const bdpLimit = Math.max(16 * 1024 * 1024, Math.min(256 * 1024 * 1024, (currentMBpsRef.current * 1024 * 1024 * avgRTTRef.current * 4.0)));
 
-            // v02.1.53 (Phase 3): GPE Engine - Gated In-Flight Cap (2MB Pin-Point)
-            // 2MB window at 350ms RTT = ~5.7MB/s. This prevents the "Buffer-Sludge" effect.
-            const GPE_CAP = 2 * 1024 * 1024;
+            // v02.1.54 (Phase 3): GPE Engine - Gated In-Flight Cap (8MB Balanced)
+            // 8MB window prevents deadlock with 5-chunk pulls and satisfies 8MB/s @ 500ms RTT.
+            const GPE_CAP = 8 * 1024 * 1024;
             const isGPEBlocked = gpeInFlightBytesRef.current > GPE_CAP;
+
+            if (isGPEBlocked && chunkIdx % 100 === 0) {
+                logDebug(`🛰️ GPE Gate: Blocking flow. In-Flight: ${Math.round(gpeInFlightBytesRef.current/1024)}KB`);
+            }
 
             if (totalBuffered < bdpLimit && !isGPEBlocked) {
                 const openChannels = dataChannelsRef.current.filter(c => c?.readyState === 'open');
@@ -1277,13 +1281,16 @@ function InstantDropContent() {
                         setProgress(p => Math.min(99, p + 2)); 
                     }
                     
-                    // v02.1.50 (Phase 3): GPE Gated-Pull Signal (Send after every 10 chunks)
-                    // We inform sender that ~2.5MB (10 * 256KB) has been cleared from physical radio buffer
-                    sendControlMsg({ 
-                        type: 'gpe-pull', 
-                        bytesCleared: 10 * data.byteLength, 
-                        pipeIdx: _channelIdx 
-                    });
+                    // v02.1.54 (Phase 3): GPE Gated-Pull Signal (Priming + Periodic)
+                    // We pull more frequently at the start to "prime" the sender's flow.
+                    const pullInterval = currentChunksReceived < 10 ? 1 : 5;
+                    if (currentChunksReceived % pullInterval === 0) {
+                        sendControlMsg({ 
+                            type: 'gpe-pull', 
+                            bytesCleared: pullInterval * data.byteLength, 
+                            pipeIdx: _channelIdx 
+                        });
+                    }
                 }
             }
         }
