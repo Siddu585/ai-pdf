@@ -11,8 +11,8 @@ import { Footer } from "@/components/layout/Footer";
 import { useUsage } from "@/hooks/useUsage";
 import { PaywallModal } from "@/components/layout/PaywallModal";
 
-// v02.1.67 (Patch 26.7: Atomic Handshake Lock)
-const VERSION = "v02.1.67 (Sentinel GPE)";
+// v02.1.68 (Patch 26.8: Quasar Shield Handshake)
+const VERSION = "v02.1.68 (Quasar Shield)";
 const PIPES = 3; 
 const CHANNELS_PER_PIPE = 4;
 const CHANNELS = 12; 
@@ -239,7 +239,8 @@ function InstantDropContent() {
         currentFileReceivedRef.current.clear();
         totalReceivedChunksCountRef.current = 0;
         isActive.current = false;
-        isInitializingRef.current = false;
+        // v02.1.68: Persistent Lock - Handshake is NOT cleared here.
+        // It's only cleared inside startFileTransfer once the loop is safe.
         remoteDescriptionSetsRef.current = [false, false, false];
         iceBuffersRef.current = [[], [], []];
     };
@@ -388,11 +389,6 @@ ${capturedLogsRef.current.join('\n')}
                 parallelChannels: dataChannelsRef.current.length
             };
             const msgStr = JSON.stringify(metaPayload);
-            dataChannelsRef.current.forEach(dc => { 
-                if (dc?.readyState === 'open') {
-                    try { dc.send(msgStr); } catch(e) {}
-                }
-            });
             sendControlMsg(metaPayload);
         }
     }
@@ -712,9 +708,9 @@ ${capturedLogsRef.current.join('\n')}
                         logDebug("Peer joined, waiting for receiver-ready signal...");
                     } else if (data.type === 'receiver-ready') {
                         // v02.1.67: Sentinel Handshake Lock
-                        // Prevents "Breath-Race" resets if multiple ready signals arrive during initialization.
-                        if (isActive.current || isInitializingRef.current) {
-                            logDebug("⚠️ Receiver Ready Signal Ignored: Session already active/initializing.");
+                        // v02.1.68: Added 'connecting' status guard to prevent redundant resets during ICE.
+                        if (isActive.current || isInitializingRef.current || statusRef.current === 'connecting') {
+                            logDebug(`⚠️ Receiver Ready Sig Ignored: status=${statusRef.current} init=${isInitializingRef.current}`);
                             return;
                         }
                         logDebug("Receiver is READY. Initializing 3x Parallel WebRTC Pipes...");
@@ -930,6 +926,7 @@ ${capturedLogsRef.current.join('\n')}
         const currentFiles = filesRef.current;
         if (currentFiles.length === 0) return;
         isActive.current = true;
+        isInitializingRef.current = false; // v02.1.68: Unlock handshake ONLY once transfer loop starts.
         setStatus('transferring');
         
         // v02.1.39 (Patch 6): Initial Metadata Sweep (Redundant)
