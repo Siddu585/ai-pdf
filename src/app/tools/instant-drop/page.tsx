@@ -11,32 +11,29 @@ import { Footer } from "@/components/layout/Footer";
 import { useUsage } from "@/hooks/useUsage";
 import { PaywallModal } from "@/components/layout/PaywallModal";
 
-// v02.1.39 Restoration (Patch 25.19: Vortex Bridge)
-const VERSION = "v02.1.39 (Patch 25.19)";
+// v02.1.39 Restoration (Patch 24: Safe Zero-Copy & Meta-Deduplication)
+const VERSION = "v02.1.39 (Patch 24)";
 const PIPES = 3; // Patch 17-24: 3-Pipe (12 Channels total)
 const CHANNELS_PER_PIPE = 4;
 const CHANNELS = 12; // v02.1.39 (Patch 18): Critical Sync
 const CHUNK_SIZE = 64 * 1024; // 64KB - Authentic Patch 8 Baseline
-const HIGH_WATER_MARK_MAX = 64 * 1024 * 1024; // 64MB - Patch 19 Quasar Baseline (Restored for 25.16)
+const HIGH_WATER_MARK_MAX = 64 * 1024 * 1024; // 64MB - Patch 19 Quasar Baseline
 const PACER_THRESHOLD = 1 * 1024 * 1024; // 1MB - Authentic Patch 8 Baseline
 const MAX_IN_FLIGHT = 128; // Patch 8 Balance
-const DRAIN_THRESHOLD = 64 * 1024 * 1024; // 64MB - Patch 19 Quasar Baseline (Restored for 25.16)
-
-// Restoration of Patch 25.1 Backend URL Logic (INDUSTRIAL WORKAROUND)
+const DRAIN_THRESHOLD = 64 * 1024 * 1024; // 64MB - Patch 19 Quasar Baseline
 const getBackendUrls = () => {
     let rawUrl = (process.env.NEXT_PUBLIC_API_URL || "").trim().replace(/\/$/, "");
     
-    // v02.1.39 (Patch 25.15): Production Force-Fetch
-    // Stop guessing for production environments. Force the known-good address.
-    if (typeof window !== "undefined") {
-        const hostname = window.location.hostname;
-        const isProdEnv = hostname.includes("ai-pdf") || hostname.includes("turbodrop") || hostname.includes("vercel.app");
-        if (isProdEnv) {
-            rawUrl = "https://ai-pdf-backend.onrender.com";
+    // Sense and Fix recursive Render naming prefix (ai-pdfai-pdf)
+    // This happens when Render's auto-generation stacks names.
+    // If the base URL or the current window has it, we ensure the backend URL also has it.
+    if (rawUrl.includes("ai-pdfai-pdf") || (typeof window !== "undefined" && window.location.hostname.includes("ai-pdfai-pdf"))) {
+        if (!rawUrl.includes("ai-pdfai-pdf-backend")) {
+            rawUrl = rawUrl.replace("ai-pdf-backend", "ai-pdfai-pdf-backend");
         }
     }
 
-    const http = rawUrl || "http://localhost:8000";
+    const http = rawUrl || (typeof window !== "undefined" ? `${window.location.protocol}//${window.location.hostname}:8000` : "http://localhost:8000");
     const ws = http.replace(/^https:\/\//i, "wss://").replace(/^http:\/\//i, "ws://");
     
     return { http, ws };
@@ -49,7 +46,7 @@ const ICE_SERVERS = {
         { urls: "stun:stun.l.google.com:19302" },
         { urls: "stun:stun1.l.google.com:19302" },
         { urls: "stun:stun.cloudflare.com:3478" },
-        // GUARANTEED PUBLIC RELAY (openrelay.metered.ca - RESTORED FROM PATCH 25.1)
+        // GUARANTEED PUBLIC RELAY (openrelay.metered.ca)
         {
             urls: [
                 "turn:openrelay.metered.ca:80",
@@ -61,7 +58,6 @@ const ICE_SERVERS = {
         }
     ]
 };
-
 
 function InstantDropContent() {
     const searchParams = useSearchParams();
@@ -89,8 +85,6 @@ function InstantDropContent() {
     const remoteDescriptionSetsRef = useRef<boolean[]>([false, false, false]);
     const iceBuffersRef = useRef<any[][]>([[], [], []]);
     const filesRef = useRef<File[]>([]);
-    const transferStartTimeRef = useRef<number>(0);
-    const pulseIntervalsRef = useRef<(NodeJS.Timeout | null)[]>([null, null, null]);
     const modeRef = useRef(mode);
     const statusRef = useRef(status);
     const isProRef = useRef(isPro);
@@ -105,8 +99,6 @@ function InstantDropContent() {
     const reassembledCount = useRef(0);
     const expectedTotalFiles = useRef(-1);
     const lastBytesRef = useRef(0);
-    const avgRTTRef = useRef<number>(0.1); // v02.1.39 (Patch 25): BDP-Snap Average RTT
-    const currentMBpsRef = useRef<number>(1.0); // v02.1.39 (Patch 25): Current Speed for BDP
     const channelFileIndex = useRef<number[]>(new Array(CHANNELS).fill(0));
     const fileBuffers = useRef<Map<number, ArrayBuffer[]>>(new Map());
     const expectedTotalChunks = useRef<Map<number, number>>(new Map());
@@ -195,9 +187,8 @@ function InstantDropContent() {
         switch (msg.type) {
             case 'metadata':
                 if (modeRef.current === 'receive') {
-                    // v02.1.39 (Patch 24/25): Deduplicate Metadata Processing (Spam Guard Fix)
+                    // v02.1.39 (Patch 24): Deduplicate Metadata Processing (Spam Guard)
                     if (fileMetas.current.has(msg.currentIdx)) return;
-                    fileMetas.current.set(msg.currentIdx, msg); // Fix: Actually store the seen metadata
                     
                     logDebug(`Receiver: Metadata for ${msg.name} (File ${msg.currentIdx})`);
                     setIncomingMeta(msg);
@@ -262,10 +253,6 @@ function InstantDropContent() {
                     setStatus('done');
                 }
                 break;
-            case 'file-ack':
-                // v02.1.39 (Patch 25.11): Fluidity Pulse
-                window.dispatchEvent(new CustomEvent('webrtc-file-ack', { detail: msg }));
-                break;
         }
     }
 
@@ -306,24 +293,10 @@ function InstantDropContent() {
                 const turnRes = await fetch(`${BACKEND_HTTP_URL}/api/turn?deviceId=${deviceId}&email=${encodeURIComponent(email || "")}`);
                 if (turnRes.ok) {
                     const turnData = await turnRes.json();
-                        const hardenedRelays = turnData.map((s: any) => {
-                            if (s.urls && Array.isArray(s.urls)) {
-                                const newUrls: string[] = [];
-                                s.urls.forEach((u: string) => {
-                                    newUrls.push(u); // Original (UDP/Default)
-                                    // Add TCP variant for all turns/turn servers
-                                    if (u.startsWith('turn:') || u.startsWith('turns:')) {
-                                        if (!u.includes('transport=')) {
-                                            newUrls.push(u.includes('?') ? `${u}&transport=tcp` : `${u}?transport=tcp`);
-                                        }
-                                    }
-                                });
-                                return { ...s, urls: newUrls };
-                            }
-                            return s;
-                        });
-                        relayServersRef.current = [...ICE_SERVERS.iceServers, ...hardenedRelays];
-                        logDebug(`✅ Relays Pre-fetched (Ultimate Bridge): ${relayServersRef.current.length} server variants ready.`);
+                    if (Array.isArray(turnData)) {
+                        relayServersRef.current = [...ICE_SERVERS.iceServers, ...turnData];
+                        logDebug(`✅ Relays Pre-fetched: ${turnData.length} servers ready.`);
+                    }
                 }
             } catch (e) { console.error("Relay pre-fetch failed", e); }
         };
@@ -337,18 +310,9 @@ function InstantDropContent() {
     useEffect(() => {
         statusRef.current = status;
         if (status === 'transferring') {
-            let prevBytesStats = totalSentBytesRef.current + totalReceivedBytesRef.current;
             const statsInterval = setInterval(async () => {
                 try {
-                    // Update Speed Statistics
-                    const currentTotal = totalSentBytesRef.current + totalReceivedBytesRef.current;
-                    const instantSpeed = ((currentTotal - prevBytesStats) / 5 / 1024 / 1024).toFixed(2);
-                    currentMBpsRef.current = parseFloat(instantSpeed);
-                    prevBytesStats = currentTotal;
-
                     let reportStr = "--- WebRTC Stats (Singularity Triple-Pipe) ---\n";
-                    let rttSum = 0;
-                    let rttCount = 0;
                     for (let i = 0; i < PIPES; i++) {
                         const peer = peersRef.current[i];
                         if (!peer) continue;
@@ -356,16 +320,10 @@ function InstantDropContent() {
                         stats.forEach(report => {
                             if (report.type === 'candidate-pair' && report.state === 'succeeded') {
                                 reportStr += `Pipe-${i}: RTT=${report.currentRoundTripTime} SpeedMultiplier=1.0\n`;
-                                if (report.currentRoundTripTime) {
-                                    rttSum += report.currentRoundTripTime;
-                                    rttCount++;
-                                }
                             }
                         });
                     }
-                    if (rttCount > 0) avgRTTRef.current = rttSum / rttCount;
                     logDebug(reportStr);
-                    console.log(`%c [HYDRA MONITOR] INSTANT SPEED: ${instantSpeed} MB/s (RTT: ${avgRTTRef.current.toFixed(3)})`, "color: #00ff00; font-weight: bold;");
                 } catch (e) {}
             }, 5000);
             return () => clearInterval(statsInterval);
@@ -462,17 +420,12 @@ function InstantDropContent() {
                                 const chunks = fileBuffers.get(fileIdx);
                                 // v02.1.39 (Patch 24): Filter undefined to prevent Transferable mapping crash
                                 const transferList = chunks.filter(c => c && c.buffer).map(c => c.buffer);
-                              try {
-                             self.postMessage({ type: 'reassembled', fileIdx, name: meta.name, fileType: meta.fileType, chunks }, transferList);
-                             // v02.1.39 (Patch 25.11): Immediate memory release
-                             fileBuffers.delete(fileIdx); 
-                             fileMetas.delete(fileIdx); 
-                             indices.clear(); 
-                             expectedTotalChunks.delete(fileIdx); 
-                             reassembledFiles.add(fileIdx);
-                          } catch (err) {
-                             self.postMessage({ type: 'error', msg: 'PostMessage Transfer Failed: ' + err });
-                          }
+                                try {
+                                    self.postMessage({ type: 'reassembled', fileIdx, name: meta.name, fileType: meta.fileType, chunks }, transferList);
+                                } catch (err) {
+                                    self.postMessage({ type: 'error', msg: 'PostMessage Transfer Failed: ' + err });
+                                }
+                                fileBuffers.delete(fileIdx); fileMetas.delete(fileIdx); indices.clear(); expectedTotalChunks.delete(fileIdx); reassembledFiles.add(fileIdx);
                             } else {
                                 self.postMessage({ type: 'need-metadata', fileIdx });
                             }
@@ -498,14 +451,11 @@ function InstantDropContent() {
             if (e.data.type === 'reassembled') {
                  reassembledCount.current++; 
                  const { fileIdx, name, fileType, chunks } = e.data;
-                  // v02.1.39 (Patch 12): Decrement global chunk counter to allow more data in
-                  if (chunks) totalReceivedChunksCountRef.current = Math.max(0, totalReceivedChunksCountRef.current - chunks.length);
-                  const blob = new Blob(chunks, { type: fileType || 'application/octet-stream' });
-                  setReceivedFiles(prev => [...prev, { blob, name }]);
-                  logDebug(`Receiver: Worker reassembly complete for ${name}. Signaling Ack...`);
-                  // v02.1.39 (Patch 25.11): Fluidity Handshake (Signal sender that reassembly is DONE)
-                  sendControlMsg({ type: 'file-ack', fileIdx });
-
+                 // v02.1.39 (Patch 12): Decrement global chunk counter to allow more data in
+                 if (chunks) totalReceivedChunksCountRef.current = Math.max(0, totalReceivedChunksCountRef.current - chunks.length);
+                 const blob = new Blob(chunks, { type: fileType || 'application/octet-stream' });
+                 setReceivedFiles(prev => [...prev, { blob, name }]);
+                 logDebug(`Receiver: Worker reassembly complete for ${name}.`);
             } else if (e.data.type === 'need-metadata') {
                  const fIdx = e.data.fileIdx;
                  logDebug(`Receiver: Missing metadata for file ${fIdx}. Requesting...`);
@@ -655,7 +605,6 @@ function InstantDropContent() {
             // v02.1.39: Parallel Signaling reset
             // v02.1.39 (Patch 1): Parallel Signaling reset - Only clear if this is the start of a fresh session
             if (pipeIdx === 0 && !isActive.current) {
-                transferStartTimeRef.current = Date.now();
                 dataChannelsRef.current = [];
                 capturedLogsRef.current = [];
                 channelFileIndex.current = new Array(CHANNELS).fill(0);
@@ -671,12 +620,7 @@ function InstantDropContent() {
                                     ? relayServersRef.current 
                                     : [...ICE_SERVERS.iceServers];
                                     
-            // v02.1.39 (Patch 25.16): Ultimate Bridge Logic
-            // Revert to Default 'all' policy (Reliable P2P + Relay fallback)
-            const peer = new RTCPeerConnection({ 
-                iceServers: currentRelays,
-                iceTransportPolicy: 'all'
-            });
+            const peer = new RTCPeerConnection({ iceServers: currentRelays });
             peersRef.current[pipeIdx] = peer;
 
             if (isSender) {
@@ -710,40 +654,8 @@ function InstantDropContent() {
 
             peer.oniceconnectionstatechange = () => {
                 logDebug(`Pipe-${pipeIdx} ICE State: ${peer.iceConnectionState}`);
-                if (peer.iceConnectionState === 'connected') {
-                    if (pulseIntervalsRef.current[pipeIdx]) {
-                        clearInterval(pulseIntervalsRef.current[pipeIdx]!);
-                        pulseIntervalsRef.current[pipeIdx] = null;
-                    }
-                }
                 if (peer.iceConnectionState === 'disconnected' || peer.iceConnectionState === 'failed') {
                     try { peer.restartIce(); } catch (e) {}
-                }
-                
-                // v02.1.39 (Patch 25.18): Hyper-Pulse + Relay Escalation
-                if (peer.iceConnectionState === 'checking' && !pulseIntervalsRef.current[pipeIdx]) {
-                    const checkStart = Date.now();
-                    pulseIntervalsRef.current[pipeIdx] = setInterval(() => {
-                        const elapsed = (Date.now() - checkStart) / 1000;
-                        if (peer.iceConnectionState === 'checking') {
-                            if (elapsed > 8) {
-                                logDebug(`Pipe-${pipeIdx} Relay Escalation: Forcing ICE Restart...`);
-                                clearInterval(pulseIntervalsRef.current[pipeIdx]!);
-                                pulseIntervalsRef.current[pipeIdx] = null;
-                                setupWebRTC(ws, isSender, pipeIdx, true); // Active Fallback
-                                return;
-                            }
-                            logDebug(`Pipe-${pipeIdx} Active Pulse: Re-sending SDP...`);
-                            if (peer.localDescription) {
-                                ws.send(JSON.stringify({ type: isSender ? 'offer' : 'answer', pipeIdx, sdp: peer.localDescription }));
-                            }
-                        } else {
-                            if (pulseIntervalsRef.current[pipeIdx]) {
-                                clearInterval(pulseIntervalsRef.current[pipeIdx]!);
-                                pulseIntervalsRef.current[pipeIdx] = null;
-                            }
-                        }
-                    }, 4000);
                 }
             };
 
@@ -779,10 +691,18 @@ function InstantDropContent() {
                 setTimeout(() => {
                     logDebug("Starting Ultimate-Gold parallel transfer...");
                     setStatus('transferring');
-                    // Reset bytes trackers
+                    // Start speed timer
                     lastBytesRef.current = 0;
-                    if (speedTimerRef.current) { clearInterval(speedTimerRef.current); speedTimerRef.current = null; }
-                    
+                    if (speedTimerRef.current) clearInterval(speedTimerRef.current);
+                    // v02.1.32: Performance Monitor (5s Interval)
+                    let prevBytes = 0;
+                    setInterval(() => {
+                        const currentTotal = totalSentBytesRef.current + totalReceivedBytesRef.current;
+                        const speed = ((currentTotal - prevBytes) / 5 / 1024 / 1024).toFixed(2);
+                        console.log(`%c [HYDRA MONITOR] INSTANT SPEED: ${speed} MB/s`, "color: #00ff00; font-weight: bold;");
+                        prevBytes = currentTotal;
+                    }, 5000);
+
                     startFileTransfer();
                 }, 500);
             }
@@ -853,21 +773,6 @@ function InstantDropContent() {
             });
 
             await transferFileP2PParallel(currentFiles[i], i);
-            
-            // v02.1.39 (Patch 25.11): Backpressure Fluidity Handshake
-            // Ensure receiver has REASSEMBLED the file before we start the next one.
-            // This prevents the "9/10 files stall" at 125MB+.
-            logDebug(`Sender: Awaiting reassembly confirmation for File ${i}...`);
-            await new Promise<void>((resolve) => {
-                const h = (e: any) => {
-                    if (e.detail.fileIdx === i) {
-                        window.removeEventListener('webrtc-file-ack', h);
-                        resolve();
-                    }
-                };
-                window.addEventListener('webrtc-file-ack', h);
-                setTimeout(() => { window.removeEventListener('webrtc-file-ack', h); resolve(); }, 10000); // 10s Safety
-            });
         }
         
         // v02.1.37: 12-Channel EOF Broadcast (Redundancy)
@@ -929,11 +834,8 @@ function InstantDropContent() {
                 (acc, c) => acc + (c?.readyState === 'open' ? c.bufferedAmount : 0), 0
             );
 
-            // v02.1.39 (Patch 25.19): Vortex Buffering (Zero-RTT Latency Bypass)
-            // Use a static 64MB buffer to saturate cellular pipes regardless of fluctuating RTT.
-            const bdpLimit = 64 * 1024 * 1024;
-
-            if (totalBuffered < bdpLimit) {
+            // v02.1.39 (Patch 15): Removed isReceiverReadyRef check to restore authentic Patch 8 flow.
+            if (totalBuffered < DRAIN_THRESHOLD) {
                 // v02.1.39 (Patch 2): Dynamically pick first available open channel
                 let dcCandidate: RTCDataChannel | undefined = dataChannelsRef.current[chunkIdx % CHANNELS];
                 if (!dcCandidate || dcCandidate.readyState !== 'open') {
@@ -1055,30 +957,11 @@ function InstantDropContent() {
 
             ws.onopen = () => {
                 logDebug("Receiver WS Opened. Signaling Ready...");
-                // v02.1.39 (Patch 25.10): Robust Handshake Pulse
-                // Retransmit 'receiver-ready' every 3s until we receive an offer.
-                const transmitPulse = () => {
-                    if (ws.readyState === WebSocket.OPEN && statusRef.current === 'connecting') {
-                        logDebug("Receiver: Sending Ready Pulse...");
-                        ws.send(JSON.stringify({ type: 'receiver-ready' }));
-                    }
-                };
-                transmitPulse();
-                const pulseInterval = setInterval(transmitPulse, 3000);
-
+                ws.send(JSON.stringify({ type: 'receiver-ready' }));
                 const heartbeat = setInterval(() => {
                     if (ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify({ type: 'ping' }));
                 }, 5000);
                 heartbeatIntervalRef.current = heartbeat;
-
-                // Sync the intervals to cleanup ref
-                const combinedInterval = () => {
-                    clearInterval(pulseInterval);
-                    clearInterval(heartbeat);
-                };
-                heartbeatIntervalRef.current = setInterval(combinedInterval, 0); // Placeholder to trigger clear in onclose
-                // Actually we should just use a closure or another ref. 
-                // Let's just store the pulseInterval separately.
             };
 
             ws.onmessage = async (event) => {
@@ -1413,7 +1296,7 @@ function InstantDropContent() {
                     </div>
                     <h1 className="text-4xl md:text-5xl font-bold text-foreground mb-4">Turbo Drop</h1>
                     <p className="text-xs text-indigo-600 font-black tracking-[0.2em] uppercase mb-2">{VERSION} 
-  Hyper-Resilient Bridge Layer</p>
+ Liquid Fidelity (Smooth Batching)</p>
                     <p className="text-lg text-muted-foreground max-w-2xl mx-auto">
                         The ultimate high-speed file sharing app. Transfer photos and large files (up to 200MB) from desktop to mobile or mobile to mobile instantly.
                     </p>
