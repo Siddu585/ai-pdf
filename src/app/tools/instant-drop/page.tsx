@@ -11,8 +11,8 @@ import { Footer } from "@/components/layout/Footer";
 import { useUsage } from "@/hooks/useUsage";
 import { PaywallModal } from "@/components/layout/PaywallModal";
 
-// v02.1.64 (Patch 26.4: Fortress Session Idempotency)
-const VERSION = "v02.1.64 (Fortress GPE)";
+// v02.1.65 (Patch 26.5: Airtel Fortress Calibration)
+const VERSION = "v02.1.65 (Airtel Fortress)";
 const PIPES = 3; 
 const CHANNELS_PER_PIPE = 4;
 const CHANNELS = 12; 
@@ -185,7 +185,7 @@ function InstantDropContent() {
         if (wsRef.current?.readyState === WebSocket.OPEN) {
             try { wsRef.current.send(msgStr); sent = true; } catch(e) {}
         }
-        // v02.1.63: Signal Priority - anchored signals (Pulls/ACKs) go to Pipe-0 first
+        // v02.1.65: Signal Broadcast Fallback - prefer Anchor, fallback to any open pipe
         const channels = dataChannelsRef.current.filter(c => c && c.readyState === 'open');
         if (priority) {
             const anchor = channels.find(c => {
@@ -194,9 +194,10 @@ function InstantDropContent() {
             });
             if (anchor) {
                 try { anchor.send(msgStr); sent = true; } catch(e) {}
-                if (payload.type === 'gpe-pull') return sent; // Pulls only need one path
+                if (payload.type === 'gpe-pull') return sent; // Pulls only need one successful path
             }
         }
+        // Fallback: If anchor failed or not priority, broadcast to all
         channels.forEach(dc => {
             try { dc.send(msgStr); sent = true; } catch(e) {}
         });
@@ -1043,17 +1044,24 @@ ${capturedLogsRef.current.join('\n')}
             const bdpLimit = Math.max(16 * 1024 * 1024, Math.min(256 * 1024 * 1024, (currentMBpsRef.current * 1024 * 1024 * avgRTTRef.current * 4.0)));
 
             // v02.1.63 (Phase 3): GPE Engine - Gated In-Flight Cap (8MB Sweet Spot)
-            // 8MB limit prevents Airtel/Jio carrier buffer bloat (keeps RTT < 300ms).
-            const GPE_CAP = 8 * 1024 * 1024;
+            // v02.1.65: Airtel Fortress GPE (16MB Elasticity)
+            // 16MB limit allows for Airtel-sized jitter without stalling the pull cycle.
+            const GPE_CAP = 16 * 1024 * 1024;
             const isGPEBlocked = gpeInFlightBytesRef.current > GPE_CAP;
-            // v02.1.64: Fortress Array Census (Resilient to holes/mutation)
-            const openChannels = Object.values(dataChannelsRef.current || {}).filter(c => c && c.readyState === 'open');
+            
+            // v02.1.65: Hardened Census Loop (Absolute Reliability)
+            const openChannels = [];
+            for (let i = 0; i < CHANNELS; i++) {
+                const dc = dataChannelsRef.current[i];
+                if (dc && dc.readyState === 'open') openChannels.push(dc);
+            }
 
             // v02.1.57: Unified Block Diagnostic
             if (isGPEBlocked || totalBuffered >= bdpLimit || openChannels.length === 0) {
                 blockedLoopCount.current++;
                 if (blockedLoopCount.current % 500 === 0) {
-                    logDebug(`🛰️ FLOW BLOCKED: GPE=${isGPEBlocked} (${Math.round(gpeInFlightBytesRef.current/1024)}KB), BDP=${totalBuffered >= bdpLimit} (${Math.round(totalBuffered/1024)}KB), Pipes=${openChannels.length}`);
+                    const statusCensus = dataChannelsRef.current.map((c, idx) => `${idx}:${c?.readyState || 'null'}`).join(',');
+                    logDebug(`🛰️ FLOW BLOCKED: GPE=${isGPEBlocked} (${Math.round(gpeInFlightBytesRef.current/1024)}KB), BDP=${totalBuffered >= bdpLimit} (${Math.round(totalBuffered/1024)}KB), Pipes=${openChannels.length} [${statusCensus}]`);
                 }
             } else {
                 blockedLoopCount.current = 0;
