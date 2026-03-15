@@ -11,8 +11,8 @@ import { Footer } from "@/components/layout/Footer";
 import { useUsage } from "@/hooks/useUsage";
 import { PaywallModal } from "@/components/layout/PaywallModal";
 
-// v02.1.39 Restoration (Patch 25.13: Resilience Hammer)
-const VERSION = "v02.1.39 (Patch 25.13)";
+// v02.1.39 Restoration (Patch 25.14: Resilience Workaround)
+const VERSION = "v02.1.39 (Patch 25.14)";
 const PIPES = 3; // Patch 17-24: 3-Pipe (12 Channels total)
 const CHANNELS_PER_PIPE = 4;
 const CHANNELS = 12; // v02.1.39 (Patch 18): Critical Sync
@@ -22,20 +22,20 @@ const PACER_THRESHOLD = 1 * 1024 * 1024; // 1MB - Authentic Patch 8 Baseline
 const MAX_IN_FLIGHT = 128; // Patch 8 Balance
 const DRAIN_THRESHOLD = 64 * 1024 * 1024; // 64MB - Patch 19 Quasar Baseline
 
-// Restoration of Patch 25.1 Backend URL Logic (CLEAN & SECURE)
+// Restoration of Patch 25.1 Backend URL Logic (HARDENED FALLBACK)
 const getBackendUrls = () => {
     let rawUrl = (process.env.NEXT_PUBLIC_API_URL || "").trim().replace(/\/$/, "");
     
-    // v02.1.39 (Patch 25.13): The Great URL Cleanse
-    // Definitive removal of recursive Render/Hostname naming stack-ups
-    if (rawUrl) {
-        rawUrl = rawUrl.replace(/(ai-pdf|ai-pdf-backend)(ai-pdf|ai-pdf-backend)+/g, "$1");
-    }
-
-    // Explicit failover for user's Production environment
+    // v02.1.39 (Patch 25.14): Emergency URL Recovery
+    // Fixes the "ai-pdfai-pdf" corruption by forcing the known-good production backend
+    const isCorrupted = (u: string) => u.includes("ai-pdfai-pdf") || u.includes("backendai-pdf");
+    
     if (typeof window !== "undefined") {
-        if (window.location.hostname.includes("ai-pdf") || window.location.hostname.includes("turbodrop")) {
-            if (!rawUrl || rawUrl.includes("localhost")) {
+        const hostname = window.location.hostname;
+        const isProdEnv = hostname.includes("ai-pdf") || hostname.includes("turbodrop") || hostname.includes("vercel.app");
+        
+        if (isProdEnv) {
+            if (!rawUrl || rawUrl.includes("localhost") || isCorrupted(rawUrl)) {
                 rawUrl = "https://ai-pdf-backend.onrender.com";
             }
         }
