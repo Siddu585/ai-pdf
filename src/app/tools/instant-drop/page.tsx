@@ -11,8 +11,8 @@ import { Footer } from "@/components/layout/Footer";
 import { useUsage } from "@/hooks/useUsage";
 import { PaywallModal } from "@/components/layout/PaywallModal";
 
-// v02.1.60 (Patch 26.0: Proactive Engineering Tools)
-const VERSION = "v02.1.60 (Quasar GPE)";
+// v02.1.61 (Patch 26.1: Remote Diagnostic Hub)
+const VERSION = "v02.1.61 (Quasar GPE)";
 const PIPES = 3; 
 const CHANNELS_PER_PIPE = 4;
 const CHANNELS = 12; 
@@ -318,6 +318,30 @@ function InstantDropContent() {
                 if (modeRef.current === 'send' && (statusRef.current === 'done-waiting' || statusRef.current === 'transferring')) {
                     logDebug(`Sender: Batch ACK received. Closing session.`);
                     setStatus('done');
+                }
+                break;
+            case 'request-diagnostics':
+                if (modeRef.current === 'send') {
+                    const d = diagnosticMetricsRef.current;
+                    const logDump = `
+--- DIAGNOSTIC DUMP (v02.1.61) ---
+Retransmissions: ${d.retransmissions}
+Total Packets Sent: ${d.packetsSent}
+OWTT: ${d.owtt.toFixed(2)}ms
+Lag: ${d.eventLoopLag}ms
+Logs:
+${capturedLogsRef.current.join('\n')}
+---------------------------------
+`;
+                    sendControlMsg({ type: 'diagnostic-dump', data: logDump });
+                    logDebug("Sent Remote Diagnostic Dump.");
+                }
+                break;
+            case 'diagnostic-dump':
+                if (modeRef.current === 'receive') {
+                    console.log("%c[REMOTE DIAGNOSTICS RECEIVED]", "color: lime; font-weight: bold; font-size: 14px;");
+                    console.log(msg.data);
+                    logDebug("📥 Remote Diagnostic Dump captured in Console.");
                 }
                 break;
         }
