@@ -11,8 +11,8 @@ import { Footer } from "@/components/layout/Footer";
 import { useUsage } from "@/hooks/useUsage";
 import { PaywallModal } from "@/components/layout/PaywallModal";
 
-// v02.1.68 (Patch 26.8: Quasar Shield Handshake)
-const VERSION = "v02.1.68 (Quasar Shield)";
+// v02.1.69 (Patch 26.9: Symmetric Quasar)
+const VERSION = "v02.1.69 (Symmetric GPE)";
 const PIPES = 3; 
 const CHANNELS_PER_PIPE = 4;
 const CHANNELS = 12; 
@@ -780,13 +780,18 @@ ${capturedLogsRef.current.join('\n')}
                 iceServers: currentRelays,
                 iceTransportPolicy: pipePolicy
             });
+            // v02.1.69: Atomic Peer Rollover (Anti-Leak)
+            if (peersRef.current[pipeIdx]) {
+                try { peersRef.current[pipeIdx].close(); } catch(e) {}
+            }
             peersRef.current[pipeIdx] = peer;
 
-            if (!useFallback && (pipeIdx >= 0)) {
-                // v02.1.67: Sentinel Escalation Watchdog
-                // Pipe-0: 20s (Relay is the priority link, give it time)
-                // Booster Pipes: 15s (Faster escalation to Relay)
-                const escalationTimeout = (pipeIdx === 0) ? 20 * 1000 : 15 * 1000;
+            if (!useFallback && isSender && (pipeIdx >= 0)) {
+                // v02.1.69: Symmetric Escalation Watchdog (Sender-Only)
+                // Prevents collisions where both try to save the link simultaneously.
+                // Pipe-0: 25s (Anchor link, give it absolute priority)
+                // Booster Pipes: 15s (Escalate fast to Relay)
+                const escalationTimeout = (pipeIdx === 0) ? 25 * 1000 : 15 * 1000;
                 setTimeout(() => {
                     const pc = peersRef.current[pipeIdx];
                     if (pc && (pc.iceConnectionState === 'new' || pc.iceConnectionState === 'checking')) {
