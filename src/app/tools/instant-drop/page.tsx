@@ -11,12 +11,12 @@ import { Footer } from "@/components/layout/Footer";
 import { useUsage } from "@/hooks/useUsage";
 import { PaywallModal } from "@/components/layout/PaywallModal";
 
-// v02.1.39 Restoration (Patch 24.3: Pulse Load-Balancer)
-const VERSION = "v02.1.39 (Patch 24.3)";
+// v02.1.39 Restoration (Patch 24.4: Fortress Velocity)
+const VERSION = "v02.1.39 (Patch 24.4)";
 const PIPES = 3; 
 const CHANNELS_PER_PIPE = 4;
 const CHANNELS = 12; 
-const CHUNK_SIZE = 128 * 1024; // 128KB - Velocity Prime
+const CHUNK_SIZE = 256 * 1024; // 256KB - Fortress Velocity
 const HIGH_WATER_MARK_MAX = 128 * 1024 * 1024; // 128MB - Velocity Prime
 const PACER_THRESHOLD = 1 * 1024 * 1024; 
 const MAX_IN_FLIGHT = 128; 
@@ -98,6 +98,10 @@ function InstantDropContent() {
     const speedTimerRef = useRef<any>(null);
     const totalSentBytesRef = useRef(0);
     const totalReceivedBytesRef = useRef(0);
+    const lastSuccessfulChunkIdxRef = useRef(0);
+    const isResumingRef = useRef(false);
+    const stallWatchdogRef = useRef<any>(null);
+    const wakeLockRef = useRef<any>(null);
     const reassembledCount = useRef(0);
     const expectedTotalFiles = useRef(-1);
     const lastBytesRef = useRef(0);
@@ -113,7 +117,6 @@ function InstantDropContent() {
     const fileInputRef = useRef<HTMLInputElement>(null);
     const roomRef = useRef<string | null>(null);
     const heartbeatIntervalRef = useRef<any>(null);
-    const wakeLockRef = useRef<any>(null);
     const workerRef = useRef<Worker | null>(null);
     const totalReceivedChunksCountRef = useRef(0); // v02.1.39 (Patch 12): Lightweight Flow Control
     const doneWaitingTimeoutRef = useRef<any>(null); // v02.1.39 (Patch 12): Receiver Safety Net
@@ -825,7 +828,7 @@ function InstantDropContent() {
         setStatus('done-waiting'); // New UI state for "Verifying..."
         const waitForAck = () => new Promise<void>((resolve) => {
             const handler = (e: any) => {
-                if (e.detail.type === 'batch-ack') {
+                if (e.detail.type === 'batch-ack' || e.detail.type === 'resume-sync') {
                     window.removeEventListener('webrtc-sender-msg', handler);
                     resolve();
                 }
@@ -849,36 +852,66 @@ function InstantDropContent() {
         setStatus('done');
         isActive.current = false;
     };
-
+ 
     const transferFileP2PParallel = async (file: File, index: number) => {
         const buffer = await file.arrayBuffer();
         const numChunks = Math.ceil(buffer.byteLength / CHUNK_SIZE);
-        let chunkIdx = 0;
-
-        logDebug(`Sender: ${VERSION} Quasar Start for ${file.name} (${numChunks} chunks)`);
         
-        // v02.1.38: Strict Global Quota - DELETED Lead-In Cluster (Zero-Discard entry)
+        // v02.1.39 (Patch 24.4): Fortress Resume Recovery
+        let chunkIdx = isResumingRef.current ? lastSuccessfulChunkIdxRef.current : 0;
+        isResumingRef.current = false;
+
+        logDebug(`Sender: ${VERSION} ${chunkIdx > 0 ? 'RESUMING' : 'Quasar Start'} for ${file.name} (${numChunks} chunks)`);
+        
         while (chunkIdx < numChunks) {
             if (!isActive.current) return;
+
+            // v02.1.39 (Patch 24.4): Stall Watchdog (Stall = Speed < 0.2 MB/s for 10s)
+            if (transferSpeed !== null && transferSpeed < 0.2 && statusRef.current === 'transferring') {
+                if (!stallWatchdogRef.current) {
+                    stallWatchdogRef.current = setTimeout(() => {
+                        logDebug("🛰️ Stall Detected (<0.2MB/s). Triggering Fortress Auto-Resume...");
+                        lastSuccessfulChunkIdxRef.current = chunkIdx;
+                        isResumingRef.current = true;
+                        // Restart pipes but keep progress
+                        dataChannelsRef.current.forEach(dc => { try { dc.close(); } catch(e) {} });
+                        peersRef.current.forEach(p => { try { p.close(); } catch(e) {} });
+                        if (wsRef.current) setupWebRTC(wsRef.current, true, 0); 
+                    }, 10000);
+                }
+            } else {
+                if (stallWatchdogRef.current) {
+                    clearTimeout(stallWatchdogRef.current);
+                    stallWatchdogRef.current = null;
+                }
+            }
 
             const totalBuffered = dataChannelsRef.current.reduce(
                 (acc, c) => acc + (c?.readyState === 'open' ? c.bufferedAmount : 0), 0
             );
 
-            // v02.1.39 (Patch 24.3): Pulse BDP (Dynamic Power Pacer)
-            const bdpLimit = Math.max(16 * 1024 * 1024, Math.min(256 * 1024 * 1024, (currentMBpsRef.current * 1024 * 1024 * avgRTTRef.current * 3.0)));
+            // v02.1.39 (Patch 24.4): Fortress BDP (Aggressive 4.0x Pressure)
+            const bdpLimit = Math.max(16 * 1024 * 1024, Math.min(256 * 1024 * 1024, (currentMBpsRef.current * 1024 * 1024 * avgRTTRef.current * 4.0)));
 
             if (totalBuffered < bdpLimit) {
-                // v02.1.39 (Patch 24.3): Dual-Pool Pulse Load-Balancer
                 const openChannels = dataChannelsRef.current.filter(c => c?.readyState === 'open');
                 
-                // Categorize into Booster (P2P) and Anchor (Relay)
-                const boosters = openChannels.filter(c => parseInt(c.label.split('-').pop() || '0') >= 4);
-                const anchors = openChannels.filter(c => parseInt(c.label.split('-').pop() || '0') < 4);
+                // v02.1.39 (Patch 24.4): Booster-Skewed Load Balancer
+                const boosters = openChannels.filter(c => {
+                    const label = c.label || "";
+                    const parts = label.split('-');
+                    const idx = parseInt(parts[parts.length - 1] || '0');
+                    return idx >= 4;
+                });
+                const anchors = openChannels.filter(c => {
+                    const label = c.label || "";
+                    const parts = label.split('-');
+                    const idx = parseInt(parts[parts.length - 1] || '0');
+                    return idx < 4;
+                });
 
                 let dc: RTCDataChannel | undefined;
                 if (boosters.length > 0 && Math.random() < 0.98) {
-                    // Shift 98% of traffic to High-Speed Boosters if available
                     dc = boosters[chunkIdx % boosters.length];
                 } else if (openChannels.length > 0) {
                     dc = openChannels[chunkIdx % openChannels.length];
@@ -896,31 +929,26 @@ function InstantDropContent() {
                     packet.set(chunkData, 12);
 
                     try {
-                        if (dc) dc.send(packet);
+                        dc.send(packet);
                         totalSentBytesRef.current += packet.byteLength;
                         chunkIdx++;
 
-                        // v02.1.39 (Patch 24.3): Device-Aware UI Pacing (Universal Scale)
-                        // At high speeds (>10MB/s), update less frequently to save CPU for the network pipe.
-                        const pulseFreq = currentMBpsRef.current > 5 ? 200 : 100;
+                        // v02.1.39 (Patch 24.4): Fortress UI Pacing
+                        const pulseFreq = currentMBpsRef.current > 8 ? 250 : 100;
                         if (chunkIdx % pulseFreq === 0 || chunkIdx === numChunks - 1) {
                             setProgress(Math.floor((chunkIdx / numChunks) * 100));
                         }
                     } catch (e) {
-                        // v02.1.39 (Patch 4): Log error to prevent silent stalls
                         if (Math.random() < 0.05) logDebug(`Sender Loop Error (Chunk ${chunkIdx}): ${e instanceof Error ? e.message : 'Unknown'}`);
-                        // Channel slammed or packet too large, loop will retry
+                        await new Promise(r => setTimeout(r, 10)); // Yield on congestion
                     }
                 } else {
-                    // v02.1.39 (Patch 2): No channels ready yet, yield to prevent freeze
-                    await new Promise(res => setTimeout(res, 50));
+                    await new Promise(res => setTimeout(res, 100));
                 }
             } else {
-                // Throttle: v02.1.38 Pulse Pacing (Background Resilient)
-                if (Math.random() < 0.01) logDebug(`Sender: Quasar Wait... Buffer at ${Math.round(totalBuffered/1024/1024)}MB`);
                 await new Promise(res => {
-                    requestAnimationFrame(() => res(null)); // UI-friendly yield
-                    setTimeout(res, 5); // Background fallback
+                    requestAnimationFrame(() => res(null));
+                    setTimeout(res, 5);
                 });
             }
         }
@@ -1340,7 +1368,7 @@ function InstantDropContent() {
                     </div>
                     <h1 className="text-4xl md:text-5xl font-bold text-foreground mb-4">Turbo Drop</h1>
                     <p className="text-xs text-indigo-600 font-black tracking-[0.2em] uppercase mb-2">{VERSION} 
- Liquid Fidelity (Smooth Batching)</p>
+ Fortress Velocity</p>
                     <p className="text-lg text-muted-foreground max-w-2xl mx-auto">
                         The ultimate high-speed file sharing app. Transfer photos and large files (up to 200MB) from desktop to mobile or mobile to mobile instantly.
                     </p>
