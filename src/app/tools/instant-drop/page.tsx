@@ -11,8 +11,8 @@ import { Footer } from "@/components/layout/Footer";
 import { useUsage } from "@/hooks/useUsage";
 import { PaywallModal } from "@/components/layout/PaywallModal";
 
-// v02.1.65 (Patch 26.5: Airtel Fortress Calibration)
-const VERSION = "v02.1.65 (Airtel Fortress)";
+// v02.1.66 (Patch 26.6: Ghost Watchdog Exorcism)
+const VERSION = "v02.1.66 (Exorcist GPE)";
 const PIPES = 3; 
 const CHANNELS_PER_PIPE = 4;
 const CHANNELS = 12; 
@@ -215,6 +215,10 @@ function InstantDropContent() {
 
     const resetSessionRefs = () => {
         logDebug("Clearing Session Refs for new transfer...");
+        if (stallWatchdogRef.current) {
+            clearTimeout(stallWatchdogRef.current);
+            stallWatchdogRef.current = null;
+        }
         dataChannelsRef.current = [];
         channelFileIndex.current = new Array(CHANNELS).fill(0);
         fileBuffers.current.clear();
@@ -1003,11 +1007,13 @@ ${capturedLogsRef.current.join('\n')}
         while (chunkIdx < numChunks) {
             if (!isActive.current) return;
 
-            // v02.1.39 (Patch 24.4): Stall Watchdog (Stall = Speed < 0.2 MB/s for 10s)
-            if (transferSpeed !== null && transferSpeed < 0.2 && statusRef.current === 'transferring') {
+            // v02.1.66 (Patch 26.6): Ghost Watchdog Exorcism
+            // Monitor real-time speed ref instead of state. 15s warmup guard.
+            const currentSpeed = currentMBpsRef.current || 0;
+            if (currentSpeed < 0.2 && statusRef.current === 'transferring' && chunkIdx > 20) {
                 if (!stallWatchdogRef.current) {
                     stallWatchdogRef.current = setTimeout(() => {
-                        logDebug("🛰️ Stall Detected (<0.2MB/s). Triggering Fortress Auto-Resume...");
+                        logDebug(`🛰️ Stall Detected (${currentSpeed.toFixed(2)}MB/s). Triggering Fortress Auto-Resume...`);
                         lastSuccessfulChunkIdxRef.current = chunkIdx;
                         isResumingRef.current = true;
                         
@@ -1027,7 +1033,7 @@ ${capturedLogsRef.current.join('\n')}
                         dataChannelsRef.current.forEach(dc => { try { dc.close(); } catch(e) {} });
                         peersRef.current.forEach(p => { try { p.close(); } catch(e) {} });
                         if (wsRef.current) setupWebRTC(wsRef.current, true, 0); 
-                    }, 10000);
+                    }, 15000); // v02.1.66: 15s Resilience
                 }
             } else {
                 if (stallWatchdogRef.current) {
