@@ -265,6 +265,16 @@ function InstantDropContent() {
         currentFileReceivedRef.current.clear();
         totalReceivedChunksCountRef.current = 0;
         isActive.current = false;
+        
+        // v02.1.80: Full Memory Hygiene (No-OR Hardening)
+        lastSuccessfulChunkIdxRef.current = 0;
+        isResumingRef.current = false;
+        setCurrentFileIndex(0);
+        setProgress(0);
+        setTransferSpeed(null);
+        setTotalFiles(0);
+        setIncomingMeta(null);
+        
         setStatus('disconnected'); // v02.1.80: UI State Reset
         // v02.1.68: Persistent Lock - Handshake is NOT cleared here.
         // It's only cleared inside startFileTransfer once the loop is safe.
@@ -516,6 +526,17 @@ ${capturedLogsRef.current.join('\n')}
 
             self.onmessage = function(e) {
                 const { type, fileIdx, chunkIdx, meta } = e.data;
+
+                // v02.1.80: Persistent State Cleanup (No-OR Hardening)
+                if (type === 'RESET_WORKER') {
+                    fileBuffers = new Map();
+                    fileMetas = new Map();
+                    receivedChunkIndices = new Map();
+                    reassembledFiles = new Set();
+                    expectedTotalChunks = new Map();
+                    expectedTotalFiles = -1;
+                    return;
+                }
 
                 if (type === 'metadata') {
                     fileMetas.set(fileIdx, meta);
