@@ -11,8 +11,8 @@ import { Footer } from "@/components/layout/Footer";
 import { useUsage } from "@/hooks/useUsage";
 import { PaywallModal } from "@/components/layout/PaywallModal";
 
-// v02.1.88 (Signal Fortress: Velocity Prime) - Sentinel Guard & GPE Elasticity
-const VERSION = "v02.1.88 (Signal Fortress)";
+// v02.1.89 (Signal Fortress: Multi-Pipe Recovery) - Full Sentinel Reset & Census Diagnostic
+const VERSION = "v02.1.89 (Signal Fortress)";
 const PIPES = 3; 
 const CHANNELS_PER_PIPE = 4;
 const CHANNELS = 12; 
@@ -1212,7 +1212,9 @@ ${capturedLogsRef.current.join('\n')}
                         });
 
                         resetSessionRefs(); // v02.1.67: Unified Atomic Reset
-                        if (wsRef.current) setupWebRTC(wsRef.current, true, 0); 
+                        if (wsRef.current) {
+                            for (let p = 0; p < PIPES; p++) setupWebRTC(wsRef.current, true, p);
+                        }
                     }, 15000); // v02.1.66: 15s Resilience
                 }
             } else {
@@ -1245,7 +1247,7 @@ ${capturedLogsRef.current.join('\n')}
                 blockedLoopCount.current++;
                 if (blockedLoopCount.current % 500 === 0) {
                     const statusCensus = dataChannelsRef.current.map((c, idx) => `${idx}:${c?.readyState || 'null'}`).join(',');
-                    logDebug(`🛰️ FLOW BLOCKED: GPE=${isGPEBlocked} (${Math.round(gpeInFlightBytesRef.current/1024)}KB / ${Math.round(GPE_CAP/1024)}KB), BDP=${totalBuffered >= bdpLimit} (${Math.round(totalBuffered/1024)}KB), Pipes=${openChannels.length}`);
+                    logDebug(`🛰️ FLOW BLOCKED: GPE=${isGPEBlocked} (${Math.round(gpeInFlightBytesRef.current/1024)}KB / ${Math.round(GPE_CAP/1024)}KB), BDP=${totalBuffered >= bdpLimit} (${Math.round(totalBuffered/1024)}KB), Pipes=${openChannels.length} [${statusCensus}]`);
                 }
             } else {
                 blockedLoopCount.current = 0;
@@ -1342,11 +1344,13 @@ ${capturedLogsRef.current.join('\n')}
                  lastProgressTimeRef.current = now; // Prevent ripple storms
                  broadcastMetadata(); 
                  // If Pipe-0 is stuck, force a restart
-                 const pc0 = peersRef.current[0];
-                 if (pc0 && (pc0.iceConnectionState !== 'connected' && pc0.iceConnectionState !== 'completed')) {
-                     logDebug("🛡️ Pipe-0 Anchor RECOVERY: Restarting ICE.");
-                     pc0.restartIce();
-                 }
+                 // v02.1.89: Full Multi-Pipe Anchor RECOVERY
+                 peersRef.current.forEach((pc, idx) => {
+                     if (pc && (pc.iceConnectionState !== 'connected' && pc.iceConnectionState !== 'completed')) {
+                         logDebug(`🛡️ Pipe-${idx} RECOVERY: Restarting ICE.`);
+                         pc.restartIce();
+                     }
+                 });
             }
         }
         
