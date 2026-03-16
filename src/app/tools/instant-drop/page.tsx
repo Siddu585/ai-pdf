@@ -11,8 +11,8 @@ import { Footer } from "@/components/layout/Footer";
 import { useUsage } from "@/hooks/useUsage";
 import { PaywallModal } from "@/components/layout/PaywallModal";
 
-// v02.1.77 (Patch 27.7: Signal Fortress & Buffer Hardening)
-const VERSION = "v02.1.77 (Signal Fortress)";
+// v02.1.78 (Patch 27.8: Vercel Recovery & Signal Fortress)
+const VERSION = "v02.1.78 (Signal Fortress)";
 const PIPES = 3; 
 const CHANNELS_PER_PIPE = 4;
 const CHANNELS = 12; 
@@ -143,7 +143,6 @@ function InstantDropContent() {
             logDebug(`[PRE-FLIGHT] Probing Backend: ${url}`);
             try {
                 const res = await fetch(url);
-                // v02.1.76: Soft Success - any response means we can talk to the server
                 if (res.status < 500) {
                     logDebug(`✅ [PRE-FLIGHT] Backend REACHABLE (Status: ${res.status}). Signal GREEN.`);
                     setWsConnected(true);
@@ -1640,7 +1639,7 @@ ${capturedLogsRef.current.join('\n')}
         const script = document.createElement('script');
         script.src = "https://accounts.google.com/gsi/client";
         script.onload = () => {
-            const client = (window as any).google.accounts.oauth2.initTokenClient({
+            const client = (window as unknown as { google: { accounts: { oauth2: { initTokenClient: (config: any) => any } } } }).google.accounts.oauth2.initTokenClient({
                 client_id: clientId,
                 scope: 'https://www.googleapis.com/auth/photoslibrary.appendonly',
                 callback: async (response: any) => {
@@ -1766,7 +1765,7 @@ Buffer-Bloat Grade: ${d.bufferBloatGrade}
                                 <Button 
                                     variant="outline" 
                                     className="w-full border-indigo-200 text-indigo-600 hover:bg-indigo-50 font-bold py-6 gap-2"
-                                    onClick={() => (window as any).__RUN_STRESS_TEST__(2, 62)}
+                                    onClick={() => (window as unknown as { __RUN_STRESS_TEST__: (files: number, size: number) => void }).__RUN_STRESS_TEST__(2, 62)}
                                 >
                                     <Zap className="w-5 h-5" />
                                     Start 125MB Engineering Stress Test
@@ -2022,7 +2021,7 @@ Buffer-Bloat Grade: ${d.bufferBloatGrade}
                                 <div className="flex flex-col items-center justify-center p-6 bg-green-50 dark:bg-green-900/10 border border-green-200 dark:border-green-800 rounded-xl space-y-4">
                                     <CheckCircle className="w-12 h-12 text-green-500" />
                                     <h2 className="text-xl font-bold text-green-700 dark:text-green-400">{receivedFiles.length} Files Received</h2>
-                                    <p className="text-sm text-muted-foreground text-center">Tap 'Save' for individual files or download all.</p>
+                                    <p className="text-sm text-muted-foreground text-center">Tap &apos;Save&apos; for individual files or download all.</p>
 
                                     <div className="flex gap-2 w-full mb-3">
                                         <Button className="flex-1 bg-indigo-600 hover:bg-indigo-700 text-white font-bold h-14 shadow-lg shadow-indigo-500/20" onClick={downloadAll}>
