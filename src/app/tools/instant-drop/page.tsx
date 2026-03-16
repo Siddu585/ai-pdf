@@ -11,8 +11,8 @@ import { Footer } from "@/components/layout/Footer";
 import { useUsage } from "@/hooks/useUsage";
 import { PaywallModal } from "@/components/layout/PaywallModal";
 
-// v02.1.85 (Signal Fortress: Build Recovery) - Unified UI Guards & Build Fix
-const VERSION = "v02.1.85 (Signal Fortress)";
+// v02.1.86 (Signal Fortress: Final Build Fix) - Unified UI Guards & Build Resilience
+const VERSION = "v02.1.86 (Signal Fortress)";
 const PIPES = 3; 
 const CHANNELS_PER_PIPE = 4;
 const CHANNELS = 12; 
@@ -1964,7 +1964,7 @@ Buffer-Bloat Grade: ${d.bufferBloatGrade}
                                     </div>
 
                                     {/* Overall Batch Progress */}
-                                    {mode === 'send' && status === 'transferring' && files.length > 1 && (
+                                    {mode === 'send' && (status === 'transferring' || status === 'done-waiting') && files.length > 1 && (
                                         <div className="space-y-2 pb-4 border-b border-border/50">
                                             <div className="flex justify-between text-xs font-bold text-indigo-600 dark:text-indigo-400">
                                                 <span>OVERALL BATCH PROGRESS</span>
