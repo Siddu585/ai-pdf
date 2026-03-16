@@ -615,7 +615,14 @@ ${capturedLogsRef.current.join('\n')}
                                     }
                                 }
                                 try {
-                                    self.postMessage({ type: 'reassembled', fileIdx, name: meta.name, fileType: meta.fileType, chunks: [combined.buffer] }, [combined.buffer]);
+                                    self.postMessage({ 
+                                        type: 'reassembled', 
+                                        fileIdx, 
+                                        name: meta.name, 
+                                        fileType: meta.fileType, 
+                                        chunks: [combined.buffer],
+                                        chunkCount: chunks.length 
+                                    }, [combined.buffer]);
                                 } catch (err) {
                                     self.postMessage({ type: 'error', msg: 'PostMessage Transfer Failed: ' + err });
                                 }
@@ -2087,7 +2094,7 @@ Buffer-Bloat Grade: ${d.bufferBloatGrade}
 
                                             <p className="text-sm font-semibold truncate">Current File Part ({currentFileIndex + 1}): {incomingMeta?.name}</p>
                                             <div className="flex justify-between text-sm font-medium">
-                                                <span>Transferring File Data...</span>
+                                                <span>{status === 'done-waiting' ? 'Finalizing Reassembly...' : 'Transferring File Data...'}</span>
                                                 <span>{progress}%</span>
                                             </div>
                                             <div className="w-full bg-muted rounded-full h-3">
