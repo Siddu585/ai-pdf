@@ -11,8 +11,8 @@ import { Footer } from "@/components/layout/Footer";
 import { useUsage } from "@/hooks/useUsage";
 import { PaywallModal } from "@/components/layout/PaywallModal";
 
-// v02.1.71 (Patch 27.1: Signal Sentinel & Relay Hardening)
-const VERSION = "v02.1.71 (Sentinel Signal)";
+// v02.1.72 (Patch 27.2: Signal Pulse & TURN Migration)
+const VERSION = "v02.1.72 (Signal Pulse)";
 const PIPES = 3; 
 const CHANNELS_PER_PIPE = 4;
 const CHANNELS = 12; 
@@ -45,17 +45,14 @@ const ICE_SERVERS = {
     iceServers: [
         { urls: "stun:stun.l.google.com:19302" },
         { urls: "stun:stun1.l.google.com:19302" },
-        { urls: "stun:stun2.l.google.com:19302" },
-        { urls: "stun:stun.cloudflare.com:3478" },
-        { urls: "stun:stun.nextcloud.com:3478" },
-        // GUARANTEED PUBLIC RELAY (openrelay.metered.ca)
+        // v02.1.72: Reinforced Private TURN (NMI Anchor)
         {
             urls: [
-                "turn:openrelay.metered.ca:80",
-                "turn:openrelay.metered.ca:443",
-                "turn:openrelay.metered.ca:443?transport=tcp"
+                "turn:swap-pdf.metered.live:80",
+                "turn:swap-pdf.metered.live:443",
+                "turn:swap-pdf.metered.live:443?transport=tcp"
             ],
-            username: "openrelayproject",
+            username: "openrelayproject", // Keep public for now, switch to .env if needed
             credential: "openrelayproject"
         }
     ]
@@ -79,6 +76,7 @@ function InstantDropContent() {
     const [compressImages, setCompressImages] = useState(false);
     const [isCompressing, setIsCompressing] = useState(false);
     const [transferSpeed, setTransferSpeed] = useState<number | null>(null); // MB/s
+    const [wsConnected, setWsConnected] = useState(false); // v02.1.72: Signal Pulse
 
     const wsRef = useRef<WebSocket | null>(null);
     const capturedLogsRef = useRef<string[]>([]);
@@ -780,7 +778,8 @@ ${capturedLogsRef.current.join('\n')}
             let pipePolicy: RTCIceTransportPolicy = (useFallback || pipeIdx === 0) ? 'relay' : 'all';
             const peer = new RTCPeerConnection({ 
                 iceServers: currentRelays,
-                iceTransportPolicy: pipePolicy
+                iceTransportPolicy: pipePolicy,
+                iceCandidatePoolSize: 10 // v02.1.72: Speed up handshake
             });
             // v02.1.69: Atomic Peer Rollover (Anti-Leak)
             if (peersRef.current[pipeIdx]) {
@@ -1669,8 +1668,11 @@ Buffer-Bloat Grade: ${d.bufferBloatGrade}
                         <Smartphone className="w-12 h-12 text-indigo-500" />
                     </div>
                     <h1 className="text-4xl md:text-5xl font-bold text-foreground mb-4">Turbo Drop</h1>
-                    <p className="text-xs text-indigo-600 font-black tracking-[0.2em] uppercase mb-2">{VERSION} 
- Fortress Velocity</p>
+                    <p className="text-xs text-indigo-600 font-black tracking-[0.2em] uppercase mb-2 flex items-center justify-center gap-2">
+                        <span className={`w-2 h-2 rounded-full ${wsConnected ? 'bg-green-500 animate-pulse' : 'bg-red-500'}`} />
+                        {VERSION} 
+                        Fortress Velocity
+                    </p>
                     <p className="text-lg text-muted-foreground max-w-2xl mx-auto">
                         The ultimate high-speed file sharing app. Transfer photos and large files (up to 200MB) from desktop to mobile or mobile to mobile instantly.
                     </p>
