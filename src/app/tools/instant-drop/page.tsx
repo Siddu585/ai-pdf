@@ -11,8 +11,8 @@ import { Footer } from "@/components/layout/Footer";
 import { useUsage } from "@/hooks/useUsage";
 import { PaywallModal } from "@/components/layout/PaywallModal";
 
-// v02.1.91 (Velocity Prime) - Adaptive MTU Probing (5.0MB/s Target)
-const VERSION = "v02.1.91 (Velocity Prime)";
+// v02.1.92 (Adaptive Prime) - Byte-Offset Adaptive MTU (5.0MB/s+ Target)
+const VERSION = "v02.1.92 (Adaptive Prime)";
 const PIPES = 3; 
 const CHANNELS_PER_PIPE = 4;
 const CHANNELS = 12; 
@@ -549,95 +549,74 @@ ${capturedLogsRef.current.join('\n')}
                     // v02.1.87: Strict Metadata Deduplication to prevent buffer storm
                     if (fileMetas.has(fileIdx)) return;
                     fileMetas.set(fileIdx, meta);
-                    if (!fileBuffers.has(fileIdx)) fileBuffers.set(fileIdx, []);
-                    if (!receivedChunkIndices.has(fileIdx)) receivedChunkIndices.set(fileIdx, new Set());
                     
-                    // v02.1.39 (Patch 14): Metadata may arrive LATE. Check if reassembly is now possible.
-                    const expected = expectedTotalChunks.get(fileIdx);
-                    const indices = receivedChunkIndices.get(fileIdx);
-                    if (expected !== undefined && indices.size === expected) {
-                         const chunks = fileBuffers.get(fileIdx);
-                         // v02.1.88 (Match-OR): Unify Reassembly Turbo for Late Metadata
-                         const totalSize = chunks.reduce((acc, c) => acc + (c ? c.length : 0), 0);
-                         const combined = new Uint8Array(totalSize);
-                         let offset = 0;
-                         for (let i = 0; i < chunks.length; i++) {
-                             if (chunks[i]) {
-                                 combined.set(chunks[i], offset);
-                                 offset += chunks[i].length;
-                             }
-                         }
-                         try {
-                            self.postMessage({ 
-                                type: 'reassembled', 
-                                fileIdx, 
-                                name: meta.name, 
-                                fileType: meta.fileType, 
-                                chunks: [combined.buffer],
-                                chunkCount: chunks.length 
-                            }, [combined.buffer]);
-                         } catch (err) {
-                            self.postMessage({ type: 'error', msg: 'PostMessage Transfer Failed: ' + err });
-                         }
-                         fileBuffers.delete(fileIdx); fileMetas.delete(fileIdx); indices.clear(); expectedTotalChunks.delete(fileIdx); reassembledFiles.add(fileIdx);
+                    // v02.1.92: Pre-allocate buffer based on size (Absolute Reliability)
+                    if (meta.size > 0 && !fileBuffers.has(fileIdx)) {
+                        fileBuffers.set(fileIdx, new Uint8Array(meta.size));
+                        receivedChunkIndices.set(fileIdx, 0); // Re-purpose as bytesReceived counter
                     }
+                    
+                    // v02.1.39 (Patch 14): Metadata may arrive LATE.
+                    checkCompletion(fileIdx);
                 } else if (type === 'chunk') {
                     if (chunkIdx === 0xFFFFFFFD) { // Batch EOF
                         expectedTotalFiles = e.data.payloadCount;
                     } else {
                         if (reassembledFiles.has(fileIdx)) return;
                         
-                        // v02.1.39 (Patch 23): Sector EOF & Zero-Copy Proxy
+                        // v02.1.39 (Patch 23): Sector EOF
                         if (chunkIdx === 0xFFFFFFFE) { 
                             const totalChunks = e.data.payloadCount;
                             expectedTotalChunks.set(fileIdx, totalChunks);
                         } else {
-                            if (!fileBuffers.has(fileIdx)) fileBuffers.set(fileIdx, []);
-                            if (!receivedChunkIndices.has(fileIdx)) receivedChunkIndices.set(fileIdx, new Set());
-
-                            const chunks = fileBuffers.get(fileIdx);
-                            const indices = receivedChunkIndices.get(fileIdx);
+                            // v02.1.92: Byte-Offset Placement
+                            const buffer = fileBuffers.get(fileIdx);
+                            const meta = fileMetas.get(fileIdx);
+                            const byteOffset = e.data.byteOffset; // New field from v02.1.92 sender
                             
-                            if (!indices.has(chunkIdx) && chunkIdx < 0xEFFFFFFF) {
-                                chunks[chunkIdx] = new Uint8Array(e.data.originalBuffer, e.data.offset);
-                                indices.add(chunkIdx);
+                            if (buffer && byteOffset !== undefined) {
+                                const chunk = new Uint8Array(e.data.originalBuffer, e.data.offset);
+                                buffer.set(chunk, byteOffset);
+                                const bytesBefore = receivedChunkIndices.get(fileIdx) || 0;
+                                receivedChunkIndices.set(fileIdx, bytesBefore + chunk.length);
+                            } else if (!buffer) {
+                                // Buffer not ready yet (metadata late) - stash chunk in a temp map
+                                if (!self.stashedChunks) self.stashedChunks = new Map();
+                                if (!self.stashedChunks.has(fileIdx)) self.stashedChunks.set(fileIdx, []);
+                                self.stashedChunks.get(fileIdx).push({ byteOffset, data: e.data.originalBuffer, headerOffset: e.data.offset });
                             }
                         }
+                        checkCompletion(fileIdx);
+                    }
+                }
+                
+                function checkCompletion(fIdx) {
+                    const meta = fileMetas.get(fIdx);
+                    const buffer = fileBuffers.get(fIdx);
+                    // v02.1.92: Flush stashed chunks if buffer just became ready
+                    if (buffer && self.stashedChunks && self.stashedChunks.has(fIdx)) {
+                        const stashed = self.stashedChunks.get(fIdx);
+                        stashed.forEach(s => {
+                            const chunk = new Uint8Array(s.data, s.headerOffset);
+                            buffer.set(chunk, s.byteOffset);
+                            const bytesBefore = receivedChunkIndices.get(fIdx) || 0;
+                            receivedChunkIndices.set(fIdx, bytesBefore + chunk.length);
+                        });
+                        self.stashedChunks.delete(fIdx);
+                    }
 
-                        // Reassembly check after every chunk/EOF
-                        const expected = expectedTotalChunks.get(fileIdx);
-                        const indices = receivedChunkIndices.get(fileIdx);
-                        if (expected !== undefined && indices && indices.size === expected) {
-                            const meta = fileMetas.get(fileIdx);
-                            if (meta) {
-                                const chunks = fileBuffers.get(fileIdx);
-                                // v02.1.84: Reassembly Turbo - Concatenate in Worker
-                                // construction of a single large buffer avoids main-thread thrashing
-                                const totalSize = chunks.reduce((acc, c) => acc + (c ? c.length : 0), 0);
-                                const combined = new Uint8Array(totalSize);
-                                let offset = 0;
-                                for (let i = 0; i < chunks.length; i++) {
-                                    if (chunks[i]) {
-                                        combined.set(chunks[i], offset);
-                                        offset += chunks[i].length;
-                                    }
-                                }
-                                try {
-                                    self.postMessage({ 
-                                        type: 'reassembled', 
-                                        fileIdx, 
-                                        name: meta.name, 
-                                        fileType: meta.fileType, 
-                                        chunks: [combined.buffer],
-                                        chunkCount: chunks.length 
-                                    }, [combined.buffer]);
-                                } catch (err) {
-                                    self.postMessage({ type: 'error', msg: 'PostMessage Transfer Failed: ' + err });
-                                }
-                                fileBuffers.delete(fileIdx); fileMetas.delete(fileIdx); indices.clear(); expectedTotalChunks.delete(fileIdx); reassembledFiles.add(fileIdx);
-                            } else {
-                                self.postMessage({ type: 'need-metadata', fileIdx });
-                            }
+                    if (meta && buffer) {
+                        const bytesReceived = receivedChunkIndices.get(fIdx);
+                        if (bytesReceived >= meta.size) {
+                            self.postMessage({ 
+                                type: 'reassembled', 
+                                fileIdx: fIdx, 
+                                name: meta.name, 
+                                fileType: meta.fileType, 
+                                chunks: [buffer.buffer],
+                                chunkCount: -1 // Sequence count no longer needed for reassembly
+                            }, [buffer.buffer]);
+                            fileBuffers.delete(fIdx); fileMetas.delete(fIdx); receivedChunkIndices.delete(fIdx); reassembledFiles.add(fIdx);
                         }
                     }
                 }
@@ -1166,35 +1145,28 @@ ${capturedLogsRef.current.join('\n')}
         
         // v02.1.91: Adaptive MTU Probing
         const getCurrentChunkSize = () => dynamicChunkSizeRef.current;
-        let numChunks = Math.ceil(buffer.byteLength / getCurrentChunkSize());
-        
-        // v02.1.39 (Patch 24.4): Fortress Resume Recovery
-        let chunkIdx = isResumingRef.current ? lastSuccessfulChunkIdxRef.current : 0;
+        let byteOffset = isResumingRef.current ? lastSuccessfulChunkIdxRef.current : 0; // Simple resume for now
+        let chunkSeqIdx = 0; // Sequential counter for stats
         isResumingRef.current = false;
 
-        logDebug(`Sender: ${VERSION} ${chunkIdx > 0 ? 'RESUMING' : 'Quasar Start'} for ${file.name} (${numChunks} chunks)`);
+        logDebug(`Sender: ${VERSION} ${byteOffset > 0 ? 'RESUMING' : 'Quasar Start'} for ${file.name} (Size: ${file.size} bytes)`);
         
         // v02.1.52 (Patch 25.2): GPE Counter Reset
-        // Prevents "Counter Leak" where orphan chunks (less than 10) stay in the gate between files.
         gpeInFlightBytesRef.current = 0;
 
-        while (chunkIdx < numChunks) {
+        while (byteOffset < buffer.byteLength) {
             if (!isActive.current) return;
 
             // v02.1.67 (Patch 26.7): Sentinel Pacer Guard
-            // Increase warmup grace for high-speed Mobile starts. Monitor currentMBpsRef.
             const currentSpeed = currentMBpsRef.current || 0;
-            // v02.1.82: Stall Watchdog Protection (Zinc Sync Ultra)
-            // Never reset if we are already in 'done-waiting' (verifying)
-            if (currentSpeed < 0.2 && statusRef.current === 'transferring' && chunkIdx >= 0) {
+            // v02.1.82: Stall Watchdog Protection
+            if (currentSpeed < 0.2 && statusRef.current === 'transferring') {
                 if (!stallWatchdogRef.current) {
                     stallWatchdogRef.current = setTimeout(() => {
                         logDebug(`🛰️ Stall Detected (${currentSpeed.toFixed(2)}MB/s). Triggering Sentinel Auto-Resume...`);
-                        lastSuccessfulChunkIdxRef.current = chunkIdx;
+                        lastSuccessfulChunkIdxRef.current = byteOffset; // Store byteOffset for resume
                         isResumingRef.current = true;
                         
-                        // v02.1.50 (Phase 3): Booster-Anchor Symmetry Cloning
-                        // Force Pipe-0 to take over metadata broadcast to "re-ping" receiver
                         sendControlMsg({
                             type: 'metadata',
                             name: file.name,
@@ -1206,11 +1178,11 @@ ${capturedLogsRef.current.join('\n')}
                             parallelChannels: dataChannelsRef.current.length
                         });
 
-                        resetSessionRefs(true); // v02.1.90: Recovery reset is NON-destructive
+                        resetSessionRefs(true); 
                         if (wsRef.current) {
                             for (let p = 0; p < PIPES; p++) setupWebRTC(wsRef.current, true, p);
                         }
-                    }, 15000); // v02.1.66: 15s Resilience
+                    }, 15000); 
                 }
             } else {
                 if (stallWatchdogRef.current) {
@@ -1223,26 +1195,24 @@ ${capturedLogsRef.current.join('\n')}
                 (acc, c) => acc + (c?.readyState === 'open' ? c.bufferedAmount : 0), 0
             );
 
-            // v02.1.39 (Patch 24.4): Fortress BDP (Aggressive 4.0x Pressure)
-            const bdpLimit = Math.max(16 * 1024 * 1024, Math.min(256 * 1024 * 1024, (currentMBpsRef.current * 1024 * 1024 * avgRTTRef.current * 4.0)));
+            // v02.1.92: Tuned BDP (Reflects 5MB/s Target)
+            const bdpLimit = Math.max(32 * 1024 * 1024, Math.min(512 * 1024 * 1024, (currentMBpsRef.current * 1024 * 1024 * avgRTTRef.current * 8.0)));
 
-            // v02.1.88: Standardized GPE Elasticity (32MB for high-latency mobile)
-            const GPE_CAP = HIGH_WATER_MARK_MAX;
+            // v02.1.88: Standardized GPE Elasticity
+            const GPE_CAP = 64 * 1024 * 1024; // v02.1.92: 64MB for ultra-pro parallelism
             const isGPEBlocked = gpeInFlightBytesRef.current > GPE_CAP;
             
-            // v02.1.65: Hardened Census Loop (Absolute Reliability)
             const openChannels = [];
             for (let i = 0; i < CHANNELS; i++) {
                 const dc = dataChannelsRef.current[i];
                 if (dc && dc.readyState === 'open') openChannels.push(dc);
             }
 
-            // v02.1.57: Unified Block Diagnostic
             if (isGPEBlocked || totalBuffered >= bdpLimit || openChannels.length === 0) {
                 blockedLoopCount.current++;
-                if (blockedLoopCount.current % 500 === 0) {
+                if (blockedLoopCount.current % 10000 === 0) { // Spinning faster, log less
                     const statusCensus = dataChannelsRef.current.map((c, idx) => `${idx}:${c?.readyState || 'null'}`).join(',');
-                    logDebug(`🛰️ FLOW BLOCKED: GPE=${isGPEBlocked} (${Math.round(gpeInFlightBytesRef.current/1024)}KB / ${Math.round(GPE_CAP/1024)}KB), BDP=${totalBuffered >= bdpLimit} (${Math.round(totalBuffered/1024)}KB), Pipes=${openChannels.length} [${statusCensus}]`);
+                    logDebug(`🛰️ FLOW BLOCKED: GPE=${isGPEBlocked} (${Math.round(gpeInFlightBytesRef.current/1024)}KB), BDP=${totalBuffered >= bdpLimit} (${Math.round(totalBuffered/1024)}KB), Pipes=${openChannels.length}`);
                 }
             } else {
                 blockedLoopCount.current = 0;
@@ -1253,67 +1223,44 @@ ${capturedLogsRef.current.join('\n')}
                 if (!gpeBlockedSinceRef.current) gpeBlockedSinceRef.current = Date.now();
                 if (Date.now() - gpeBlockedSinceRef.current > 3000) {
                     logDebug("⚠️ GPE Deadlock detected (3s). Performing Heartbeat Pulse...");
-                    gpeInFlightBytesRef.current = Math.max(0, gpeInFlightBytesRef.current - (2048 * 1024)); // v02.1.64: 2MB Cleared
-                    gpeBlockedSinceRef.current = Date.now(); // Reset timer
-                    sendControlMsg({ type: 'heartbeat', ts: Date.now() }); // Ping receiver
+                    gpeInFlightBytesRef.current = Math.max(0, gpeInFlightBytesRef.current - (4096 * 1024));
+                    gpeBlockedSinceRef.current = Date.now(); 
+                    sendControlMsg({ type: 'heartbeat', ts: Date.now() }); 
                 }
             } else {
                 gpeBlockedSinceRef.current = null;
             }
 
             if (totalBuffered < bdpLimit && !isGPEBlocked && openChannels.length > 0) {
-                // v02.1.39 (Patch 24.4): Booster-Skewed Load Balancer
-                const boosters = openChannels.filter(c => {
-                    const label = c.label || "";
-                    const parts = label.split('-');
-                    const idx = parseInt(parts[parts.length - 1] || '0');
-                    return idx >= 4;
-                });
-                const anchors = openChannels.filter(c => {
-                    const label = c.label || "";
-                    const parts = label.split('-');
-                    const idx = parseInt(parts[parts.length - 1] || '0');
-                    return idx < 4;
-                });
-
-                let dc: RTCDataChannel | undefined;
-                if (boosters.length > 0 && Math.random() < 0.98) {
-                    dc = boosters[chunkIdx % boosters.length];
-                } else if (openChannels.length > 0) {
-                    dc = openChannels[chunkIdx % openChannels.length];
-                }
+                const dc = openChannels[chunkSeqIdx % openChannels.length];
 
                 if (dc && dc.readyState === 'open') {
-                    const currentCS = getCurrentChunkSize();
-                    const offset = chunkIdx * currentCS;
-                    const chunkData = new Uint8Array(buffer, offset, Math.min(currentCS, buffer.byteLength - offset));
+                    const currentCS = dynamicChunkSizeRef.current;
+                    const chunkData = new Uint8Array(buffer, byteOffset, Math.min(currentCS, buffer.byteLength - byteOffset));
 
-                    // v02.1.91: Velocity Prime Pacing
+                    // v02.1.92: Aggressive Velocity Prime Pacing
                     chunksSentSinceScaleRef.current++;
-                    if (chunksSentSinceScaleRef.current > 100) {
+                    if (chunksSentSinceScaleRef.current > 50) { // More frequent scaling
                         chunksSentSinceScaleRef.current = 0;
                         const rtt = avgRTTRef.current || 0;
                         const speed = currentMBpsRef.current || 0;
-                        if (rtt < 0.250 && speed > 0.3 && dynamicChunkSizeRef.current < 512 * 1024) {
-                            dynamicChunkSizeRef.current += 64 * 1024;
+                        // Scale up if stable
+                        if (rtt < 0.200 && speed > 0.5 && dynamicChunkSizeRef.current < 1024 * 1024) {
+                            dynamicChunkSizeRef.current += 128 * 1024;
                             logDebug(`🚀 VELOCITY UP: Scaling MTU to ${Math.round(dynamicChunkSizeRef.current/1024)}KB (RTT: ${Math.round(rtt*1000)}ms, Speed: ${speed.toFixed(2)}MB/s)`);
-                            // Recalculate numChunks for the new size (approximate for the remainder)
-                            const remainingBytes = buffer.byteLength - offset;
-                            const newTotalChunks = chunkIdx + Math.ceil(remainingBytes / dynamicChunkSizeRef.current);
-                            numChunks = newTotalChunks;
                         }
                     }
                     
                     const packet = new Uint8Array(12 + chunkData.byteLength);
                     const view = new DataView(packet.buffer);
                     view.setUint32(0, index, true);
-                    view.setUint32(4, chunkIdx, true);
-                    view.setUint32(8, numChunks, true);
+                    view.setUint32(4, chunkSeqIdx, true); // Still send sequence for logs
+                    view.setUint32(8, byteOffset, true); // v02.1.92: Absolute byte placement
                     packet.set(chunkData, 12);
 
                     try {
-                        // v02.1.53 (Phase 3): Frequent OWTT Probing (Every 10 chunks)
-                        if (chunkIdx % 10 === 0) {
+                        // v02.1.53: OWTT Probing
+                        if (chunkSeqIdx % 20 === 0) {
                             const probePkt = new Uint8Array(16);
                             const probeView = new DataView(probePkt.buffer);
                             probeView.setUint32(0, index, true);
@@ -1324,65 +1271,27 @@ ${capturedLogsRef.current.join('\n')}
 
                         dc.send(packet);
                         totalSentBytesRef.current += packet.byteLength;
-                        gpeInFlightBytesRef.current += packet.byteLength; // Increment GPE tracking
-                        lastProgressTimeRef.current = Date.now(); // v02.1.77: Pulse Reset
-                        chunkIdx++;
-
-                        // v02.1.39 (Patch 24.4): Fortress UI Pacing
-                        const pulseFreq = currentMBpsRef.current > 8 ? 250 : 100;
-                        if (chunkIdx % pulseFreq === 0 || chunkIdx === numChunks - 1) {
-                            setProgress(Math.floor((chunkIdx / numChunks) * 100));
-                        }
-                    } catch (e) {
-                        if (Math.random() < 0.05) logDebug(`Sender Loop Error (Chunk ${chunkIdx}): ${e instanceof Error ? e.message : 'Unknown'}`);
-                        await new Promise(r => setTimeout(r, 10)); // Yield on congestion
+                        gpeInFlightBytesRef.current += packet.byteLength; 
+                        lastProgressTimeRef.current = Date.now();
+                        
+                        byteOffset += chunkData.byteLength; // Increment by actual data size
+                        chunkSeqIdx++;
+                    } catch (e: any) {
+                        logDebug(`❌ DataChannel Send Error: ${e.message}`);
                     }
-                } else {
-                    await new Promise(res => setTimeout(res, 10));
                 }
-            } else {
-                // v02.1.50: GPE Wait State (Yield nicely if blocked by gate or buffer)
-                await new Promise(res => {
-                    requestAnimationFrame(() => res(null));
-                    setTimeout(res, isGPEBlocked ? 2 : 5); 
-                });
-            }
-
-            // v02.1.77: GPE Deadlock Buster
-            // If we are stalled but have open pipes, force metadata broadcast and resume.
-            const now = Date.now();
-            if (now - lastProgressTimeRef.current > 10000 && statusRef.current === 'transferring') {
-                 logDebug("⚠️ GPE Deadlock Buster: Stall > 10s. Forcing pipe health check...");
-                 lastProgressTimeRef.current = now; // Prevent ripple storms
-                 broadcastMetadata(); 
-                 // If Pipe-0 is stuck, force a restart
-                 // v02.1.89: Full Multi-Pipe Anchor RECOVERY
-                 peersRef.current.forEach((pc, idx) => {
-                     if (pc && (pc.iceConnectionState !== 'connected' && pc.iceConnectionState !== 'completed')) {
-                         logDebug(`🛡️ Pipe-${idx} RECOVERY: Restarting ICE.`);
-                         pc.restartIce();
-                     }
-                 });
             }
         }
-        
+
         setProgress(100);
 
-        // v02.1.39: Multi-Pipe Probe + EOF Broadcast
+        // v02.1.92: Multi-Pipe EOF Broadcast (Byte-Offset Aware)
         const eofPacket = new Uint8Array(12);
         const eofView = new DataView(eofPacket.buffer);
         eofView.setUint32(0, index, true);
         eofView.setUint32(4, 0xFFFFFFFE, true); 
-        eofView.setUint32(8, numChunks, true); 
+        eofView.setUint32(8, chunkSeqIdx, true); // Total chunks sent
         
-        const probePacket = new Uint8Array(12);
-        const probeView = new DataView(probePacket.buffer);
-        probeView.setUint32(0, index, true);
-        probeView.setUint32(4, 0xFFFFFFF9, true); // Active Singularity Probe
-        probeView.setUint32(8, numChunks, true);
-
-        // v02.1.39 (Patch 3): Send ONLY the sector-EOF. Probe removed — it caused premature
-        // 'Verifying Reassembly' on the receiver before data arrived (race condition).
         dataChannelsRef.current.forEach(dc => {
             if (dc?.readyState === 'open') {
                 dc.send(eofPacket);
@@ -1558,7 +1467,9 @@ ${capturedLogsRef.current.join('\n')}
             } else {
                 // Regular Chunk
                 const incomingMeta = fileMetas.current.get(fileIdx);
-                const payloadCount = (data.byteLength >= 12) ? view.getUint32(8, true) : -1;
+                // v02.1.92: Extract absolute byteOffset from header (bytes 8-11)
+                // We repurpose byte 8-11 which was redundant numChunks in v91
+                const byteOffset = (data.byteLength >= 12) ? view.getUint32(8, true) : undefined;
                 
                 // v02.1.39 (Patch 18/19): Robust Progress & Worker Proxy
                 const currentChunksReceived = (currentFileReceivedRef.current.get(fileIdx) || 0) + 1;
@@ -1569,7 +1480,8 @@ ${capturedLogsRef.current.join('\n')}
                     type: 'chunk',
                     fileIdx,
                     chunkIdx,
-                    payloadCount, // v02.1.39 (Patch 19): CRITICAL - Proxy signaling to worker
+                    byteOffset, // v02.1.92: CRITICAL - Pass absolute offset to worker
+                    payloadCount: byteOffset, // Backward compatibility alias
                     originalBuffer: data,
                     offset: 12
                 }, [data]);
