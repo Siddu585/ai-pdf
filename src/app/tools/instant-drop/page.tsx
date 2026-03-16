@@ -11,8 +11,8 @@ import { Footer } from "@/components/layout/Footer";
 import { useUsage } from "@/hooks/useUsage";
 import { PaywallModal } from "@/components/layout/PaywallModal";
 
-// v02.1.80 (Patch 28.0: No-OR Worker Hardening)
-const VERSION = "v02.1.80 (Signal Fortress)";
+// v02.1.81 (Patch 28.1: Verification Resilience & No-OR)
+const VERSION = "v02.1.81 (Signal Fortress)";
 const PIPES = 3; 
 const CHANNELS_PER_PIPE = 4;
 const CHANNELS = 12; 
@@ -292,8 +292,11 @@ function InstantDropContent() {
         switch (msg.type) {
             case 'metadata':
                 if (modeRef.current === 'receive') {
-                    // v02.1.39 (Patch 24): Deduplicate Metadata Processing (Spam Guard)
-                    if (fileMetas.current.has(msg.currentIdx)) return;
+                    // v02.1.81: Metadata Deduplication (No-OR Guard)
+                    if (fileMetas.current.has(msg.currentIdx)) {
+                        const existing = fileMetas.current.get(msg.currentIdx);
+                        if (existing.size === msg.size) return;
+                    }
                     
                     logDebug(`Receiver: Metadata for ${msg.name} (File ${msg.currentIdx})`);
                     setIncomingMeta(msg);
@@ -303,11 +306,13 @@ function InstantDropContent() {
                         setTotalFiles(msg.totalFiles);
                     }
                     workerRef.current?.postMessage({ type: 'metadata', fileIdx: msg.currentIdx, meta: msg });
-                    setStatus('transferring');
+                    if (statusRef.current !== 'done') setStatus('transferring');
                 }
                 break;
             case 'batch-eof':
                 if (modeRef.current === 'receive') {
+                    // v02.1.81: Status Guard (Anti-Bounce)
+                    if (statusRef.current === 'done') return;
                     logDebug("Receiver: Batch EOF received.");
                     if (msg.totalFiles !== undefined) {
                         expectedTotalFiles.current = msg.totalFiles;
@@ -1097,14 +1102,16 @@ ${capturedLogsRef.current.join('\n')}
             };
             window.addEventListener('webrtc-sender-msg', handler);
             // v02.1.39 (Patch 11/18): Increased to 40s to allow receiver 30s reassembly breathing room
+            // v02.1.81: Absolute Verification Sync (No-OR Guard)
+            // Replaced forced timeout with 'Manual Force Done' button option in UI (or strictly wait for ACK).
+            // This prevents the 'Sender says Done while Receiver says Processing' mismatch.
             setTimeout(() => {
                 window.removeEventListener('webrtc-sender-msg', handler);
                 if (statusRef.current === 'done-waiting') {
-                    logDebug('Sender: Verification Safety Net (40s) Triggered. Forcing UI Done.');
-                    setStatus('done');
+                    logDebug('Sender: 60s Handshake Safety Net (No Forced Status Update).');
                 }
                 resolve();
-            }, 40 * 1000);
+            }, 60 * 1000);
         });
 
         // symmetry-pacing trigger: Send one final pulse
