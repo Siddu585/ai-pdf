@@ -11,8 +11,8 @@ import { Footer } from "@/components/layout/Footer";
 import { useUsage } from "@/hooks/useUsage";
 import { PaywallModal } from "@/components/layout/PaywallModal";
 
-// v02.1.72 (Patch 27.2: Signal Pulse & TURN Migration)
-const VERSION = "v02.1.72 (Signal Pulse)";
+// v02.1.73 (Patch 27.3: Build Recovery)
+const VERSION = "v02.1.73 (Sentinel Core)";
 const PIPES = 3; 
 const CHANNELS_PER_PIPE = 4;
 const CHANNELS = 12; 
@@ -1282,7 +1282,7 @@ ${capturedLogsRef.current.join('\n')}
         const connect = () => {
             attempts++;
             logDebug(`Connecting to signaling server (Attempt ${attempts}/3)...`);
-            const ws = new WebSocket(`${BACKEND_WS_URL}/ws/drop/${id}/receiver`);
+            const ws = new WebSocket(`${BACKEND_WS_URL}/ws/drop/${roomName}/receiver`);
             wsRef.current = ws;
             
             ws.onerror = () => logDebug(`Receiver WS Connection Error (Attempt ${attempts})`);
