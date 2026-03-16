@@ -11,8 +11,8 @@ import { Footer } from "@/components/layout/Footer";
 import { useUsage } from "@/hooks/useUsage";
 import { PaywallModal } from "@/components/layout/PaywallModal";
 
-// v02.1.81 (Patch 28.1: Verification Resilience & No-OR)
-const VERSION = "v02.1.81 (Signal Fortress)";
+// v02.1.82 (Signal Fortress: Zinc Sync Ultra) - P2P Verification & Stall Protection
+const VERSION = "v02.1.82 (Signal Fortress)";
 const PIPES = 3; 
 const CHANNELS_PER_PIPE = 4;
 const CHANNELS = 12; 
@@ -275,7 +275,11 @@ function InstantDropContent() {
         setTotalFiles(0);
         setIncomingMeta(null);
         
-        setStatus('disconnected'); // v02.1.80: UI State Reset
+        // v02.1.82: UI State Reset Guard (Zinc Sync Ultra)
+        // Never jump to 'disconnected' if we are already 'done' or 'done-waiting'
+        if (statusRef.current !== 'done' && statusRef.current !== 'done-waiting') {
+            setStatus('disconnected'); 
+        }
         // v02.1.68: Persistent Lock - Handshake is NOT cleared here.
         // It's only cleared inside startFileTransfer once the loop is safe.
         remoteDescriptionSetsRef.current = [false, false, false];
@@ -1142,6 +1146,8 @@ ${capturedLogsRef.current.join('\n')}
             // v02.1.67 (Patch 26.7): Sentinel Pacer Guard
             // Increase warmup grace for high-speed Mobile starts. Monitor currentMBpsRef.
             const currentSpeed = currentMBpsRef.current || 0;
+            // v02.1.82: Stall Watchdog Protection (Zinc Sync Ultra)
+            // Never reset if we are already in 'done-waiting' (verifying)
             if (currentSpeed < 0.2 && statusRef.current === 'transferring' && chunkIdx > 50) {
                 if (!stallWatchdogRef.current) {
                     stallWatchdogRef.current = setTimeout(() => {
@@ -1460,7 +1466,9 @@ ${capturedLogsRef.current.join('\n')}
                 const payloadCount = (data.byteLength >= 12) ? view.getUint32(8, true) : -1;
                 if (chunkIdx === 0xFFFFFFFD) {
                     expectedTotalFiles.current = payloadCount;
-                    setStatus('done-waiting'); // Transition to verification UI
+                    // v02.1.82: Immediate Verification Feedback
+                    setStatus('done-waiting'); 
+                    logDebug(`Receiver: Batch EOF received (File Loop). Starting verification...`);
                     
                     // v02.1.39 (Patch 12): Receiver Safety Net
                     if (doneWaitingTimeoutRef.current) clearTimeout(doneWaitingTimeoutRef.current);
@@ -1551,19 +1559,25 @@ ${capturedLogsRef.current.join('\n')}
         
         // Only send success if we actually have all files reassembled
         if (mode === 'receive' && (status === 'done' || status === 'done-waiting') && currentCount > 0 && currentCount >= totalFilesExpected) {
-            if (status !== 'done') setStatus('done');
+            if (status !== 'done') {
+                logDebug("Receiver: Data fully reassembled. Verifying & Saving...");
+                setStatus('done');
+            }
             
             const sendAck = () => {
+                // v02.1.82: Multi-Path Verification (Zinc Sync Ultra)
+                // Send ACK through both signaling (WS) and data (P2P) paths
                 if (statusRef.current === 'done') {
                     const ackPkt = new Uint8Array(12);
                     const ackView = new DataView(ackPkt.buffer);
                     ackView.setUint32(0, 0, true);
                     ackView.setUint32(4, 0xFFFFFFFB, true); // Batch-ACK Pulsar
                     dataChannelsRef.current.forEach(dc => {
-                        if (dc?.readyState === 'open') dc.send(ackPkt);
+                        if (dc?.readyState === 'open') {
+                            try { dc.send(ackPkt); } catch(e) {}
+                        }
                     });
                     
-                    // v02.1.39 (Patch 23): Anchored verification including file list for hydration
                     sendControlMsg({ 
                         type: 'verification-complete', 
                         status: 'success',
@@ -1571,7 +1585,7 @@ ${capturedLogsRef.current.join('\n')}
                         fileNames: receivedFiles.map(f => f.name)
                     });
                     sendControlMsg({ type: 'batch-ack' });
-                    ackTimer = setTimeout(sendAck, 1500); // Tighter loop (Patch 23)
+                    ackTimer = setTimeout(sendAck, 1000); // 1s sync frequency
                 }
             };
             sendAck();
