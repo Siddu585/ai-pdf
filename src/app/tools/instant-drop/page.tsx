@@ -11,8 +11,8 @@ import { Footer } from "@/components/layout/Footer";
 import { useUsage } from "@/hooks/useUsage";
 import { PaywallModal } from "@/components/layout/PaywallModal";
 
-// v02.1.73 (Patch 27.3: Build Recovery)
-const VERSION = "v02.1.73 (Sentinel Core)";
+// v02.1.74 (Patch 27.4: Signal Pulse Calibration)
+const VERSION = "v02.1.74 (Signal Pulse)";
 const PIPES = 3; 
 const CHANNELS_PER_PIPE = 4;
 const CHANNELS = 12; 
@@ -134,6 +134,17 @@ function InstantDropContent() {
     const totalReceivedChunksCountRef = useRef(0); // v02.1.39 (Patch 12): Lightweight Flow Control
     const doneWaitingTimeoutRef = useRef<any>(null); // v02.1.39 (Patch 12): Receiver Safety Net
     const blockedLoopCount = useRef(0); // v02.1.57: Diagnostic Flow Counter
+
+    // v02.1.74: Global Pre-flight Readiness Check
+    useEffect(() => {
+        const checkHealth = async () => {
+            try {
+                const res = await fetch(`${BACKEND_HTTP_URL}/api/health`);
+                if (res.ok) setWsConnected(true);
+            } catch (e) {}
+        };
+        checkHealth();
+    }, []);
 
     // v02.1.40 (Phase 1): JS-Event-Loop Lag Detector
     useEffect(() => {
@@ -681,6 +692,7 @@ ${capturedLogsRef.current.join('\n')}
             ws.onerror = () => logDebug(`Sender WS Connection Error (Attempt ${attempts})`);
             ws.onclose = (e) => {
                 logDebug(`Sender WS Closed (Code: ${e.code}, Reason: ${e.reason || 'None'}).`);
+                setWsConnected(false); // v02.1.74: Pulse Sync
                 if (heartbeatIntervalRef.current) clearInterval(heartbeatIntervalRef.current);
                 if (attempts < 3 && statusRef.current === 'connecting') {
                     logDebug("Retrying connection in 2s...");
@@ -693,6 +705,7 @@ ${capturedLogsRef.current.join('\n')}
 
             ws.onopen = () => {
                 logDebug("Sender WS Opened. Waiting for peer...");
+                setWsConnected(true); // v02.1.74: Pulse Sync
                 const heartbeat = setInterval(() => {
                     if (ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify({ type: 'ping' }));
                 }, 5000);
