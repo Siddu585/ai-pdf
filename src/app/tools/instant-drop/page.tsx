@@ -555,6 +555,8 @@ ${capturedLogsRef.current.join('\n')}
                 }
 
                 if (type === 'metadata') {
+                    // v02.1.87: Strict Metadata Deduplication to prevent buffer storm
+                    if (fileMetas.has(fileIdx)) return;
                     fileMetas.set(fileIdx, meta);
                     if (!fileBuffers.has(fileIdx)) fileBuffers.set(fileIdx, []);
                     if (!receivedChunkIndices.has(fileIdx)) receivedChunkIndices.set(fileIdx, new Set());
