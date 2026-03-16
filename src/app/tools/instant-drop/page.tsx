@@ -2096,7 +2096,7 @@ Buffer-Bloat Grade: ${d.bufferBloatGrade}
 
                                             <p className="text-sm font-semibold truncate">Current File Part ({currentFileIndex + 1}): {incomingMeta?.name}</p>
                                             <div className="flex justify-between text-sm font-medium">
-                                                <span>{status === 'done-waiting' ? 'Finalizing Reassembly...' : 'Transferring File Data...'}</span>
+                                                <span>{(status as string) === 'done-waiting' ? 'Finalizing Reassembly...' : 'Transferring File Data...'}</span>
                                                 <span>{progress}%</span>
                                             </div>
                                             <div className="w-full bg-muted rounded-full h-3">
