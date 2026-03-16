@@ -11,8 +11,8 @@ import { Footer } from "@/components/layout/Footer";
 import { useUsage } from "@/hooks/useUsage";
 import { PaywallModal } from "@/components/layout/PaywallModal";
 
-// v02.1.90 (Signal Fortress: Atomic Recovery) - Non-Destructive Sentinel Resets
-const VERSION = "v02.1.90 (Signal Fortress)";
+// v02.1.91 (Velocity Prime) - Adaptive MTU Probing (5.0MB/s Target)
+const VERSION = "v02.1.91 (Velocity Prime)";
 const PIPES = 3; 
 const CHANNELS_PER_PIPE = 4;
 const CHANNELS = 12; 
@@ -108,6 +108,7 @@ function InstantDropContent() {
     const gpeInFlightBytesRef = useRef(0); // v02.1.50: GPE Gated In-Flight Tracking
     const gpePullRequestsRef = useRef(0); // v02.1.50: GPE Pull Request Counter
     const dynamicChunkSizeRef = useRef(CHUNK_SIZE); // v02.1.50: Adaptive MTU
+    const chunksSentSinceScaleRef = useRef(0);
     const gpeBlockedSinceRef = useRef<number | null>(null); // v02.1.56: Deadlock Safety
     const lastProgressTimeRef = useRef<number>(Date.now()); // v02.1.77: Deadlock Buster
     const diagnosticMetricsRef = useRef({
@@ -1162,7 +1163,10 @@ ${capturedLogsRef.current.join('\n')}
  
     const transferFileP2PParallel = async (file: File, index: number) => {
         const buffer = await file.arrayBuffer();
-        const numChunks = Math.ceil(buffer.byteLength / CHUNK_SIZE);
+        
+        // v02.1.91: Adaptive MTU Probing
+        const getCurrentChunkSize = () => dynamicChunkSizeRef.current;
+        let numChunks = Math.ceil(buffer.byteLength / getCurrentChunkSize());
         
         // v02.1.39 (Patch 24.4): Fortress Resume Recovery
         let chunkIdx = isResumingRef.current ? lastSuccessfulChunkIdxRef.current : 0;
@@ -1280,8 +1284,25 @@ ${capturedLogsRef.current.join('\n')}
                 }
 
                 if (dc && dc.readyState === 'open') {
-                    const offset = chunkIdx * CHUNK_SIZE;
-                    const chunkData = new Uint8Array(buffer, offset, Math.min(CHUNK_SIZE, buffer.byteLength - offset));
+                    const currentCS = getCurrentChunkSize();
+                    const offset = chunkIdx * currentCS;
+                    const chunkData = new Uint8Array(buffer, offset, Math.min(currentCS, buffer.byteLength - offset));
+
+                    // v02.1.91: Velocity Prime Pacing
+                    chunksSentSinceScaleRef.current++;
+                    if (chunksSentSinceScaleRef.current > 100) {
+                        chunksSentSinceScaleRef.current = 0;
+                        const rtt = avgRTTRef.current || 0;
+                        const speed = currentMBpsRef.current || 0;
+                        if (rtt < 0.250 && speed > 0.3 && dynamicChunkSizeRef.current < 512 * 1024) {
+                            dynamicChunkSizeRef.current += 64 * 1024;
+                            logDebug(`🚀 VELOCITY UP: Scaling MTU to ${Math.round(dynamicChunkSizeRef.current/1024)}KB (RTT: ${Math.round(rtt*1000)}ms, Speed: ${speed.toFixed(2)}MB/s)`);
+                            // Recalculate numChunks for the new size (approximate for the remainder)
+                            const remainingBytes = buffer.byteLength - offset;
+                            const newTotalChunks = chunkIdx + Math.ceil(remainingBytes / dynamicChunkSizeRef.current);
+                            numChunks = newTotalChunks;
+                        }
+                    }
                     
                     const packet = new Uint8Array(12 + chunkData.byteLength);
                     const view = new DataView(packet.buffer);
