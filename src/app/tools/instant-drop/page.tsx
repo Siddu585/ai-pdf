@@ -11,8 +11,8 @@ import { Footer } from "@/components/layout/Footer";
 import { useUsage } from "@/hooks/useUsage";
 import { PaywallModal } from "@/components/layout/PaywallModal";
 
-// v02.1.75 (Patch 27.5: Signal Recovery)
-const VERSION = "v02.1.75 (Signal Recovery)";
+// v02.1.76 (Patch 27.6: Signal Resilience)
+const VERSION = "v02.1.76 (Signal Resilience)";
 const PIPES = 3; 
 const CHANNELS_PER_PIPE = 4;
 const CHANNELS = 12; 
@@ -138,18 +138,20 @@ function InstantDropContent() {
     // v02.1.74: Global Pre-flight Readiness Check
     useEffect(() => {
         const checkHealth = async () => {
-            const url = `${BACKEND_HTTP_URL}/api/health`;
+            const url = `${BACKEND_HTTP_URL}/?t=${Date.now()}`;
             logDebug(`[PRE-FLIGHT] Probing Backend: ${url}`);
             try {
                 const res = await fetch(url);
-                if (res.ok) {
-                    logDebug("✅ [PRE-FLIGHT] Backend HEALTHY. Signal Pulsing GREEN.");
+                // v02.1.76: Soft Success - any response means we can talk to the server
+                if (res.status < 500) {
+                    logDebug(`✅ [PRE-FLIGHT] Backend REACHABLE (Status: ${res.status}). Signal GREEN.`);
                     setWsConnected(true);
                 } else {
-                    logDebug(`⚠️ [PRE-FLIGHT] Backend Response: ${res.status}`);
+                    logDebug(`⚠️ [PRE-FLIGHT] Backend Server Error: ${res.status}`);
                 }
             } catch (e: any) {
                 logDebug(`❌ [PRE-FLIGHT] Backend UNREACHABLE: ${e.message}`);
+                setWsConnected(false);
             }
         };
         checkHealth();
