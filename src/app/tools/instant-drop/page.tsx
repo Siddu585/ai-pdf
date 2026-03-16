@@ -11,8 +11,8 @@ import { Footer } from "@/components/layout/Footer";
 import { useUsage } from "@/hooks/useUsage";
 import { PaywallModal } from "@/components/layout/PaywallModal";
 
-// v02.1.70 (Patch 27.0: NMI Deep ICE & Auto-Test)
-const VERSION = "v02.1.70 (NMI Sentinel)";
+// v02.1.71 (Patch 27.1: Signal Sentinel & Relay Hardening)
+const VERSION = "v02.1.71 (Sentinel Signal)";
 const PIPES = 3; 
 const CHANNELS_PER_PIPE = 4;
 const CHANNELS = 12; 
@@ -188,6 +188,7 @@ function InstantDropContent() {
         // v02.1.65: Signal Broadcast Fallback - prefer Anchor, fallback to any open pipe
         const channels = dataChannelsRef.current.filter(c => c && c.readyState === 'open');
         if (priority) {
+            // v02.1.71: Reinforced Signal Path (Prefer Anchor for all control msgs on mobile)
             const anchor = channels.find(c => {
                 const idx = parseInt(c.label.split('-').pop() || '0');
                 return idx < 4;
@@ -774,8 +775,9 @@ ${capturedLogsRef.current.join('\n')}
                                     
             // v02.1.39 (Patch 24.3): Hybrid Anchor Strategy 
             // Pipe-0: Forced Relay (Guaranteed link for ALL users)
-            // Pipe-1,2: All (High-speed Booster paths)
-            const pipePolicy = (pipeIdx === 0 || useFallback) ? 'relay' : 'all';
+            // v02.1.71: Force Relay Anchor for Symmetric NAT / Airtel Path Reliability
+            // Pipe-0 is the 'Anchor' link, we force it to TURN to bypass STUN-race issues.
+            let pipePolicy: RTCIceTransportPolicy = (useFallback || pipeIdx === 0) ? 'relay' : 'all';
             const peer = new RTCPeerConnection({ 
                 iceServers: currentRelays,
                 iceTransportPolicy: pipePolicy
@@ -1252,10 +1254,21 @@ ${capturedLogsRef.current.join('\n')}
     };
 
     // --- RECEIVER LOGIC (Turbo Drop 2.0) ---
-    const joinRoom = async (id: string) => {
+    // v02.1.71: Signal Sentinel Heartbeat
+    useEffect(() => {
+        if (status === 'disconnected') return;
+        const interval = setInterval(() => {
+            if (wsRef.current?.readyState === WebSocket.OPEN) {
+                wsRef.current.send(JSON.stringify({ type: 'heartbeat', ts: Date.now() }));
+            }
+        }, 5000);
+        return () => clearInterval(interval);
+    }, [status]);
+
+    const joinRoom = async (roomName: string) => {
         disconnectEverything();
-        setRoomId(id);
-        roomRef.current = id;
+        setRoomId(roomName);
+        roomRef.current = roomName;
         setMode('receive');
         setStatus('connecting');
 
