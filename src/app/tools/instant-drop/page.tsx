@@ -330,10 +330,9 @@ function InstantDropContent() {
                 if (modeRef.current === 'receive') {
                     logDebug("Receiver: Force-Verify signal received.");
                     workerRef.current?.postMessage({ type: 'force-all-done' });
-                    if (reassembledCount.current > 0) {
-                         sendControlMsg({ type: 'verification-complete', status: 'success' });
-                         setStatus('done');
-                    }
+                    // v02.1.88: Hardened Termination - move to 'done' even if 0 files
+                    sendControlMsg({ type: 'verification-complete', status: 'success' });
+                    setStatus('done');
                 }
                 break;
             case 'verification-complete':
@@ -566,10 +565,25 @@ ${capturedLogsRef.current.join('\n')}
                     const indices = receivedChunkIndices.get(fileIdx);
                     if (expected !== undefined && indices.size === expected) {
                          const chunks = fileBuffers.get(fileIdx);
-                         // v02.1.39 (Patch 24): Filter undefined to prevent Transferable mapping crash
-                         const transferList = chunks.filter(c => c && c.buffer).map(c => c.buffer);
+                         // v02.1.88 (Match-OR): Unify Reassembly Turbo for Late Metadata
+                         const totalSize = chunks.reduce((acc, c) => acc + (c ? c.length : 0), 0);
+                         const combined = new Uint8Array(totalSize);
+                         let offset = 0;
+                         for (let i = 0; i < chunks.length; i++) {
+                             if (chunks[i]) {
+                                 combined.set(chunks[i], offset);
+                                 offset += chunks[i].length;
+                             }
+                         }
                          try {
-                            self.postMessage({ type: 'reassembled', fileIdx, name: meta.name, fileType: meta.fileType, chunks }, transferList);
+                            self.postMessage({ 
+                                type: 'reassembled', 
+                                fileIdx, 
+                                name: meta.name, 
+                                fileType: meta.fileType, 
+                                chunks: [combined.buffer],
+                                chunkCount: chunks.length 
+                            }, [combined.buffer]);
                          } catch (err) {
                             self.postMessage({ type: 'error', msg: 'PostMessage Transfer Failed: ' + err });
                          }
