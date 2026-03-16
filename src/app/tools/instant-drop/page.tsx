@@ -11,8 +11,8 @@ import { Footer } from "@/components/layout/Footer";
 import { useUsage } from "@/hooks/useUsage";
 import { PaywallModal } from "@/components/layout/PaywallModal";
 
-// v02.1.74 (Patch 27.4: Signal Pulse Calibration)
-const VERSION = "v02.1.74 (Signal Pulse)";
+// v02.1.75 (Patch 27.5: Signal Recovery)
+const VERSION = "v02.1.75 (Signal Recovery)";
 const PIPES = 3; 
 const CHANNELS_PER_PIPE = 4;
 const CHANNELS = 12; 
@@ -27,9 +27,9 @@ const getBackendUrls = () => {
     // Sense and Fix recursive Render naming prefix (ai-pdfai-pdf)
     // This happens when Render's auto-generation stacks names.
     // If the base URL or the current window has it, we ensure the backend URL also has it.
-    if (rawUrl.includes("ai-pdfai-pdf") || (typeof window !== "undefined" && window.location.hostname.includes("ai-pdfai-pdf"))) {
-        if (!rawUrl.includes("ai-pdfai-pdf-backend")) {
-            rawUrl = rawUrl.replace("ai-pdf-backend", "ai-pdfai-pdf-backend");
+    if (rawUrl.includes("ai-pdfai-pdf") || (typeof window !== "undefined" && (window.location.hostname.includes("ai-pdfai-pdf") || window.location.hostname.includes("swap-pdf.com")))) {
+        if (!rawUrl.includes("onrender.com")) {
+            rawUrl = "https://ai-pdfai-pdf-backend.onrender.com";
         }
     }
 
@@ -138,10 +138,19 @@ function InstantDropContent() {
     // v02.1.74: Global Pre-flight Readiness Check
     useEffect(() => {
         const checkHealth = async () => {
+            const url = `${BACKEND_HTTP_URL}/api/health`;
+            logDebug(`[PRE-FLIGHT] Probing Backend: ${url}`);
             try {
-                const res = await fetch(`${BACKEND_HTTP_URL}/api/health`);
-                if (res.ok) setWsConnected(true);
-            } catch (e) {}
+                const res = await fetch(url);
+                if (res.ok) {
+                    logDebug("✅ [PRE-FLIGHT] Backend HEALTHY. Signal Pulsing GREEN.");
+                    setWsConnected(true);
+                } else {
+                    logDebug(`⚠️ [PRE-FLIGHT] Backend Response: ${res.status}`);
+                }
+            } catch (e: any) {
+                logDebug(`❌ [PRE-FLIGHT] Backend UNREACHABLE: ${e.message}`);
+            }
         };
         checkHealth();
     }, []);
