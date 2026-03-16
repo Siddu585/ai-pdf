@@ -104,6 +104,7 @@ function InstantDropContent() {
     const gpePullRequestsRef = useRef(0); // v02.1.50: GPE Pull Request Counter
     const dynamicChunkSizeRef = useRef(CHUNK_SIZE); // v02.1.50: Adaptive MTU
     const gpeBlockedSinceRef = useRef<number | null>(null); // v02.1.56: Deadlock Safety
+    const lastProgressTimeRef = useRef<number>(Date.now()); // v02.1.77: Deadlock Buster
     const diagnosticMetricsRef = useRef({
         retransmissions: 0,
         packetsSent: 0,
@@ -1214,15 +1215,42 @@ ${capturedLogsRef.current.join('\n')}
                         dc.send(packet);
                         totalSentBytesRef.current += packet.byteLength;
                         gpeInFlightBytesRef.current += packet.byteLength; // Increment GPE tracking
+                        lastProgressTimeRef.current = Date.now(); // v02.1.77: Pulse Reset
                         chunkIdx++;
 
                         // v02.1.39 (Patch 24.4): Fortress UI Pacing
+                        const pulseFreq = currentMBpsRef.current > 8 ? 250 : 100;
+                        if (chunkIdx % pulseFreq === 0 || chunkIdx === numChunks - 1) {
+                            setProgress(Math.floor((chunkIdx / numChunks) * 100));
+                        }
+                    } catch (e) {
+                        if (Math.random() < 0.05) logDebug(`Sender Loop Error (Chunk ${chunkIdx}): ${e instanceof Error ? e.message : 'Unknown'}`);
+                        await new Promise(r => setTimeout(r, 10)); // Yield on congestion
+                    }
+                } else {
+                    await new Promise(res => setTimeout(res, 10));
+                }
             } else {
                 // v02.1.50: GPE Wait State (Yield nicely if blocked by gate or buffer)
                 await new Promise(res => {
                     requestAnimationFrame(() => res(null));
                     setTimeout(res, isGPEBlocked ? 2 : 5); 
                 });
+            }
+
+            // v02.1.77: GPE Deadlock Buster
+            // If we are stalled but have open pipes, force metadata broadcast and resume.
+            const now = Date.now();
+            if (now - lastProgressTimeRef.current > 10000 && statusRef.current === 'transferring') {
+                 logDebug("⚠️ GPE Deadlock Buster: Stall > 10s. Forcing pipe health check...");
+                 lastProgressTimeRef.current = now; // Prevent ripple storms
+                 broadcastMetadata(); 
+                 // If Pipe-0 is stuck, force a restart
+                 const pc0 = peersRef.current[0];
+                 if (pc0 && (pc0.iceConnectionState !== 'connected' && pc0.iceConnectionState !== 'completed')) {
+                     logDebug("🛡️ Pipe-0 Anchor RECOVERY: Restarting ICE.");
+                     pc0.restartIce();
+                 }
             }
         }
         
