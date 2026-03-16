@@ -11,8 +11,8 @@ import { Footer } from "@/components/layout/Footer";
 import { useUsage } from "@/hooks/useUsage";
 import { PaywallModal } from "@/components/layout/PaywallModal";
 
-// v02.1.84 (Signal Fortress: Reassembly Turbo) - Worker-Side Concatenation & UI Progress
-const VERSION = "v02.1.84 (Signal Fortress)";
+// v02.1.85 (Signal Fortress: Build Recovery) - Unified UI Guards & Build Fix
+const VERSION = "v02.1.85 (Signal Fortress)";
 const PIPES = 3; 
 const CHANNELS_PER_PIPE = 4;
 const CHANNELS = 12; 
