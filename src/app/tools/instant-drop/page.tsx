@@ -11,8 +11,8 @@ import { Footer } from "@/components/layout/Footer";
 import { useUsage } from "@/hooks/useUsage";
 import { PaywallModal } from "@/components/layout/PaywallModal";
 
-// v02.1.89 (Signal Fortress: Multi-Pipe Recovery) - Full Sentinel Reset & Census Diagnostic
-const VERSION = "v02.1.89 (Signal Fortress)";
+// v02.1.90 (Signal Fortress: Atomic Recovery) - Non-Destructive Sentinel Resets
+const VERSION = "v02.1.90 (Signal Fortress)";
 const PIPES = 3; 
 const CHANNELS_PER_PIPE = 4;
 const CHANNELS = 12; 
@@ -239,8 +239,8 @@ function InstantDropContent() {
         releaseWakeLock(); 
     }
 
-    const resetSessionRefs = () => {
-        logDebug("Clearing Session Refs for new transfer...");
+    const resetSessionRefs = (isRecovery = false) => {
+        logDebug(`Clearing Session Refs (isRecovery: ${isRecovery})...`);
         if (stallWatchdogRef.current) {
             clearTimeout(stallWatchdogRef.current);
             stallWatchdogRef.current = null;
@@ -252,41 +252,32 @@ function InstantDropContent() {
 
         dataChannelsRef.current = [];
         peersRef.current = [];
-        channelFileIndex.current = new Array(CHANNELS).fill(0);
-        fileBuffers.current.clear();
-        expectedTotalChunks.current.clear();
-        receivedChunksCount.current.clear();
-        fileMetas.current.clear();
-        reassembledCount.current = 0;
-        expectedTotalFiles.current = -1;
-        gpeInFlightBytesRef.current = 0;
-        totalSentBytesRef.current = 0;
-        totalReceivedBytesRef.current = 0;
-        currentFileReceivedRef.current.clear();
-        totalReceivedChunksCountRef.current = 0;
-        isActive.current = false;
-        
-        // v02.1.80: Full Memory Hygiene (No-OR Hardening)
-        lastSuccessfulChunkIdxRef.current = 0;
-        isResumingRef.current = false;
-        setCurrentFileIndex(0);
-        setProgress(0);
-        setTransferSpeed(null);
-        setTotalFiles(0);
-        setIncomingMeta(null);
-        
-        // v02.1.82: UI State Reset Guard (Zinc Sync Ultra)
-        // Never jump to 'disconnected' if we are already 'done' or 'done-waiting'
-        if (statusRef.current !== 'done' && statusRef.current !== 'done-waiting') {
-            setStatus('disconnected'); 
+        if (!isRecovery) {
+            channelFileIndex.current = new Array(CHANNELS).fill(0);
+            fileBuffers.current.clear();
+            expectedTotalChunks.current.clear();
+            receivedChunksCount.current.clear();
+            fileMetas.current.clear();
+            reassembledCount.current = 0;
+            expectedTotalFiles.current = -1;
+            gpeInFlightBytesRef.current = 0;
+            totalSentBytesRef.current = 0;
+            totalReceivedBytesRef.current = 0;
+            currentFileReceivedRef.current.clear();
+            totalReceivedChunksCountRef.current = 0;
+            
+            // v02.1.80: Full Memory Hygiene (No-OR Hardening)
+            lastSuccessfulChunkIdxRef.current = 0;
+            isResumingRef.current = false;
+            setCurrentFileIndex(0);
+            setProgress(0);
+            setTransferSpeed(null);
+            setTotalFiles(0);
+            setIncomingMeta(null);
+            
+            // v02.1.80: Worker Memory Hygiene (Anti-Leak)
+            workerRef.current?.postMessage({ type: 'RESET_WORKER' });
         }
-        // v02.1.68: Persistent Lock - Handshake is NOT cleared here.
-        // It's only cleared inside startFileTransfer once the loop is safe.
-        remoteDescriptionSetsRef.current = [false, false, false];
-        iceBuffersRef.current = [[], [], []];
-        
-        // v02.1.80: Worker Memory Hygiene (Anti-Leak)
-        workerRef.current?.postMessage({ type: 'RESET_WORKER' });
     };
 
     function handleControlMessage(msg: any) {
@@ -1211,7 +1202,7 @@ ${capturedLogsRef.current.join('\n')}
                             parallelChannels: dataChannelsRef.current.length
                         });
 
-                        resetSessionRefs(); // v02.1.67: Unified Atomic Reset
+                        resetSessionRefs(true); // v02.1.90: Recovery reset is NON-destructive
                         if (wsRef.current) {
                             for (let p = 0; p < PIPES; p++) setupWebRTC(wsRef.current, true, p);
                         }
