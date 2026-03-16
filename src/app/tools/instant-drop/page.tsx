@@ -1182,7 +1182,7 @@ ${capturedLogsRef.current.join('\n')}
             const currentSpeed = currentMBpsRef.current || 0;
             // v02.1.82: Stall Watchdog Protection (Zinc Sync Ultra)
             // Never reset if we are already in 'done-waiting' (verifying)
-            if (currentSpeed < 0.2 && statusRef.current === 'transferring' && chunkIdx > 50) {
+            if (currentSpeed < 0.2 && statusRef.current === 'transferring' && chunkIdx >= 0) {
                 if (!stallWatchdogRef.current) {
                     stallWatchdogRef.current = setTimeout(() => {
                         logDebug(`🛰️ Stall Detected (${currentSpeed.toFixed(2)}MB/s). Triggering Sentinel Auto-Resume...`);
