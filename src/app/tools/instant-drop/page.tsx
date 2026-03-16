@@ -11,8 +11,8 @@ import { Footer } from "@/components/layout/Footer";
 import { useUsage } from "@/hooks/useUsage";
 import { PaywallModal } from "@/components/layout/PaywallModal";
 
-// v02.1.79 (Patch 27.9: Generation Locking & Handshake Resilience)
-const VERSION = "v02.1.79 (Signal Fortress)";
+// v02.1.80 (Patch 28.0: No-OR Worker Hardening)
+const VERSION = "v02.1.80 (Signal Fortress)";
 const PIPES = 3; 
 const CHANNELS_PER_PIPE = 4;
 const CHANNELS = 12; 
@@ -265,10 +265,14 @@ function InstantDropContent() {
         currentFileReceivedRef.current.clear();
         totalReceivedChunksCountRef.current = 0;
         isActive.current = false;
+        setStatus('disconnected'); // v02.1.80: UI State Reset
         // v02.1.68: Persistent Lock - Handshake is NOT cleared here.
         // It's only cleared inside startFileTransfer once the loop is safe.
         remoteDescriptionSetsRef.current = [false, false, false];
         iceBuffersRef.current = [[], [], []];
+        
+        // v02.1.80: Worker Memory Hygiene (Anti-Leak)
+        workerRef.current?.postMessage({ type: 'RESET_WORKER' });
     };
 
     function handleControlMessage(msg: any) {
