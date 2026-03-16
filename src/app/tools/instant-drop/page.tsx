@@ -11,8 +11,8 @@ import { Footer } from "@/components/layout/Footer";
 import { useUsage } from "@/hooks/useUsage";
 import { PaywallModal } from "@/components/layout/PaywallModal";
 
-// v02.1.83 (Signal Fortress: Heartbeat Pulse) - Worker Keep-Alive during Reassembly
-const VERSION = "v02.1.83 (Signal Fortress)";
+// v02.1.84 (Signal Fortress: Reassembly Turbo) - Worker-Side Concatenation & UI Progress
+const VERSION = "v02.1.84 (Signal Fortress)";
 const PIPES = 3; 
 const CHANNELS_PER_PIPE = 4;
 const CHANNELS = 12; 
@@ -603,10 +603,19 @@ ${capturedLogsRef.current.join('\n')}
                             const meta = fileMetas.get(fileIdx);
                             if (meta) {
                                 const chunks = fileBuffers.get(fileIdx);
-                                // v02.1.39 (Patch 24): Filter undefined to prevent Transferable mapping crash
-                                const transferList = chunks.filter(c => c && c.buffer).map(c => c.buffer);
+                                // v02.1.84: Reassembly Turbo - Concatenate in Worker
+                                // construction of a single large buffer avoids main-thread thrashing
+                                const totalSize = chunks.reduce((acc, c) => acc + (c ? c.length : 0), 0);
+                                const combined = new Uint8Array(totalSize);
+                                let offset = 0;
+                                for (let i = 0; i < chunks.length; i++) {
+                                    if (chunks[i]) {
+                                        combined.set(chunks[i], offset);
+                                        offset += chunks[i].length;
+                                    }
+                                }
                                 try {
-                                    self.postMessage({ type: 'reassembled', fileIdx, name: meta.name, fileType: meta.fileType, chunks }, transferList);
+                                    self.postMessage({ type: 'reassembled', fileIdx, name: meta.name, fileType: meta.fileType, chunks: [combined.buffer] }, [combined.buffer]);
                                 } catch (err) {
                                     self.postMessage({ type: 'error', msg: 'PostMessage Transfer Failed: ' + err });
                                 }
