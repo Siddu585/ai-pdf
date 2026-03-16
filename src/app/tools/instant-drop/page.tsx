@@ -11,8 +11,8 @@ import { Footer } from "@/components/layout/Footer";
 import { useUsage } from "@/hooks/useUsage";
 import { PaywallModal } from "@/components/layout/PaywallModal";
 
-// v02.1.76 (Patch 27.6: Signal Resilience)
-const VERSION = "v02.1.76 (Signal Resilience)";
+// v02.1.77 (Patch 27.7: Signal Fortress & Buffer Hardening)
+const VERSION = "v02.1.77 (Signal Fortress)";
 const PIPES = 3; 
 const CHANNELS_PER_PIPE = 4;
 const CHANNELS = 12; 
@@ -1217,17 +1217,6 @@ ${capturedLogsRef.current.join('\n')}
                         chunkIdx++;
 
                         // v02.1.39 (Patch 24.4): Fortress UI Pacing
-                        const pulseFreq = currentMBpsRef.current > 8 ? 250 : 100;
-                        if (chunkIdx % pulseFreq === 0 || chunkIdx === numChunks - 1) {
-                            setProgress(Math.floor((chunkIdx / numChunks) * 100));
-                        }
-                    } catch (e) {
-                        if (Math.random() < 0.05) logDebug(`Sender Loop Error (Chunk ${chunkIdx}): ${e instanceof Error ? e.message : 'Unknown'}`);
-                        await new Promise(r => setTimeout(r, 10)); // Yield on congestion
-                    }
-                } else {
-                    await new Promise(res => setTimeout(res, 100));
-                }
             } else {
                 // v02.1.50: GPE Wait State (Yield nicely if blocked by gate or buffer)
                 await new Promise(res => {
