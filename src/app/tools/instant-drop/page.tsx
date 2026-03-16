@@ -11,8 +11,8 @@ import { Footer } from "@/components/layout/Footer";
 import { useUsage } from "@/hooks/useUsage";
 import { PaywallModal } from "@/components/layout/PaywallModal";
 
-// v02.1.82 (Signal Fortress: Zinc Sync Ultra) - P2P Verification & Stall Protection
-const VERSION = "v02.1.82 (Signal Fortress)";
+// v02.1.83 (Signal Fortress: Heartbeat Pulse) - Worker Keep-Alive during Reassembly
+const VERSION = "v02.1.83 (Signal Fortress)";
 const PIPES = 3; 
 const CHANNELS_PER_PIPE = 4;
 const CHANNELS = 12; 
@@ -532,6 +532,13 @@ ${capturedLogsRef.current.join('\n')}
             let reassembledFiles = new Set();
             let expectedTotalChunks = new Map();
             let expectedTotalFiles = -1;
+            
+            // v02.1.83: Worker Heartbeat Pulse (Keep-Alive)
+            setInterval(() => {
+                if (fileBuffers.size > 0 || expectedTotalFiles !== -1) {
+                    self.postMessage({ type: 'worker-pulse', ts: Date.now() });
+                }
+            }, 5000);
 
             self.onmessage = function(e) {
                 const { type, fileIdx, chunkIdx, meta } = e.data;
@@ -1468,7 +1475,7 @@ ${capturedLogsRef.current.join('\n')}
                     expectedTotalFiles.current = payloadCount;
                     // v02.1.82: Immediate Verification Feedback
                     setStatus('done-waiting'); 
-                    logDebug(`Receiver: Batch EOF received (File Loop). Starting verification...`);
+                    logDebug(`Receiver: Batch EOF received (File Loop). Finalizing reassembly...`);
                     
                     // v02.1.39 (Patch 12): Receiver Safety Net
                     if (doneWaitingTimeoutRef.current) clearTimeout(doneWaitingTimeoutRef.current);
