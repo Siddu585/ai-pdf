@@ -11,16 +11,16 @@ import { Footer } from "@/components/layout/Footer";
 import { useUsage } from "@/hooks/useUsage";
 import { PaywallModal } from "@/components/layout/PaywallModal";
 
-// v02.1.86 (Signal Fortress: Final Build Fix) - Unified UI Guards & Build Resilience
-const VERSION = "v02.1.86 (Signal Fortress)";
+// v02.1.87 (Signal Fortress: GPE Prime) - 32MB Buffer & Metadata Deduplication
+const VERSION = "v02.1.87 (Signal Fortress)";
 const PIPES = 3; 
 const CHANNELS_PER_PIPE = 4;
 const CHANNELS = 12; 
 const CHUNK_SIZE = 256 * 1024; // 256KB - Fortress Velocity
-const HIGH_WATER_MARK_MAX = 128 * 1024 * 1024; // 128MB - Velocity Prime
-const PACER_THRESHOLD = 1 * 1024 * 1024; 
-const MAX_IN_FLIGHT = 128; 
-const DRAIN_THRESHOLD = 128 * 1024 * 1024; // 128MB - Velocity Prime
+const HIGH_WATER_MARK_MAX = 32 * 1024 * 1024; // 32MB - Prime Capacity for High Latency
+const PACER_THRESHOLD = 2 * 1024 * 1024; 
+const MAX_IN_FLIGHT = 256; 
+const DRAIN_THRESHOLD = 32 * 1024 * 1024; 
 const getBackendUrls = () => {
     let rawUrl = (process.env.NEXT_PUBLIC_API_URL || "").trim().replace(/\/$/, "");
     
