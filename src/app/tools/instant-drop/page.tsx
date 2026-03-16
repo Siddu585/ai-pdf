@@ -11,8 +11,8 @@ import { Footer } from "@/components/layout/Footer";
 import { useUsage } from "@/hooks/useUsage";
 import { PaywallModal } from "@/components/layout/PaywallModal";
 
-// v02.1.78 (Patch 27.8: Vercel Recovery & Signal Fortress)
-const VERSION = "v02.1.78 (Signal Fortress)";
+// v02.1.79 (Patch 27.9: Generation Locking & Handshake Resilience)
+const VERSION = "v02.1.79 (Signal Fortress)";
 const PIPES = 3; 
 const CHANNELS_PER_PIPE = 4;
 const CHANNELS = 12; 
@@ -45,6 +45,10 @@ const ICE_SERVERS = {
     iceServers: [
         { urls: "stun:stun.l.google.com:19302" },
         { urls: "stun:stun1.l.google.com:19302" },
+        { urls: "stun:stun2.l.google.com:19302" },
+        { urls: "stun:stun3.l.google.com:19302" },
+        { urls: "stun:stun4.l.google.com:19302" },
+        { urls: "stun:stun.cloudflare.com:3478" },
         // v02.1.72: Reinforced Private TURN (NMI Anchor)
         {
             urls: [
@@ -98,6 +102,7 @@ function InstantDropContent() {
     const totalReceivedBytesRef = useRef(0);
     const lastSuccessfulChunkIdxRef = useRef(0);
     const isResumingRef = useRef(false);
+    const pipeGenerationRef = useRef<number[]>([0, 0, 0]); // v02.1.79: Handshake Generation Isolation
     const stallWatchdogRef = useRef<any>(null);
     const wakeLockRef = useRef<any>(null);
     const gpeInFlightBytesRef = useRef(0); // v02.1.50: GPE Gated In-Flight Tracking
@@ -745,12 +750,20 @@ ${capturedLogsRef.current.join('\n')}
                         setupWebRTC(ws, true, 2);
                     } else if (data.type === 'answer') {
                         const pIdx = data.pipeIdx || 0;
+                        const gen = data.gen || 0;
+                        if (gen !== pipeGenerationRef.current[pIdx]) {
+                            logDebug(`⚠️ Pipe-${pIdx} Stale Answer (Gen ${gen} vs ${pipeGenerationRef.current[pIdx]}). Dropping.`);
+                            return;
+                        }
                         try {
                             const peer = peersRef.current[pIdx];
-                            if (!peer) return;
+                            if (!peer || peer.signalingState !== 'have-local-offer') {
+                                logDebug(`⚠️ Pipe-${pIdx} Ignore Answer: State=${peer?.signalingState}`);
+                                return;
+                            }
                             await peer.setRemoteDescription(new RTCSessionDescription(data.sdp));
                             remoteDescriptionSetsRef.current[pIdx] = true;
-                            logDebug(`✅ Pipe-${pIdx} Remote Description Set. Flushing ${iceBuffersRef.current[pIdx].length} buffered candidates`);
+                            logDebug(`✅ Pipe-${pIdx} Remote Description Set (Gen ${gen}). Flushing ${iceBuffersRef.current[pIdx].length} buffered candidates`);
                             for (const candidate of iceBuffersRef.current[pIdx]) {
                                 try { await peer.addIceCandidate(new RTCIceCandidate(candidate)); } catch (e) {}
                             }
@@ -760,6 +773,8 @@ ${capturedLogsRef.current.join('\n')}
                         }
                     } else if (data.type === 'ice-candidate') {
                         const pIdx = data.pipeIdx || 0;
+                        const gen = data.gen || 0;
+                        if (gen !== pipeGenerationRef.current[pIdx]) return;
                         if (!remoteDescriptionSetsRef.current[pIdx]) {
                             iceBuffersRef.current[pIdx].push(data.candidate);
                         } else {
@@ -781,7 +796,10 @@ ${capturedLogsRef.current.join('\n')}
 
     const setupWebRTC = async (ws: WebSocket, isSender: boolean, pipeIdx: number, useFallback = false) => {
         try {
-            logDebug(`Setting up RTCPeerConnection Pipe-${pipeIdx}, isSender: ${isSender}, fallback: ${useFallback}`);
+            // v02.1.79: Generation Isolation
+            pipeGenerationRef.current[pipeIdx]++;
+            const gen = pipeGenerationRef.current[pipeIdx];
+            logDebug(`Setting up RTCPeerConnection Pipe-${pipeIdx} (Gen ${gen}), isSender: ${isSender}, fallback: ${useFallback}`);
             
             // Initializing per-pipe state
             remoteDescriptionSetsRef.current[pipeIdx] = false;
@@ -866,7 +884,7 @@ ${capturedLogsRef.current.join('\n')}
             peer.onicecandidate = (e) => {
                 if (e.candidate) {
                     const cand = e.candidate.toJSON ? e.candidate.toJSON() : e.candidate;
-                    ws.send(JSON.stringify({ type: 'ice-candidate', pipeIdx, candidate: cand }));
+                    ws.send(JSON.stringify({ type: 'ice-candidate', pipeIdx, gen, candidate: cand }));
                 }
             };
 
@@ -879,7 +897,7 @@ ${capturedLogsRef.current.join('\n')}
             if (isSender) {
                 const offer = await peer.createOffer({ offerToReceiveAudio: false, offerToReceiveVideo: false });
                 await peer.setLocalDescription(offer);
-                ws.send(JSON.stringify({ type: 'offer', pipeIdx, sdp: peer.localDescription }));
+                ws.send(JSON.stringify({ type: 'offer', pipeIdx, gen, sdp: peer.localDescription }));
             }
         } catch (err: any) {
             logDebug(`❌ Pipe-${pipeIdx} Error: ${err.message}`);
@@ -1352,7 +1370,9 @@ ${capturedLogsRef.current.join('\n')}
                     const data = JSON.parse(event.data);
                     if (data.type === 'offer') {
                         const pIdx = data.pipeIdx || 0;
-                        logDebug(`Received offer for Pipe-${pIdx}`);
+                        const gen = data.gen || 0;
+                        logDebug(`Received offer for Pipe-${pIdx} (Gen ${gen})`);
+                        
                         await setupWebRTC(ws, false, pIdx);
                         const peer = peersRef.current[pIdx];
                         if (!peer) return;
@@ -1367,9 +1387,11 @@ ${capturedLogsRef.current.join('\n')}
 
                         const answer = await peer.createAnswer();
                         await peer.setLocalDescription(answer);
-                        ws.send(JSON.stringify({ type: 'answer', pipeIdx: pIdx, sdp: peer.localDescription }));
+                        ws.send(JSON.stringify({ type: 'answer', pipeIdx: pIdx, gen, sdp: peer.localDescription }));
                     } else if (data.type === 'ice-candidate') {
                         const pIdx = data.pipeIdx || 0;
+                        const gen = data.gen || 0;
+                        if (gen !== pipeGenerationRef.current[pIdx]) return;
                         if (!remoteDescriptionSetsRef.current[pIdx]) {
                             iceBuffersRef.current[pIdx].push(data.candidate);
                         } else {
