@@ -11,8 +11,8 @@ import { Footer } from "@/components/layout/Footer";
 import { useUsage } from "@/hooks/useUsage";
 import { PaywallModal } from "@/components/layout/PaywallModal";
 
-// v02.1.87 (Signal Fortress: GPE Prime) - 32MB Buffer & Metadata Deduplication
-const VERSION = "v02.1.87 (Signal Fortress)";
+// v02.1.88 (Signal Fortress: Velocity Prime) - Sentinel Guard & GPE Elasticity
+const VERSION = "v02.1.88 (Signal Fortress)";
 const PIPES = 3; 
 const CHANNELS_PER_PIPE = 4;
 const CHANNELS = 12; 
@@ -1103,6 +1103,10 @@ ${capturedLogsRef.current.join('\n')}
             });
 
             await transferFileP2PParallel(currentFiles[i], i);
+            if (!isActive.current && statusRef.current !== 'done' && statusRef.current !== 'done-waiting') {
+                logDebug("Sender: Transfer loop interrupted by Sentinel reset. Aborting finalization chain.");
+                return;
+            }
         }
         
         // v02.1.37: 12-Channel EOF Broadcast (Redundancy)
@@ -1211,10 +1215,8 @@ ${capturedLogsRef.current.join('\n')}
             // v02.1.39 (Patch 24.4): Fortress BDP (Aggressive 4.0x Pressure)
             const bdpLimit = Math.max(16 * 1024 * 1024, Math.min(256 * 1024 * 1024, (currentMBpsRef.current * 1024 * 1024 * avgRTTRef.current * 4.0)));
 
-            // v02.1.63 (Phase 3): GPE Engine - Gated In-Flight Cap (8MB Sweet Spot)
-            // v02.1.65: Airtel Fortress GPE (16MB Elasticity)
-            // 16MB limit allows for Airtel-sized jitter without stalling the pull cycle.
-            const GPE_CAP = 16 * 1024 * 1024;
+            // v02.1.88: Standardized GPE Elasticity (32MB for high-latency mobile)
+            const GPE_CAP = HIGH_WATER_MARK_MAX;
             const isGPEBlocked = gpeInFlightBytesRef.current > GPE_CAP;
             
             // v02.1.65: Hardened Census Loop (Absolute Reliability)
@@ -1229,7 +1231,7 @@ ${capturedLogsRef.current.join('\n')}
                 blockedLoopCount.current++;
                 if (blockedLoopCount.current % 500 === 0) {
                     const statusCensus = dataChannelsRef.current.map((c, idx) => `${idx}:${c?.readyState || 'null'}`).join(',');
-                    logDebug(`🛰️ FLOW BLOCKED: GPE=${isGPEBlocked} (${Math.round(gpeInFlightBytesRef.current/1024)}KB), BDP=${totalBuffered >= bdpLimit} (${Math.round(totalBuffered/1024)}KB), Pipes=${openChannels.length} [${statusCensus}]`);
+                    logDebug(`🛰️ FLOW BLOCKED: GPE=${isGPEBlocked} (${Math.round(gpeInFlightBytesRef.current/1024)}KB / ${Math.round(GPE_CAP/1024)}KB), BDP=${totalBuffered >= bdpLimit} (${Math.round(totalBuffered/1024)}KB), Pipes=${openChannels.length}`);
                 }
             } else {
                 blockedLoopCount.current = 0;
