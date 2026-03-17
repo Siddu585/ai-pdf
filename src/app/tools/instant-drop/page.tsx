@@ -11,11 +11,11 @@ import { Footer } from "@/components/layout/Footer";
 import { useUsage } from "@/hooks/useUsage";
 import { PaywallModal } from "@/components/layout/PaywallModal";
 
-// v02.1.94 (Ultra-Pro Scaling) - 6-Pipe Multiplexer & JIT Worker Reassembly (5.0MB/s+ Target)
-const VERSION = "v02.1.94 (Ultra-Pro Scaling)"; 
-const PIPES = 6; 
+// v02.1.95 (User Fast-Path) - maxRetransmits: 0 / 16-Channel / NACK Recovery (6.0MB/s+ Target)
+const VERSION = "v02.1.95 (User Fast-Path)"; 
+const PIPES = 4; 
 const CHANNELS_PER_PIPE = 4;
-const CHANNELS = 24; 
+const CHANNELS = 16; 
 const CHUNK_SIZE = 256 * 1024; // 256KB - Fortress Velocity
 const HIGH_WATER_MARK_MAX = 32 * 1024 * 1024; // 32MB - Prime Capacity for High Latency
 const PACER_THRESHOLD = 2 * 1024 * 1024; 
@@ -141,6 +141,7 @@ function InstantDropContent() {
     const totalReceivedChunksCountRef = useRef(0); // v02.1.39 (Patch 12): Lightweight Flow Control
     const doneWaitingTimeoutRef = useRef<any>(null); // v02.1.39 (Patch 12): Receiver Safety Net
     const blockedLoopCount = useRef(0); // v02.1.57: Diagnostic Flow Counter
+    const senderChunkCacheRef = useRef<Map<string, Uint8Array>>(new Map()); // v02.1.95: NACK Sliding Window
 
     // v02.1.74: Global Pre-flight Readiness Check
     useEffect(() => {
@@ -303,6 +304,20 @@ function InstantDropContent() {
                     }
                     workerRef.current?.postMessage({ type: 'metadata', fileIdx: msg.currentIdx, meta: msg });
                     if (statusRef.current !== 'done') setStatus('transferring');
+                }
+                break;
+            case 'nack':
+                if (modeRef.current === 'send') {
+                    const cacheKey = `${msg.fileIdx}_${msg.chunkIdx}`;
+                    const cachedPacket = senderChunkCacheRef.current.get(cacheKey);
+                    if (cachedPacket) {
+                        logDebug(`🚀 NACK Resend: File-${msg.fileIdx} Chunk-${msg.chunkIdx}`);
+                        // Resend via any open channel
+                        const channels = dataChannelsRef.current.filter(c => c && c.readyState === 'open');
+                        if (channels.length > 0) {
+                            try { channels[0].send(cachedPacket as any); } catch(e) {}
+                        }
+                    }
                 }
                 break;
             case 'batch-eof':
@@ -519,15 +534,45 @@ ${capturedLogsRef.current.join('\n')}
         const workerScript = `
             let fileBuffers = new Map();
             let fileMetas = new Map();
-            let receivedChunkIndices = new Map(); // v02.1.39 (Patch 7): Track specific indices for integrity
+            let receivedChunkIds = new Map(); // v02.1.95: Set of received chunkIdx
+            let bytesReceivedMap = new Map(); // v02.1.95: Track bytes for completion
             let reassembledFiles = new Set();
             let expectedTotalChunks = new Map();
             let expectedTotalFiles = -1;
+            let lastHoleCheck = 0;
             
             // v02.1.83: Worker Heartbeat Pulse (Keep-Alive)
             setInterval(() => {
                 if (fileBuffers.size > 0 || expectedTotalFiles !== -1) {
                     self.postMessage({ type: 'worker-pulse', ts: Date.now() });
+                }
+                
+                // v02.1.95: Hole Detection (NACK Trigger)
+                const now = Date.now();
+                if (now - lastHoleCheck > 2000) {
+                    lastHoleCheck = now;
+                    fileBuffers.forEach((buffer, fileIdx) => {
+                        if (reassembledFiles.has(fileIdx)) return;
+                        const received = receivedChunkIds.get(fileIdx);
+                        const expected = expectedTotalChunks.get(fileIdx);
+                        if (received && expected) {
+                            for (let i = 0; i < expected; i++) {
+                                if (!received.has(i)) {
+                                    // Missing chunk found!
+                                    self.postMessage({ type: 'nack', fileIdx, chunkIdx: i });
+                                }
+                            }
+                        } else if (received) {
+                            // If we don't know total chunks yet, check holes up to max received
+                            let maxIdx = -1;
+                            received.forEach(idx => { if (idx > maxIdx) maxIdx = idx; });
+                            for (let i = 0; i < maxIdx; i++) {
+                                if (!received.has(i)) {
+                                    self.postMessage({ type: 'nack', fileIdx, chunkIdx: i });
+                                }
+                            }
+                        }
+                    });
                 }
             }, 5000);
 
@@ -538,7 +583,8 @@ ${capturedLogsRef.current.join('\n')}
                 if (type === 'RESET_WORKER') {
                     fileBuffers = new Map();
                     fileMetas = new Map();
-                    receivedChunkIndices = new Map();
+                    receivedChunkIds = new Map();
+                    bytesReceivedMap = new Map();
                     reassembledFiles = new Set();
                     expectedTotalChunks = new Map();
                     expectedTotalFiles = -1;
@@ -546,69 +592,64 @@ ${capturedLogsRef.current.join('\n')}
                 }
 
                 if (type === 'metadata') {
-                    // v02.1.87: Strict Metadata Deduplication to prevent buffer storm
                     if (fileMetas.has(fileIdx)) return;
                     fileMetas.set(fileIdx, meta);
-                    
-                    // v02.1.92: Pre-allocate buffer based on size (Absolute Reliability)
                     if (meta.size > 0 && !fileBuffers.has(fileIdx)) {
                         fileBuffers.set(fileIdx, new Uint8Array(meta.size));
-                        receivedChunkIndices.set(fileIdx, 0); // Re-purpose as bytesReceived counter
+                        receivedChunkIds.set(fileIdx, new Set());
+                        bytesReceivedMap.set(fileIdx, 0);
                     }
-                    
-                    // v02.1.39 (Patch 14): Metadata may arrive LATE.
                     checkCompletion(fileIdx);
                 } else if (type === 'chunk') {
                     if (chunkIdx === 0xFFFFFFFD) { // Batch EOF
                         expectedTotalFiles = e.data.payloadCount;
+                    } else if (chunkIdx === 0xFFFFFFFE) { // Sector EOF
+                        expectedTotalChunks.set(fileIdx, e.data.payloadCount);
                     } else {
                         if (reassembledFiles.has(fileIdx)) return;
                         
-                        // v02.1.39 (Patch 23): Sector EOF
-                        if (chunkIdx === 0xFFFFFFFE) { 
-                            const totalChunks = e.data.payloadCount;
-                            expectedTotalChunks.set(fileIdx, totalChunks);
-                        } else {
-                            // v02.1.92: Byte-Offset Placement
-                            const buffer = fileBuffers.get(fileIdx);
-                            const meta = fileMetas.get(fileIdx);
-                            const byteOffset = e.data.byteOffset; // New field from v02.1.92 sender
-                            
-                            if (buffer && byteOffset !== undefined) {
+                        const buffer = fileBuffers.get(fileIdx);
+                        const byteOffset = e.data.byteOffset;
+                        
+                        if (buffer && byteOffset !== undefined) {
+                            const chunkIds = receivedChunkIds.get(fileIdx);
+                            if (chunkIds && !chunkIds.has(chunkIdx)) {
                                 const chunk = new Uint8Array(e.data.originalBuffer, e.data.offset);
                                 buffer.set(chunk, byteOffset);
-                                const bytesBefore = receivedChunkIndices.get(fileIdx) || 0;
-                                receivedChunkIndices.set(fileIdx, bytesBefore + chunk.length);
-                            } else if (!buffer) {
-                                // Buffer not ready yet (metadata late) - stash chunk in a temp map
-                                if (!self.stashedChunks) self.stashedChunks = new Map();
-                                if (!self.stashedChunks.has(fileIdx)) self.stashedChunks.set(fileIdx, []);
-                                self.stashedChunks.get(fileIdx).push({ byteOffset, data: e.data.originalBuffer, headerOffset: e.data.offset });
+                                chunkIds.add(chunkIdx);
+                                const bytesBefore = bytesReceivedMap.get(fileIdx) || 0;
+                                bytesReceivedMap.set(fileIdx, bytesBefore + chunk.length);
                             }
+                        } else if (!buffer) {
+                             if (!self.stashedChunks) self.stashedChunks = new Map();
+                             if (!self.stashedChunks.has(fileIdx)) self.stashedChunks.set(fileIdx, []);
+                             self.stashedChunks.get(fileIdx).push({ byteOffset, chunkIdx, data: e.data.originalBuffer, headerOffset: e.data.offset });
                         }
-                        checkCompletion(fileIdx);
                     }
+                    checkCompletion(fileIdx);
                 }
                 
                 function checkCompletion(fIdx) {
                     const meta = fileMetas.get(fIdx);
                     const buffer = fileBuffers.get(fIdx);
-                    // v02.1.92: Flush stashed chunks if buffer just became ready
                     if (buffer && self.stashedChunks && self.stashedChunks.has(fIdx)) {
                         const stashed = self.stashedChunks.get(fIdx);
+                        const chunkIds = receivedChunkIds.get(fIdx);
                         stashed.forEach(s => {
-                            const chunk = new Uint8Array(s.data, s.headerOffset);
-                            buffer.set(chunk, s.byteOffset);
-                            const bytesBefore = receivedChunkIndices.get(fIdx) || 0;
-                            receivedChunkIndices.set(fIdx, bytesBefore + chunk.length);
+                            if (chunkIds && !chunkIds.has(s.chunkIdx)) {
+                                const chunk = new Uint8Array(s.data, s.headerOffset);
+                                buffer.set(chunk, s.byteOffset);
+                                chunkIds.add(s.chunkIdx);
+                                const bytesBefore = bytesReceivedMap.get(fIdx) || 0;
+                                bytesReceivedMap.set(fIdx, bytesBefore + chunk.length);
+                            }
                         });
                         self.stashedChunks.delete(fIdx);
                     }
 
                     if (meta && buffer) {
-                        const bytesReceived = receivedChunkIndices.get(fIdx);
+                        const bytesReceived = bytesReceivedMap.get(fIdx);
                         if (bytesReceived >= meta.size) {
-                            // v02.1.94: JIT Verification Dispatch
                             self.postMessage({ 
                                 type: 'reassembled', 
                                 fileIdx: fIdx, 
@@ -619,10 +660,9 @@ ${capturedLogsRef.current.join('\n')}
                             }, [buffer.buffer]);
                             fileBuffers.delete(fIdx); 
                             fileMetas.delete(fIdx); 
-                            receivedChunkIndices.delete(fIdx); 
+                            receivedChunkIds.delete(fIdx); 
+                            bytesReceivedMap.delete(fIdx);
                             reassembledFiles.add(fIdx);
-                            
-                            // v02.1.94: Signal back-pressure release to allow next file processing
                             self.postMessage({ type: 'file-done', fileIdx: fIdx });
                         }
                     }
@@ -646,11 +686,14 @@ ${capturedLogsRef.current.join('\n')}
             if (e.data.type === 'reassembled') {
                  reassembledCount.current++; 
                  const { fileIdx, name, fileType, chunks } = e.data;
-                 // v02.1.39 (Patch 12): Decrement global chunk counter to allow more data in
                  if (chunks) totalReceivedChunksCountRef.current = Math.max(0, totalReceivedChunksCountRef.current - chunks.length);
                  const blob = new Blob(chunks, { type: fileType || 'application/octet-stream' });
                  setReceivedFiles(prev => [...prev, { blob, name }]);
                  logDebug(`Receiver: Worker reassembly complete for ${name}.`);
+            } else if (e.data.type === 'nack') {
+                // v02.1.95: Loss Recovery Trigger
+                logDebug(`🛰️ Hole Detected! Requesting re-send for File-${e.data.fileIdx} Chunk-${e.data.chunkIdx}`);
+                sendControlMsg({ type: 'nack', fileIdx: e.data.fileIdx, chunkIdx: e.data.chunkIdx });
             } else if (e.data.type === 'need-metadata') {
                  const fIdx = e.data.fileIdx;
                  logDebug(`Receiver: Missing metadata for file ${fIdx}. Requesting...`);
@@ -902,6 +945,7 @@ ${capturedLogsRef.current.join('\n')}
                     const channelIdx = startIdx + i;
                     const dc = peer.createDataChannel(`data-${channelIdx}`, {
                         ordered: false,
+                        maxRetransmits: 0, // v02.1.95: Eliminate HOL blocking for bulk data
                         // @ts-ignore
                         priority: 'high'
                     });
@@ -1313,6 +1357,16 @@ ${capturedLogsRef.current.join('\n')}
                         }
 
                         dc.send(packet);
+                        
+                        // v02.1.95: NACK Sliding Window Cache
+                        const cacheKey = `${index}_${chunkSeqIdx}`;
+                        senderChunkCacheRef.current.set(cacheKey, packet);
+                        if (senderChunkCacheRef.current.size > 200) {
+                            // Rotate cache: remove oldest entries
+                            const firstKey = senderChunkCacheRef.current.keys().next().value;
+                            if (firstKey) senderChunkCacheRef.current.delete(firstKey);
+                        }
+
                         totalSentBytesRef.current += packet.byteLength;
                         gpeInFlightBytesRef.current += packet.byteLength; 
                         lastProgressTimeRef.current = Date.now();
