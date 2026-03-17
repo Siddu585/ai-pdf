@@ -12,7 +12,7 @@ import { useUsage } from "@/hooks/useUsage";
 import { PaywallModal } from "@/components/layout/PaywallModal";
 
 // v02.1.95 (User Fast-Path) - maxRetransmits: 0 / 16-Channel / NACK Recovery (6.0MB/s+ Target)
-const VERSION = "v02.1.95 (User Fast-Path)"; 
+const VERSION = "v02.1.96 (Stability Prime)";
 const PIPES = 4; 
 const CHANNELS_PER_PIPE = 4;
 const CHANNELS = 16; 
@@ -1159,32 +1159,56 @@ ${capturedLogsRef.current.join('\n')}
         });
         sendControlMsg({ type: 'batch-eof', totalFiles: currentFiles.length });
         
-        // v02.1.33 Finalization Handshake: Wait for receiver to confirm local save
-        logDebug("Sender: Batch sent. Awaiting receiver verification...");
-        setStatus('done-waiting'); // New UI state for "Verifying..."
+        // v02.1.96: Strict Verification Handshake
+        // Symmetry pulse to trigger receiver completion check
+        sendControlMsg({ type: 'force-verify' });
+        
+        logDebug("Sender: Batch sent. Awaiting receiver verification (Ready ACK)...");
+        setStatus('done-waiting'); 
+
         const waitForAck = () => new Promise<void>((resolve) => {
-            const handler = (e: any) => {
-                if (e.detail.type === 'batch-ack' || e.detail.type === 'resume-sync') {
-                    window.removeEventListener('webrtc-sender-msg', handler);
+            const dcHandler = (e: MessageEvent) => {
+                if (e.data instanceof ArrayBuffer && e.data.byteLength >= 8) {
+                    const view = new DataView(e.data);
+                    const chunkIdx = view.getUint32(4, true);
+                    if (chunkIdx === 0xFFFFFFFB) { // Batch-ACK Pulsar
+                        logDebug("Sender: Received P2P Batch-ACK! Transfer Confirmed.");
+                        cleanup();
+                        resolve();
+                    }
+                }
+            };
+
+            const wsHandler = (e: any) => {
+                if (e.detail.type === 'batch-ack' || e.detail.type === 'verification-complete') {
+                    logDebug("Sender: Received Signaling Batch-ACK! Transfer Confirmed.");
+                    cleanup();
                     resolve();
                 }
             };
-            window.addEventListener('webrtc-sender-msg', handler);
-            // v02.1.39 (Patch 11/18): Increased to 40s to allow receiver 30s reassembly breathing room
-            // v02.1.81: Absolute Verification Sync (No-OR Guard)
-            // Replaced forced timeout with 'Manual Force Done' button option in UI (or strictly wait for ACK).
-            // This prevents the 'Sender says Done while Receiver says Processing' mismatch.
+
+            const cleanup = () => {
+                window.removeEventListener('webrtc-sender-msg', wsHandler);
+                dataChannelsRef.current.forEach(dc => {
+                    if (dc) dc.removeEventListener('message', dcHandler);
+                });
+            };
+
+            window.addEventListener('webrtc-sender-msg', wsHandler);
+            dataChannelsRef.current.forEach(dc => {
+                if (dc) dc.addEventListener('message', dcHandler);
+            });
+
+            // v02.1.96: Increased safety net to 90s for ultra-high latency (6.8s case).
             setTimeout(() => {
-                window.removeEventListener('webrtc-sender-msg', handler);
+                cleanup();
                 if (statusRef.current === 'done-waiting') {
-                    logDebug('Sender: 60s Handshake Safety Net (No Forced Status Update).');
+                    logDebug('Sender: 90s Handshake Safety Net triggered.');
                 }
                 resolve();
-            }, 60 * 1000);
+            }, 90 * 1000);
         });
 
-        // symmetry-pacing trigger: Send one final pulse
-        sendControlMsg({ type: 'force-verify' });
         await waitForAck();
 
         setStatus('done');
@@ -1220,6 +1244,16 @@ ${capturedLogsRef.current.join('\n')}
 
         while (byteOffset < file.size) {
             if (!isActive.current) return;
+
+            // v02.1.96: Congestion-Aware Pacing (RTT Guard)
+            // If latency (RTT) exceeds 500ms, we inject a small delay to prevent buffer overflow.
+            const currentRTT = avgRTTRef.current || 0;
+            if (currentRTT > 0.5 && chunkSeqIdx % 5 === 0) {
+                const pacingDelay = Math.min(50, Math.floor((currentRTT - 0.4) * 100));
+                if (pacingDelay > 0) {
+                    await new Promise(resolve => setTimeout(resolve, pacingDelay));
+                }
+            }
 
             // v02.1.67 (Patch 26.7): Sentinel Pacer Guard
             const currentSpeed = currentMBpsRef.current || 0;
@@ -1358,10 +1392,10 @@ ${capturedLogsRef.current.join('\n')}
 
                         dc.send(packet);
                         
-                        // v02.1.95: NACK Sliding Window Cache
+                        // v02.1.96: Expanded NACK Sliding Window Cache (1000 chunks for high latency)
                         const cacheKey = `${index}_${chunkSeqIdx}`;
                         senderChunkCacheRef.current.set(cacheKey, packet);
-                        if (senderChunkCacheRef.current.size > 200) {
+                        if (senderChunkCacheRef.current.size > 1000) {
                             // Rotate cache: remove oldest entries
                             const firstKey = senderChunkCacheRef.current.keys().next().value;
                             if (firstKey) senderChunkCacheRef.current.delete(firstKey);
