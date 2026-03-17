@@ -11,8 +11,8 @@ import { Footer } from "@/components/layout/Footer";
 import { useUsage } from "@/hooks/useUsage";
 import { PaywallModal } from "@/components/layout/PaywallModal";
 
-// v02.1.97 (Stability Gold) - Latency-Aware Sentinel / Quiescent Verification
-const VERSION = "v02.1.97 (Stability Gold)";
+// v02.2.00 (Adaptive Prime) - Dynamic Pipeline Scaling / Throughput Hardening
+const VERSION = "v02.2.00 (Adaptive Prime)";
 const PIPES = 4; 
 const CHANNELS_PER_PIPE = 4;
 const CHANNELS = 16; 
@@ -21,6 +21,11 @@ const HIGH_WATER_MARK_MAX = 32 * 1024 * 1024; // 32MB - Prime Capacity for High 
 const PACER_THRESHOLD = 2 * 1024 * 1024; 
 const MAX_IN_FLIGHT = 256; 
 const DRAIN_THRESHOLD = 32 * 1024 * 1024; 
+const getAdaptivePipeCount = (rtt: number) => {
+    if (rtt < 0.200) return 4; // 16 Channels (Max Velocity)
+    if (rtt < 0.500) return 2; // 8 Channels (Congestion Guard)
+    return 1; // 4 Channels (Survival Mode / Anchor Only)
+};
 const getBackendUrls = () => {
     let rawUrl = (process.env.NEXT_PUBLIC_API_URL || "").trim().replace(/\/$/, "");
     
@@ -142,6 +147,7 @@ function InstantDropContent() {
     const doneWaitingTimeoutRef = useRef<any>(null); // v02.1.39 (Patch 12): Receiver Safety Net
     const blockedLoopCount = useRef(0); // v02.1.57: Diagnostic Flow Counter
     const senderChunkCacheRef = useRef<Map<string, Uint8Array>>(new Map()); // v02.1.95: NACK Sliding Window
+    const lastScaleRef = useRef<number>(PIPES); // v02.2.00: Adaptive Scale Memory
 
     // v02.1.74: Global Pre-flight Readiness Check
     useEffect(() => {
@@ -1309,8 +1315,16 @@ ${capturedLogsRef.current.join('\n')}
             const GPE_CAP = 64 * 1024 * 1024; 
             const isGPEBlocked = gpeInFlightBytesRef.current > GPE_CAP;
             
+            const targetPipeCount = getAdaptivePipeCount(currentRTT);
+            const targetChannelLimit = targetPipeCount * CHANNELS_PER_PIPE;
+
+            if (targetPipeCount !== lastScaleRef.current) {
+                logDebug(`📡 ADAPTIVE SCALE: RTT=${currentRTT.toFixed(3)}s -> Concurrency: ${targetPipeCount} Pipes (${targetChannelLimit} Channels)`);
+                lastScaleRef.current = targetPipeCount;
+            }
+
             const openChannels = [];
-            for (let i = 0; i < CHANNELS; i++) {
+            for (let i = 0; i < targetChannelLimit; i++) {
                 const dc = dataChannelsRef.current[i];
                 if (dc && dc.readyState === 'open') openChannels.push(dc);
             }
