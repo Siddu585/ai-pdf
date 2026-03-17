@@ -12,7 +12,7 @@ import { useUsage } from "@/hooks/useUsage";
 import { PaywallModal } from "@/components/layout/PaywallModal";
 
 // v02.1.92 (Adaptive Prime) - Byte-Offset Adaptive MTU (5.0MB/s+ Target)
-const VERSION = "v02.1.92 (Adaptive Prime)";
+const VERSION = "v02.1.93 (Resilient UI)"; // v02.1.93: Main-Thread Yielding 🏎️🏗️🛡️
 const PIPES = 3; 
 const CHANNELS_PER_PIPE = 4;
 const CHANNELS = 12; 
@@ -1214,6 +1214,9 @@ ${capturedLogsRef.current.join('\n')}
                     const statusCensus = dataChannelsRef.current.map((c, idx) => `${idx}:${c?.readyState || 'null'}`).join(',');
                     logDebug(`🛰️ FLOW BLOCKED: GPE=${isGPEBlocked} (${Math.round(gpeInFlightBytesRef.current/1024)}KB), BDP=${totalBuffered >= bdpLimit} (${Math.round(totalBuffered/1024)}KB), Pipes=${openChannels.length}`);
                 }
+                // v02.1.93 Resilient UI: Yield to event loop when blocked to prevent UI freeze
+                await new Promise(resolve => setTimeout(resolve, 0));
+                continue; // Re-evaluate condition after yield
             } else {
                 blockedLoopCount.current = 0;
             }
@@ -1276,6 +1279,11 @@ ${capturedLogsRef.current.join('\n')}
                         
                         byteOffset += chunkData.byteLength; // Increment by actual data size
                         chunkSeqIdx++;
+
+                        // v02.1.93 Resilient UI: Yield periodically even when NOT blocked
+                        if (chunkSeqIdx % 10 === 0) {
+                            await new Promise(resolve => setTimeout(resolve, 0));
+                        }
                     } catch (e: any) {
                         logDebug(`❌ DataChannel Send Error: ${e.message}`);
                     }
