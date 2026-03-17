@@ -11,11 +11,11 @@ import { Footer } from "@/components/layout/Footer";
 import { useUsage } from "@/hooks/useUsage";
 import { PaywallModal } from "@/components/layout/PaywallModal";
 
-// v02.1.92 (Adaptive Prime) - Byte-Offset Adaptive MTU (5.0MB/s+ Target)
-const VERSION = "v02.1.93 (Resilient UI)"; // v02.1.93: Main-Thread Yielding 🏎️🏗️🛡️
-const PIPES = 3; 
+// v02.1.94 (Ultra-Pro Scaling) - 6-Pipe Multiplexer & JIT Worker Reassembly (5.0MB/s+ Target)
+const VERSION = "v02.1.94 (Ultra-Pro Scaling)"; 
+const PIPES = 6; 
 const CHANNELS_PER_PIPE = 4;
-const CHANNELS = 12; 
+const CHANNELS = 24; 
 const CHUNK_SIZE = 256 * 1024; // 256KB - Fortress Velocity
 const HIGH_WATER_MARK_MAX = 32 * 1024 * 1024; // 32MB - Prime Capacity for High Latency
 const PACER_THRESHOLD = 2 * 1024 * 1024; 
@@ -86,8 +86,8 @@ function InstantDropContent() {
     const capturedLogsRef = useRef<string[]>([]);
     const peersRef = useRef<RTCPeerConnection[]>([]);
     const dataChannelsRef = useRef<RTCDataChannel[]>([]);
-    const remoteDescriptionSetsRef = useRef<boolean[]>([false, false, false]);
-    const iceBuffersRef = useRef<any[][]>([[], [], []]);
+    const remoteDescriptionSetsRef = useRef<boolean[]>(new Array(PIPES).fill(false));
+    const iceBuffersRef = useRef<any[][]>(Array.from({ length: PIPES }, () => []));
     const filesRef = useRef<File[]>([]);
     const modeRef = useRef(mode);
     const statusRef = useRef(status);
@@ -102,7 +102,7 @@ function InstantDropContent() {
     const totalReceivedBytesRef = useRef(0);
     const lastSuccessfulChunkIdxRef = useRef(0);
     const isResumingRef = useRef(false);
-    const pipeGenerationRef = useRef<number[]>([0, 0, 0]); // v02.1.79: Handshake Generation Isolation
+    const pipeGenerationRef = useRef<number[]>(new Array(PIPES).fill(0)); // v02.1.79: Handshake Generation Isolation
     const stallWatchdogRef = useRef<any>(null);
     const wakeLockRef = useRef<any>(null);
     const gpeInFlightBytesRef = useRef(0); // v02.1.50: GPE Gated In-Flight Tracking
@@ -608,15 +608,22 @@ ${capturedLogsRef.current.join('\n')}
                     if (meta && buffer) {
                         const bytesReceived = receivedChunkIndices.get(fIdx);
                         if (bytesReceived >= meta.size) {
+                            // v02.1.94: JIT Verification Dispatch
                             self.postMessage({ 
                                 type: 'reassembled', 
                                 fileIdx: fIdx, 
                                 name: meta.name, 
                                 fileType: meta.fileType, 
                                 chunks: [buffer.buffer],
-                                chunkCount: -1 // Sequence count no longer needed for reassembly
+                                chunkCount: -1 
                             }, [buffer.buffer]);
-                            fileBuffers.delete(fIdx); fileMetas.delete(fIdx); receivedChunkIndices.delete(fIdx); reassembledFiles.add(fIdx);
+                            fileBuffers.delete(fIdx); 
+                            fileMetas.delete(fIdx); 
+                            receivedChunkIndices.delete(fIdx); 
+                            reassembledFiles.add(fIdx);
+                            
+                            // v02.1.94: Signal back-pressure release to allow next file processing
+                            self.postMessage({ type: 'file-done', fileIdx: fIdx });
                         }
                     }
                 }
@@ -1141,12 +1148,13 @@ ${capturedLogsRef.current.join('\n')}
     };
  
     const transferFileP2PParallel = async (file: File, index: number) => {
-        const buffer = await file.arrayBuffer();
+        // v02.1.94: Use ReadableStream to prevent OOM on large files
+        const stream = file.stream();
+        const reader = stream.getReader();
         
         // v02.1.91: Adaptive MTU Probing
-        const getCurrentChunkSize = () => dynamicChunkSizeRef.current;
-        let byteOffset = isResumingRef.current ? lastSuccessfulChunkIdxRef.current : 0; // Simple resume for now
-        let chunkSeqIdx = 0; // Sequential counter for stats
+        let byteOffset = isResumingRef.current ? lastSuccessfulChunkIdxRef.current : 0; 
+        let chunkSeqIdx = 0; 
         isResumingRef.current = false;
 
         logDebug(`Sender: ${VERSION} ${byteOffset > 0 ? 'RESUMING' : 'Quasar Start'} for ${file.name} (Size: ${file.size} bytes)`);
@@ -1154,17 +1162,28 @@ ${capturedLogsRef.current.join('\n')}
         // v02.1.52 (Patch 25.2): GPE Counter Reset
         gpeInFlightBytesRef.current = 0;
 
-        while (byteOffset < buffer.byteLength) {
+        // Skip to offset if resuming
+        if (byteOffset > 0) {
+            let skipped = 0;
+            while (skipped < byteOffset) {
+                const { value } = await reader.read();
+                if (!value) break;
+                skipped += value.byteLength;
+            }
+        }
+
+        let currentChunkResidual: Uint8Array | null = null;
+
+        while (byteOffset < file.size) {
             if (!isActive.current) return;
 
             // v02.1.67 (Patch 26.7): Sentinel Pacer Guard
             const currentSpeed = currentMBpsRef.current || 0;
-            // v02.1.82: Stall Watchdog Protection
             if (currentSpeed < 0.2 && statusRef.current === 'transferring') {
                 if (!stallWatchdogRef.current) {
                     stallWatchdogRef.current = setTimeout(() => {
                         logDebug(`🛰️ Stall Detected (${currentSpeed.toFixed(2)}MB/s). Triggering Sentinel Auto-Resume...`);
-                        lastSuccessfulChunkIdxRef.current = byteOffset; // Store byteOffset for resume
+                        lastSuccessfulChunkIdxRef.current = byteOffset; 
                         isResumingRef.current = true;
                         
                         sendControlMsg({
@@ -1195,11 +1214,8 @@ ${capturedLogsRef.current.join('\n')}
                 (acc, c) => acc + (c?.readyState === 'open' ? c.bufferedAmount : 0), 0
             );
 
-            // v02.1.92: Tuned BDP (Reflects 5MB/s Target)
             const bdpLimit = Math.max(32 * 1024 * 1024, Math.min(512 * 1024 * 1024, (currentMBpsRef.current * 1024 * 1024 * avgRTTRef.current * 8.0)));
-
-            // v02.1.88: Standardized GPE Elasticity
-            const GPE_CAP = 64 * 1024 * 1024; // v02.1.92: 64MB for ultra-pro parallelism
+            const GPE_CAP = 64 * 1024 * 1024; 
             const isGPEBlocked = gpeInFlightBytesRef.current > GPE_CAP;
             
             const openChannels = [];
@@ -1210,25 +1226,23 @@ ${capturedLogsRef.current.join('\n')}
 
             if (isGPEBlocked || totalBuffered >= bdpLimit || openChannels.length === 0) {
                 blockedLoopCount.current++;
-                if (blockedLoopCount.current % 10000 === 0) { // Spinning faster, log less
-                    const statusCensus = dataChannelsRef.current.map((c, idx) => `${idx}:${c?.readyState || 'null'}`).join(',');
-                    logDebug(`🛰️ FLOW BLOCKED: GPE=${isGPEBlocked} (${Math.round(gpeInFlightBytesRef.current/1024)}KB), BDP=${totalBuffered >= bdpLimit} (${Math.round(totalBuffered/1024)}KB), Pipes=${openChannels.length}`);
+                if (blockedLoopCount.current % 10000 === 0) {
+                    logDebug(`🛰️ FLOW BLOCKED: GPE=${isGPEBlocked}, BDP=${totalBuffered >= bdpLimit}, Pipes=${openChannels.length}`);
                 }
-                // v02.1.93 Resilient UI: Yield to event loop when blocked to prevent UI freeze
                 await new Promise(resolve => setTimeout(resolve, 0));
-                continue; // Re-evaluate condition after yield
+                continue; 
             } else {
                 blockedLoopCount.current = 0;
             }
 
-            // v02.1.56: GPE Self-Unblock Logic (5s Safety)
+            // GPE Self-Unblock Logic (3s Safety)
             if (isGPEBlocked) {
                 if (!gpeBlockedSinceRef.current) gpeBlockedSinceRef.current = Date.now();
                 if (Date.now() - gpeBlockedSinceRef.current > 3000) {
-                    logDebug("⚠️ GPE Deadlock detected (3s). Performing Heartbeat Pulse...");
+                    logDebug("⚠️ GPE Deadlock detected (3s). performing Heartbeat Pulse...");
                     gpeInFlightBytesRef.current = Math.max(0, gpeInFlightBytesRef.current - (4096 * 1024));
-                    gpeBlockedSinceRef.current = Date.now(); 
                     sendControlMsg({ type: 'heartbeat', ts: Date.now() }); 
+                    gpeBlockedSinceRef.current = Date.now();
                 }
             } else {
                 gpeBlockedSinceRef.current = null;
@@ -1238,31 +1252,57 @@ ${capturedLogsRef.current.join('\n')}
                 const dc = openChannels[chunkSeqIdx % openChannels.length];
 
                 if (dc && dc.readyState === 'open') {
-                    const currentCS = dynamicChunkSizeRef.current;
-                    const chunkData = new Uint8Array(buffer, byteOffset, Math.min(currentCS, buffer.byteLength - byteOffset));
+                    // Read next chunk from stream
+                    const targetSize = dynamicChunkSizeRef.current;
+                    let chunkData: Uint8Array;
 
-                    // v02.1.92: Aggressive Velocity Prime Pacing
+                    if (currentChunkResidual && currentChunkResidual.length >= targetSize) {
+                        chunkData = currentChunkResidual.slice(0, targetSize);
+                        currentChunkResidual = currentChunkResidual.length > targetSize ? currentChunkResidual.slice(targetSize) : null;
+                    } else {
+                        const { value, done } = await reader.read();
+                        if (done) break;
+                        
+                        if (currentChunkResidual) {
+                            const newBuf = new Uint8Array(currentChunkResidual.length + value.length);
+                            newBuf.set(currentChunkResidual);
+                            newBuf.set(value, currentChunkResidual.length);
+                            currentChunkResidual = newBuf;
+                        } else {
+                            currentChunkResidual = value;
+                        }
+                        
+                        // After merging/setting, currentChunkResidual is guaranteed to be non-null
+                        const residual = currentChunkResidual as Uint8Array;
+                        if (residual.length >= targetSize) {
+                            chunkData = residual.slice(0, targetSize);
+                            currentChunkResidual = residual.length > targetSize ? residual.slice(targetSize) : null;
+                        } else {
+                            chunkData = residual;
+                            currentChunkResidual = null;
+                        }
+                    }
+
+                    // Scaling Logic
                     chunksSentSinceScaleRef.current++;
-                    if (chunksSentSinceScaleRef.current > 50) { // More frequent scaling
+                    if (chunksSentSinceScaleRef.current > 50) {
                         chunksSentSinceScaleRef.current = 0;
                         const rtt = avgRTTRef.current || 0;
                         const speed = currentMBpsRef.current || 0;
-                        // Scale up if stable
                         if (rtt < 0.200 && speed > 0.5 && dynamicChunkSizeRef.current < 1024 * 1024) {
                             dynamicChunkSizeRef.current += 128 * 1024;
-                            logDebug(`🚀 VELOCITY UP: Scaling MTU to ${Math.round(dynamicChunkSizeRef.current/1024)}KB (RTT: ${Math.round(rtt*1000)}ms, Speed: ${speed.toFixed(2)}MB/s)`);
+                            logDebug(`🚀 VELOCITY UP: Scaling MTU to ${Math.round(dynamicChunkSizeRef.current/1024)}KB`);
                         }
                     }
                     
                     const packet = new Uint8Array(12 + chunkData.byteLength);
                     const view = new DataView(packet.buffer);
                     view.setUint32(0, index, true);
-                    view.setUint32(4, chunkSeqIdx, true); // Still send sequence for logs
-                    view.setUint32(8, byteOffset, true); // v02.1.92: Absolute byte placement
+                    view.setUint32(4, chunkSeqIdx, true); 
+                    view.setUint32(8, byteOffset, true); 
                     packet.set(chunkData, 12);
 
                     try {
-                        // v02.1.53: OWTT Probing
                         if (chunkSeqIdx % 20 === 0) {
                             const probePkt = new Uint8Array(16);
                             const probeView = new DataView(probePkt.buffer);
@@ -1277,10 +1317,9 @@ ${capturedLogsRef.current.join('\n')}
                         gpeInFlightBytesRef.current += packet.byteLength; 
                         lastProgressTimeRef.current = Date.now();
                         
-                        byteOffset += chunkData.byteLength; // Increment by actual data size
+                        byteOffset += chunkData.byteLength; 
                         chunkSeqIdx++;
 
-                        // v02.1.93 Resilient UI: Yield periodically even when NOT blocked
                         if (chunkSeqIdx % 10 === 0) {
                             await new Promise(resolve => setTimeout(resolve, 0));
                         }
