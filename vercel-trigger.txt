@@ -1,3 +1,3 @@
-Definitive Fix: Patch 15 Liquid Fidelity Branding.
-Removed all hardcoded Titan-Singularity and Patch 14 strings in both sender and receiver UIs.
-Timestamp: 2026-03-14 16:07:30
+Definitive Fix: Stability Gold (v02.1.97).
+Fixed Verification Oscillation, RTT-Aware Sentinel, and DataChannel Send guards.
+Timestamp: 2026-03-17 23:11:00

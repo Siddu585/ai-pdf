@@ -11,8 +11,8 @@ import { Footer } from "@/components/layout/Footer";
 import { useUsage } from "@/hooks/useUsage";
 import { PaywallModal } from "@/components/layout/PaywallModal";
 
-// v02.1.95 (User Fast-Path) - maxRetransmits: 0 / 16-Channel / NACK Recovery (6.0MB/s+ Target)
-const VERSION = "v02.1.96 (Stability Prime)";
+// v02.1.97 (Stability Gold) - Latency-Aware Sentinel / Quiescent Verification
+const VERSION = "v02.1.97 (Stability Gold)";
 const PIPES = 4; 
 const CHANNELS_PER_PIPE = 4;
 const CHANNELS = 16; 
@@ -363,6 +363,8 @@ function InstantDropContent() {
                             });
                         }
                         setStatus('done');
+                        // v02.1.97: Verification Quiescence - stop background NACK logic
+                        workerRef.current?.postMessage({ type: 'STOP_NACK_LOOP' });
                     }
                 }
                 break;
@@ -540,6 +542,7 @@ ${capturedLogsRef.current.join('\n')}
             let expectedTotalChunks = new Map();
             let expectedTotalFiles = -1;
             let lastHoleCheck = 0;
+            let isNackLoopStopped = false; // v02.1.97: Quiescence Flag
             
             // v02.1.83: Worker Heartbeat Pulse (Keep-Alive)
             setInterval(() => {
@@ -549,7 +552,7 @@ ${capturedLogsRef.current.join('\n')}
                 
                 // v02.1.95: Hole Detection (NACK Trigger)
                 const now = Date.now();
-                if (now - lastHoleCheck > 2000) {
+                if (now - lastHoleCheck > 2000 && !isNackLoopStopped) {
                     lastHoleCheck = now;
                     fileBuffers.forEach((buffer, fileIdx) => {
                         if (reassembledFiles.has(fileIdx)) return;
@@ -579,6 +582,12 @@ ${capturedLogsRef.current.join('\n')}
             self.onmessage = function(e) {
                 const { type, fileIdx, chunkIdx, meta } = e.data;
 
+                // v02.1.97: Stop NACK Loop
+                if (type === 'STOP_NACK_LOOP') {
+                    isNackLoopStopped = true;
+                    return;
+                }
+
                 // v02.1.80: Persistent State Cleanup (No-OR Hardening)
                 if (type === 'RESET_WORKER') {
                     fileBuffers = new Map();
@@ -588,6 +597,7 @@ ${capturedLogsRef.current.join('\n')}
                     reassembledFiles = new Set();
                     expectedTotalChunks = new Map();
                     expectedTotalFiles = -1;
+                    isNackLoopStopped = false; // Reset flag
                     return;
                 }
 
@@ -1255,12 +1265,15 @@ ${capturedLogsRef.current.join('\n')}
                 }
             }
 
-            // v02.1.67 (Patch 26.7): Sentinel Pacer Guard
+            // v02.1.97 (Patch 27.2): Latency-Aware Sentinel Pacer
             const currentSpeed = currentMBpsRef.current || 0;
             if (currentSpeed < 0.2 && statusRef.current === 'transferring') {
                 if (!stallWatchdogRef.current) {
+                    // Logic: Base 15s + (RTT * 20s). Range: 15s to 45s.
+                    const sentinelTimeout = Math.max(15000, Math.min(45000, currentRTT * 20000));
+                    
                     stallWatchdogRef.current = setTimeout(() => {
-                        logDebug(`🛰️ Stall Detected (${currentSpeed.toFixed(2)}MB/s). Triggering Sentinel Auto-Resume...`);
+                        logDebug(`🛰️ Stall Detected (${currentSpeed.toFixed(2)}MB/s at ${currentRTT.toFixed(2)}s RTT). Triggering Sentinel Auto-Resume (${sentinelTimeout}ms)...`);
                         lastSuccessfulChunkIdxRef.current = byteOffset; 
                         isResumingRef.current = true;
                         
@@ -1279,7 +1292,7 @@ ${capturedLogsRef.current.join('\n')}
                         if (wsRef.current) {
                             for (let p = 0; p < PIPES; p++) setupWebRTC(wsRef.current, true, p);
                         }
-                    }, 15000); 
+                    }, sentinelTimeout); 
                 }
             } else {
                 if (stallWatchdogRef.current) {
@@ -1390,6 +1403,10 @@ ${capturedLogsRef.current.join('\n')}
                             dc.send(probePkt);
                         }
 
+                        if (dc.readyState !== 'open') {
+                            logDebug(`⚠️ DataChannel ${dc.label} not open while sending. Skipping...`);
+                            continue;
+                        }
                         dc.send(packet);
                         
                         // v02.1.96: Expanded NACK Sliding Window Cache (1000 chunks for high latency)
