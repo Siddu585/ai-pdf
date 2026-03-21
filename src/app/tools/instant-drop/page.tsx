@@ -11,8 +11,8 @@ import { Footer } from "@/components/layout/Footer";
 import { useUsage } from "@/hooks/useUsage";
 import { PaywallModal } from "@/components/layout/PaywallModal";
 
-// v02.2.01 (Adaptive Prime+) - Hardened Recovery & Retransmission Control
-const VERSION = "v02.2.01 (Adaptive Prime+)";
+// v02.2.06 (Unshackled Flow) - 30 MB/s Burst Capable
+const VERSION = "v02.2.06 (Unshackled Flow)";
 const PIPES = 4; 
 const CHANNELS_PER_PIPE = 4;
 const CHANNELS = 16; 
