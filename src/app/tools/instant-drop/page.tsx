@@ -11,8 +11,8 @@ import { Footer } from "@/components/layout/Footer";
 import { useUsage } from "@/hooks/useUsage";
 import { PaywallModal } from "@/components/layout/PaywallModal";
 
-// v02.2.00 (Adaptive Prime) - Dynamic Pipeline Scaling / Throughput Hardening
-const VERSION = "v02.2.00 (Adaptive Prime)";
+// v02.2.01 (Adaptive Prime+) - Hardened Recovery & Retransmission Control
+const VERSION = "v02.2.01 (Adaptive Prime+)";
 const PIPES = 4; 
 const CHANNELS_PER_PIPE = 4;
 const CHANNELS = 16; 
@@ -148,6 +148,7 @@ function InstantDropContent() {
     const blockedLoopCount = useRef(0); // v02.1.57: Diagnostic Flow Counter
     const senderChunkCacheRef = useRef<Map<string, Uint8Array>>(new Map()); // v02.1.95: NACK Sliding Window
     const lastScaleRef = useRef<number>(PIPES); // v02.2.00: Adaptive Scale Memory
+    const nackQueueRef = useRef<{fileIdx: number, chunkIdx: number}[]>([]); // v02.2.01: Retransmission Throttling
 
     // v02.1.74: Global Pre-flight Readiness Check
     useEffect(() => {
@@ -314,15 +315,10 @@ function InstantDropContent() {
                 break;
             case 'nack':
                 if (modeRef.current === 'send') {
-                    const cacheKey = `${msg.fileIdx}_${msg.chunkIdx}`;
-                    const cachedPacket = senderChunkCacheRef.current.get(cacheKey);
-                    if (cachedPacket) {
-                        logDebug(`🚀 NACK Resend: File-${msg.fileIdx} Chunk-${msg.chunkIdx}`);
-                        // Resend via any open channel
-                        const channels = dataChannelsRef.current.filter(c => c && c.readyState === 'open');
-                        if (channels.length > 0) {
-                            try { channels[0].send(cachedPacket as any); } catch(e) {}
-                        }
+                    // v02.2.01: Retransmission Throttling (Queue instead of immediate send)
+                    nackQueueRef.current.push({ fileIdx: msg.fileIdx, chunkIdx: msg.chunkIdx });
+                    if (nackQueueRef.current.length % 50 === 0) {
+                        logDebug(`📥 NACK Queue Growth: ${nackQueueRef.current.length} pending resends.`);
                     }
                 }
                 break;
@@ -557,8 +553,8 @@ ${capturedLogsRef.current.join('\n')}
                 }
                 
                 // v02.1.95: Hole Detection (NACK Trigger)
-                const now = Date.now();
-                if (now - lastHoleCheck > 2000 && !isNackLoopStopped) {
+                // v02.2.06: Fast Hole Detection (1s NACK Trigger for unordered pipes)
+                if (now - lastHoleCheck > 1000 && !isNackLoopStopped) {
                     lastHoleCheck = now;
                     fileBuffers.forEach((buffer, fileIdx) => {
                         if (reassembledFiles.has(fileIdx)) return;
@@ -572,7 +568,7 @@ ${capturedLogsRef.current.join('\n')}
                                 }
                             }
                         } else if (received) {
-                            // If we don't know total chunks yet, check holes up to max received
+                            // Probe: If we have gaps below the current max index, request them.
                             let maxIdx = -1;
                             received.forEach(idx => { if (idx > maxIdx) maxIdx = idx; });
                             for (let i = 0; i < maxIdx; i++) {
@@ -583,7 +579,7 @@ ${capturedLogsRef.current.join('\n')}
                         }
                     });
                 }
-            }, 5000);
+            }, 1000);
 
             self.onmessage = function(e) {
                 const { type, fileIdx, chunkIdx, meta } = e.data;
@@ -665,7 +661,13 @@ ${capturedLogsRef.current.join('\n')}
 
                     if (meta && buffer) {
                         const bytesReceived = bytesReceivedMap.get(fIdx);
-                        if (bytesReceived >= meta.size) {
+                        const chunkCount = receivedChunkIds.get(fIdx)?.size || 0;
+                        const expectedChunks = expectedTotalChunks.get(fIdx);
+                        
+                        // v02.2.06: Dual-Condition Completion (Byte-count + Chunk-count)
+                        const isDone = (bytesReceived >= meta.size) && (!expectedChunks || chunkCount >= expectedChunks);
+                        
+                        if (isDone) {
                             self.postMessage({ 
                                 type: 'reassembled', 
                                 fileIdx: fIdx, 
@@ -927,7 +929,9 @@ ${capturedLogsRef.current.join('\n')}
             // Pipe-0: Forced Relay (Guaranteed link for ALL users)
             // v02.1.71: Force Relay Anchor for Symmetric NAT / Airtel Path Reliability
             // Pipe-0 is the 'Anchor' link, we force it to TURN to bypass STUN-race issues.
-            let pipePolicy: RTCIceTransportPolicy = (useFallback || pipeIdx === 0) ? 'relay' : 'all';
+            // v02.2.04: Adaptive ICE Policy (Force Relay for Anchor on public domains, use All for Localhost dev)
+            const isLocal = typeof window !== 'undefined' && (window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1');
+            let pipePolicy: RTCIceTransportPolicy = (useFallback || (pipeIdx === 0 && !isLocal)) ? 'relay' : 'all';
             const peer = new RTCPeerConnection({ 
                 iceServers: currentRelays,
                 iceTransportPolicy: pipePolicy,
@@ -967,7 +971,8 @@ ${capturedLogsRef.current.join('\n')}
                     });
                     dataChannelsRef.current[channelIdx] = dc;
                     setupDataChannel(dc, channelIdx);
-                    dc.bufferedAmountLowThreshold = 256 * 1024;
+                    // v02.2.02: Proactive Buffer Refill (8MB threshold for smooth 5-10MB/s flow)
+                    dc.bufferedAmountLowThreshold = 8 * 1024 * 1024;
                 }
             } else {
                 peer.ondatachannel = (e) => {
@@ -980,8 +985,17 @@ ${capturedLogsRef.current.join('\n')}
 
                 // Flow control timer
                 if (pipeIdx === 0) {
-                    // v02.1.39 (Patch 15): DELETED artificial signaling delays.
-                    // WebRTC's native bufferedAmount is sufficient for liquid flow.
+                    // Unshackled Flow: Ensure sender knows we are alive and ready to burst
+                    const flowTimer = setInterval(() => {
+                        if (ws.readyState === WebSocket.OPEN) {
+                            ws.send(JSON.stringify({ type: 'flow', status: 'ready' }));
+                        }
+                    }, 800);
+                    peer.addEventListener('connectionstatechange', () => {
+                        if (peer.connectionState === 'disconnected' || peer.connectionState === 'failed' || peer.connectionState === 'closed') {
+                            clearInterval(flowTimer);
+                        }
+                    });
                 }
             }
 
@@ -1261,22 +1275,21 @@ ${capturedLogsRef.current.join('\n')}
         while (byteOffset < file.size) {
             if (!isActive.current) return;
 
-            // v02.1.96: Congestion-Aware Pacing (RTT Guard)
-            // If latency (RTT) exceeds 500ms, we inject a small delay to prevent buffer overflow.
+            // Unshackled Flow: RTT Guard Removed to prevent artificial stalling
             const currentRTT = avgRTTRef.current || 0;
-            if (currentRTT > 0.5 && chunkSeqIdx % 5 === 0) {
-                const pacingDelay = Math.min(50, Math.floor((currentRTT - 0.4) * 100));
-                if (pacingDelay > 0) {
-                    await new Promise(resolve => setTimeout(resolve, pacingDelay));
-                }
-            }
 
-            // v02.1.97 (Patch 27.2): Latency-Aware Sentinel Pacer
+            const totalBuffered = dataChannelsRef.current.reduce(
+                (acc, c) => acc + (c?.readyState === 'open' ? c.bufferedAmount : 0), 0
+            );
+
+            // v02.2.03 (Patch 27.4): Buffer-Aware Sentinel Pacer
+            // Logic: A 'Stall' only exists if speed is zero AND our buffers are drained.
+            // If buffers are full, we are just waiting for the network (Backpressure).
             const currentSpeed = currentMBpsRef.current || 0;
-            if (currentSpeed < 0.2 && statusRef.current === 'transferring') {
+            if (currentSpeed < 0.2 && statusRef.current === 'transferring' && totalBuffered < 4 * 1024 * 1024) {
                 if (!stallWatchdogRef.current) {
-                    // Logic: Base 15s + (RTT * 20s). Range: 15s to 45s.
-                    const sentinelTimeout = Math.max(15000, Math.min(45000, currentRTT * 20000));
+                    // Logic: Base 30s + (RTT * 30s). Range: 30s to 90s. (Increased for Throttled Testing)
+                    const sentinelTimeout = Math.max(30000, Math.min(90000, currentRTT * 30000));
                     
                     stallWatchdogRef.current = setTimeout(() => {
                         logDebug(`🛰️ Stall Detected (${currentSpeed.toFixed(2)}MB/s at ${currentRTT.toFixed(2)}s RTT). Triggering Sentinel Auto-Resume (${sentinelTimeout}ms)...`);
@@ -1296,7 +1309,10 @@ ${capturedLogsRef.current.join('\n')}
 
                         resetSessionRefs(true); 
                         if (wsRef.current) {
-                            for (let p = 0; p < PIPES; p++) setupWebRTC(wsRef.current, true, p);
+                            // v02.2.01: Adaptive Sentinel (Only restart pipes needed for current RTT)
+                            const recoveryPipeCount = getAdaptivePipeCount(currentRTT);
+                            logDebug(`🛰️ Sentinel Recovery: Scaling to ${recoveryPipeCount} pipes for ${currentRTT.toFixed(2)}s RTT.`);
+                            for (let p = 0; p < recoveryPipeCount; p++) setupWebRTC(wsRef.current, true, p);
                         }
                     }, sentinelTimeout); 
                 }
@@ -1307,12 +1323,10 @@ ${capturedLogsRef.current.join('\n')}
                 }
             }
 
-            const totalBuffered = dataChannelsRef.current.reduce(
-                (acc, c) => acc + (c?.readyState === 'open' ? c.bufferedAmount : 0), 0
-            );
 
-            const bdpLimit = Math.max(32 * 1024 * 1024, Math.min(512 * 1024 * 1024, (currentMBpsRef.current * 1024 * 1024 * avgRTTRef.current * 8.0)));
-            const GPE_CAP = 64 * 1024 * 1024; 
+
+            const bdpLimit = Math.max(256 * 1024 * 1024, Math.min(512 * 1024 * 1024, (currentMBpsRef.current * 1024 * 1024 * avgRTTRef.current * 8.0)));
+            const GPE_CAP = 256 * 1024 * 1024; // v02.2.05: Expanded GPE for 16-channel Parallelism
             const isGPEBlocked = gpeInFlightBytesRef.current > GPE_CAP;
             
             const targetPipeCount = getAdaptivePipeCount(currentRTT);
@@ -1329,7 +1343,7 @@ ${capturedLogsRef.current.join('\n')}
                 if (dc && dc.readyState === 'open') openChannels.push(dc);
             }
 
-            if (isGPEBlocked || totalBuffered >= bdpLimit || openChannels.length === 0) {
+            if (isGPEBlocked || openChannels.length === 0) {
                 blockedLoopCount.current++;
                 if (blockedLoopCount.current % 10000 === 0) {
                     logDebug(`🛰️ FLOW BLOCKED: GPE=${isGPEBlocked}, BDP=${totalBuffered >= bdpLimit}, Pipes=${openChannels.length}`);
@@ -1353,10 +1367,59 @@ ${capturedLogsRef.current.join('\n')}
                 gpeBlockedSinceRef.current = null;
             }
 
-            if (totalBuffered < bdpLimit && !isGPEBlocked && openChannels.length > 0) {
-                const dc = openChannels[chunkSeqIdx % openChannels.length];
+            if (!isGPEBlocked && openChannels.length > 0) {
+                // v02.2.05: Skip-on-Full Round Robin (True Parallelism)
+                let selectedDC: RTCDataChannel | null = null;
+                const baseIdx = chunkSeqIdx % openChannels.length;
+                
+                for (let i = 0; i < openChannels.length; i++) {
+                    const testIdx = (baseIdx + i) % openChannels.length;
+                    const dc = openChannels[testIdx];
+                    if (dc && dc.readyState === 'open' && dc.bufferedAmount <= 16 * 1024 * 1024) {
+                        selectedDC = dc;
+                        break;
+                    }
+                }
 
+                if (!selectedDC) {
+                    // All channels full. Wait on the first one (Anchor) to drain.
+                    const dc = openChannels[0];
+                    if (dc && dc.readyState === 'open') {
+                        await new Promise(resolve => {
+                            let resolved = false;
+                            const handler = () => {
+                                if (!resolved) {
+                                    resolved = true;
+                                    dc.removeEventListener('bufferedamountlow', handler);
+                                    resolve(null);
+                                }
+                            };
+                            dc.addEventListener('bufferedamountlow', handler);
+                            setTimeout(handler, 200); // Fast retry
+                        });
+                    }
+                    continue; 
+                }
+
+                const dc = selectedDC;
                 if (dc && dc.readyState === 'open') {
+                    // v02.2.01: Retransmission Priority (Interleave NACKs into flow control)
+                    if (nackQueueRef.current.length > 0) {
+                        const nack = nackQueueRef.current.shift();
+                        if (nack) {
+                            const cacheKey = `${nack.fileIdx}_${nack.chunkIdx}`;
+                            const cachedPacket = senderChunkCacheRef.current.get(cacheKey);
+                            if (cachedPacket) {
+                                try {
+                                    dc.send(cachedPacket as any);
+                                    gpeInFlightBytesRef.current += cachedPacket.byteLength;
+                                    if (nack.chunkIdx % 20 === 0) logDebug(`🚀 NACK Resend Sent: File-${nack.fileIdx} Chunk-${nack.chunkIdx}`);
+                                    continue; // Skip main chunk to favor retransmission
+                                } catch (e) {}
+                            }
+                        }
+                    }
+
                     // Read next chunk from stream
                     const targetSize = dynamicChunkSizeRef.current;
                     let chunkData: Uint8Array;
@@ -1438,10 +1501,6 @@ ${capturedLogsRef.current.join('\n')}
                         
                         byteOffset += chunkData.byteLength; 
                         chunkSeqIdx++;
-
-                        if (chunkSeqIdx % 10 === 0) {
-                            await new Promise(resolve => setTimeout(resolve, 0));
-                        }
                     } catch (e: any) {
                         logDebug(`❌ DataChannel Send Error: ${e.message}`);
                     }
