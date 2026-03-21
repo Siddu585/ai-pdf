@@ -1271,8 +1271,9 @@ ${capturedLogsRef.current.join('\n')}
         }
 
         let currentChunkResidual: Uint8Array | null = null;
+        let pendingChunk: { data: Uint8Array, seq: number, offset: number } | null = null;
 
-        while (byteOffset < file.size) {
+        while (byteOffset < file.size || pendingChunk) {
             if (!isActive.current) return;
 
             // Unshackled Flow: RTT Guard Removed to prevent artificial stalling
@@ -1283,12 +1284,9 @@ ${capturedLogsRef.current.join('\n')}
             );
 
             // v02.2.03 (Patch 27.4): Buffer-Aware Sentinel Pacer
-            // Logic: A 'Stall' only exists if speed is zero AND our buffers are drained.
-            // If buffers are full, we are just waiting for the network (Backpressure).
             const currentSpeed = currentMBpsRef.current || 0;
             if (currentSpeed < 0.2 && statusRef.current === 'transferring' && totalBuffered < 4 * 1024 * 1024) {
                 if (!stallWatchdogRef.current) {
-                    // Logic: Base 30s + (RTT * 30s). Range: 30s to 90s. (Increased for Throttled Testing)
                     const sentinelTimeout = Math.max(30000, Math.min(90000, currentRTT * 30000));
                     
                     stallWatchdogRef.current = setTimeout(() => {
@@ -1309,7 +1307,6 @@ ${capturedLogsRef.current.join('\n')}
 
                         resetSessionRefs(true); 
                         if (wsRef.current) {
-                            // v02.2.01: Adaptive Sentinel (Only restart pipes needed for current RTT)
                             const recoveryPipeCount = getAdaptivePipeCount(currentRTT);
                             logDebug(`🛰️ Sentinel Recovery: Scaling to ${recoveryPipeCount} pipes for ${currentRTT.toFixed(2)}s RTT.`);
                             for (let p = 0; p < recoveryPipeCount; p++) setupWebRTC(wsRef.current, true, p);
@@ -1323,10 +1320,8 @@ ${capturedLogsRef.current.join('\n')}
                 }
             }
 
-
-
             const bdpLimit = Math.max(256 * 1024 * 1024, Math.min(512 * 1024 * 1024, (currentMBpsRef.current * 1024 * 1024 * avgRTTRef.current * 8.0)));
-            const GPE_CAP = 256 * 1024 * 1024; // v02.2.05: Expanded GPE for 16-channel Parallelism
+            const GPE_CAP = 256 * 1024 * 1024; 
             const isGPEBlocked = gpeInFlightBytesRef.current > GPE_CAP;
             
             const targetPipeCount = getAdaptivePipeCount(currentRTT);
@@ -1348,7 +1343,7 @@ ${capturedLogsRef.current.join('\n')}
                 if (blockedLoopCount.current % 10000 === 0) {
                     logDebug(`🛰️ FLOW BLOCKED: GPE=${isGPEBlocked}, BDP=${totalBuffered >= bdpLimit}, Pipes=${openChannels.length}`);
                 }
-                await new Promise(resolve => setTimeout(resolve, 0));
+                await new Promise(resolve => setTimeout(resolve, 10)); // Added pulse back-off
                 continue; 
             } else {
                 blockedLoopCount.current = 0;
@@ -1368,9 +1363,8 @@ ${capturedLogsRef.current.join('\n')}
             }
 
             if (!isGPEBlocked && openChannels.length > 0) {
-                // v02.2.05: Skip-on-Full Round Robin (True Parallelism)
                 let selectedDC: RTCDataChannel | null = null;
-                const baseIdx = chunkSeqIdx % openChannels.length;
+                const baseIdx = (pendingChunk?.seq || chunkSeqIdx) % openChannels.length;
                 
                 for (let i = 0; i < openChannels.length; i++) {
                     const testIdx = (baseIdx + i) % openChannels.length;
@@ -1382,7 +1376,6 @@ ${capturedLogsRef.current.join('\n')}
                 }
 
                 if (!selectedDC) {
-                    // All channels full. Wait on the first one (Anchor) to drain.
                     const dc = openChannels[0];
                     if (dc && dc.readyState === 'open') {
                         await new Promise(resolve => {
@@ -1395,7 +1388,7 @@ ${capturedLogsRef.current.join('\n')}
                                 }
                             };
                             dc.addEventListener('bufferedamountlow', handler);
-                            setTimeout(handler, 200); // Fast retry
+                            setTimeout(handler, 200); 
                         });
                     }
                     continue; 
@@ -1403,7 +1396,6 @@ ${capturedLogsRef.current.join('\n')}
 
                 const dc = selectedDC;
                 if (dc && dc.readyState === 'open') {
-                    // v02.2.01: Retransmission Priority (Interleave NACKs into flow control)
                     if (nackQueueRef.current.length > 0) {
                         const nack = nackQueueRef.current.shift();
                         if (nack) {
@@ -1414,42 +1406,55 @@ ${capturedLogsRef.current.join('\n')}
                                     dc.send(cachedPacket as any);
                                     gpeInFlightBytesRef.current += cachedPacket.byteLength;
                                     if (nack.chunkIdx % 20 === 0) logDebug(`🚀 NACK Resend Sent: File-${nack.fileIdx} Chunk-${nack.chunkIdx}`);
-                                    continue; // Skip main chunk to favor retransmission
+                                    continue; 
                                 } catch (e) {}
                             }
                         }
                     }
 
-                    // Read next chunk from stream
-                    const targetSize = dynamicChunkSizeRef.current;
-                    let chunkData: Uint8Array;
+                    // --- CHUNK ACQUISITION (Lazy/Persistent) ---
+                    if (!pendingChunk && byteOffset < file.size) {
+                        const targetSize = dynamicChunkSizeRef.current;
+                        let chunkData: Uint8Array;
 
-                    if (currentChunkResidual && currentChunkResidual.length >= targetSize) {
-                        chunkData = currentChunkResidual.slice(0, targetSize);
-                        currentChunkResidual = currentChunkResidual.length > targetSize ? currentChunkResidual.slice(targetSize) : null;
-                    } else {
-                        const { value, done } = await reader.read();
-                        if (done) break;
-                        
-                        if (currentChunkResidual) {
-                            const newBuf = new Uint8Array(currentChunkResidual.length + value.length);
-                            newBuf.set(currentChunkResidual);
-                            newBuf.set(value, currentChunkResidual.length);
-                            currentChunkResidual = newBuf;
+                        if (currentChunkResidual && currentChunkResidual.length >= targetSize) {
+                            chunkData = currentChunkResidual.slice(0, targetSize);
+                            currentChunkResidual = currentChunkResidual.length > targetSize ? currentChunkResidual.slice(targetSize) : null;
                         } else {
-                            currentChunkResidual = value;
+                            const { value, done } = await reader.read();
+                            if (done) {
+                                if (currentChunkResidual) {
+                                    chunkData = currentChunkResidual;
+                                    currentChunkResidual = null;
+                                } else {
+                                    break; // Actually done
+                                }
+                            } else {
+                                if (currentChunkResidual) {
+                                    const newBuf = new Uint8Array(currentChunkResidual.length + value.length);
+                                    newBuf.set(currentChunkResidual);
+                                    newBuf.set(value, currentChunkResidual.length);
+                                    currentChunkResidual = newBuf;
+                                } else {
+                                    currentChunkResidual = value;
+                                }
+                                
+                                const residual = currentChunkResidual as Uint8Array;
+                                if (residual.length >= targetSize) {
+                                    chunkData = residual.slice(0, targetSize);
+                                    currentChunkResidual = residual.length > targetSize ? residual.slice(targetSize) : null;
+                                } else {
+                                    chunkData = residual;
+                                    currentChunkResidual = null;
+                                }
+                            }
                         }
-                        
-                        // After merging/setting, currentChunkResidual is guaranteed to be non-null
-                        const residual = currentChunkResidual as Uint8Array;
-                        if (residual.length >= targetSize) {
-                            chunkData = residual.slice(0, targetSize);
-                            currentChunkResidual = residual.length > targetSize ? residual.slice(targetSize) : null;
-                        } else {
-                            chunkData = residual;
-                            currentChunkResidual = null;
-                        }
+                        pendingChunk = { data: chunkData, seq: chunkSeqIdx, offset: byteOffset };
                     }
+
+                    if (!pendingChunk) break;
+
+                    const { data: chunkData, seq: currentSeq, offset: currentOffset } = pendingChunk;
 
                     // Scaling Logic
                     chunksSentSinceScaleRef.current++;
@@ -1466,12 +1471,12 @@ ${capturedLogsRef.current.join('\n')}
                     const packet = new Uint8Array(12 + chunkData.byteLength);
                     const view = new DataView(packet.buffer);
                     view.setUint32(0, index, true);
-                    view.setUint32(4, chunkSeqIdx, true); 
-                    view.setUint32(8, byteOffset, true); 
+                    view.setUint32(4, currentSeq, true); 
+                    view.setUint32(8, currentOffset, true); 
                     packet.set(chunkData, 12);
 
                     try {
-                        if (chunkSeqIdx % 20 === 0) {
+                        if (currentSeq % 20 === 0) {
                             const probePkt = new Uint8Array(16);
                             const probeView = new DataView(probePkt.buffer);
                             probeView.setUint32(0, index, true);
@@ -1481,16 +1486,16 @@ ${capturedLogsRef.current.join('\n')}
                         }
 
                         if (dc.readyState !== 'open') {
-                            logDebug(`⚠️ DataChannel ${dc.label} not open while sending. Skipping...`);
+                            logDebug(`⚠️ DataChannel ${dc.label} not open while sending. Retrying current chunk (Seq: ${currentSeq})...`);
+                            await new Promise(resolve => setTimeout(resolve, 200));
                             continue;
                         }
+                        
                         dc.send(packet);
                         
-                        // v02.1.96: Expanded NACK Sliding Window Cache (1000 chunks for high latency)
-                        const cacheKey = `${index}_${chunkSeqIdx}`;
+                        const cacheKey = `${index}_${currentSeq}`;
                         senderChunkCacheRef.current.set(cacheKey, packet);
                         if (senderChunkCacheRef.current.size > 1000) {
-                            // Rotate cache: remove oldest entries
                             const firstKey = senderChunkCacheRef.current.keys().next().value;
                             if (firstKey) senderChunkCacheRef.current.delete(firstKey);
                         }
@@ -1499,10 +1504,13 @@ ${capturedLogsRef.current.join('\n')}
                         gpeInFlightBytesRef.current += packet.byteLength; 
                         lastProgressTimeRef.current = Date.now();
                         
+                        // Commit: Move to next chunk
                         byteOffset += chunkData.byteLength; 
                         chunkSeqIdx++;
+                        pendingChunk = null; 
                     } catch (e: any) {
-                        logDebug(`❌ DataChannel Send Error: ${e.message}`);
+                        logDebug(`❌ DataChannel Send Error: ${e.message}. Retrying current chunk...`);
+                        await new Promise(resolve => setTimeout(resolve, 200));
                     }
                 }
             }
