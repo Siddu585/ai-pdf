@@ -79,13 +79,13 @@ class ConnectionManager:
             if self.is_connected(ws):
                 try:
                     await asyncio.wait_for(ws.send_json(message), timeout=10.0)
-                    print(f"✅ Sent {message.get('type')} to {to_client} in room {room_id}")
+                    print(f"Sent {message.get('type')} to {to_client} in room {room_id}")
                 except Exception as e:
-                    print(f"⚠️ send_message FAILED ({message.get('type')} → {to_client} in {room_id}): {e}")
+                    print(f"send_message FAILED ({message.get('type')} -> {to_client} in {room_id}): {e}")
             else:
-                print(f"⚠️ send_message SKIPPED: {to_client} in {room_id} is not CONNECTED (state={ws.client_state})")
+                print(f"send_message SKIPPED: {to_client} in {room_id} is not CONNECTED (state={ws.client_state})")
         else:
-            print(f"⚠️ send_message SKIPPED: {to_client} not in room {room_id} (rooms={list(self.rooms.keys())})")
+            print(f"send_message SKIPPED: {to_client} not in room {room_id} (rooms={list(self.rooms.keys())})")
 
 manager = ConnectionManager()
 
@@ -135,10 +135,10 @@ async def get_turn_servers(
                 if resp.status_code == 200:
                     servers = resp.json()
                     status_log = "Pro" if is_pro else "Trial"
-                    print(f"✅ Metered TURN: Returning {len(servers)} servers ({status_log})")
+                    print(f"Metered TURN: Returning {len(servers)} servers ({status_log})")
                     return servers
         except Exception as e:
-            print(f"⚠️ Metered API error: {e}")
+            print(f"Metered API error: {e}")
 
     # Fallback to Public OpenRelay for others
     return [
