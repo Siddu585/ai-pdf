@@ -27,8 +27,8 @@ import { Footer } from "@/components/layout/Footer";
 import { useUsage } from "@/hooks/useUsage";
 import { PaywallModal } from "@/components/layout/PaywallModal";
 
-// v02.2.09 (Nitro Saturator) - 32-Channel High Concurrency
-const VERSION = "v02.2.09 (Nitro Saturator)";
+// v02.2.10 (Fortress Unordered) - Eliminating Head-of-Line Blocking
+const VERSION = "v02.2.10 (Fortress Unordered)";
 const PIPES = 4; 
 const CHANNELS_PER_PIPE = 8;
 const CHANNELS = 32; 
@@ -153,6 +153,9 @@ function InstantDropContent() {
     const eventLoopIntervalRef = useRef<any>(null);
     const workerHeartbeatRef = useRef<number>(Date.now()); // v02.2.08: Worker Pulse
     const reassembledCount = useRef(0);
+    const reassemblySetRef = useRef<Set<number>>(new Set()); // v02.2.10: Unordered Packet Tracker
+    const totalChunksExpectedRef = useRef<number>(-1); // v02.2.10: Finality Target
+    const nextExpectedChunkRef = useRef<number>(0); 
     const expectedTotalFiles = useRef(-1);
     const lastBytesRef = useRef(0);
     const avgRTTRef = useRef<number>(0.1); // v02.1.39 (Patch 24.1): BDP-Snap Average RTT
@@ -1053,6 +1056,7 @@ ${capturedLogsRef.current.join('\n')}
                 const startIdx = pipeIdx * CHANNELS_PER_PIPE;
                 for (let i = 0; i < CHANNELS_PER_PIPE; i++) {
                     const channelIdx = startIdx + i;
+                    // v02.2.10: Unordered Transport (Bypasses HoL Blocking)
                     const dc = peer.createDataChannel(`data-${channelIdx}`, {
                         ordered: false,
                         maxRetransmits: 0, // v02.1.95: Eliminate HOL blocking for bulk data
@@ -1092,7 +1096,17 @@ ${capturedLogsRef.current.join('\n')}
             peer.oniceconnectionstatechange = () => {
                 logDebug(`Pipe-${pipeIdx} ICE State: ${peer.iceConnectionState}`);
                 if (peer.iceConnectionState === 'disconnected' || peer.iceConnectionState === 'failed') {
+                    diagnosticMetricsRef.current.pistonStats[pipeIdx] = { speed: 0, health: 'red' };
                     try { peer.restartIce(); } catch (e) {}
+                }
+            };
+
+            // v02.2.10: Proactive Dead-Pipe Pruning (Log-Aware 701 Detector)
+            peer.onicecandidateerror = (e: any) => {
+                if (e.errorCode === 701) {
+                    logDebug(`🛰️ ICE Candidate Error (Pipe-${pipeIdx}): ${e.errorCode} - ${e.errorText} [${e.url}]`);
+                    // Immediate health downgrade to avoid load-balancing onto blocked relay
+                    diagnosticMetricsRef.current.pistonStats[pipeIdx] = { speed: 0, health: 'red' };
                 }
             };
 
@@ -1761,18 +1775,19 @@ ${capturedLogsRef.current.join('\n')}
                 const payloadCount = (data.byteLength >= 12) ? view.getUint32(8, true) : -1;
                 if (chunkIdx === 0xFFFFFFFD) {
                     expectedTotalFiles.current = payloadCount;
-                    // v02.1.82: Immediate Verification Feedback
                     setStatus('done-waiting'); 
-                    logDebug(`Receiver: Batch EOF received (File Loop). Finalizing reassembly...`);
+                    logDebug(`Receiver: Batch EOF received. Expected Files: ${payloadCount}`);
                     
-                    // v02.1.39 (Patch 12): Receiver Safety Net
                     if (doneWaitingTimeoutRef.current) clearTimeout(doneWaitingTimeoutRef.current);
                     doneWaitingTimeoutRef.current = setTimeout(() => {
                         if (statusRef.current === 'done-waiting') {
-                            logDebug("Receiver: Safety Net (30s) triggered in done-waiting. Forcing completion.");
                             setStatus('done');
                         }
-                    }, 30000); // 30s Safety Net for large batches
+                    }, 10000); // v02.2.10: Reduced to 10s as Unordered is faster
+                } else if (chunkIdx === 0xFFFFFFFE) {
+                    // v02.2.10: Store total chunks for this file
+                    totalChunksExpectedRef.current = payloadCount;
+                    logDebug(`Receiver: File EOF Signal. Total Chunks expected: ${payloadCount}`);
                 }
                 workerRef.current?.postMessage({
                     type: 'chunk',
@@ -1800,24 +1815,39 @@ ${capturedLogsRef.current.join('\n')}
             } else {
                 // Regular Chunk
                 const incomingMeta = fileMetas.current.get(fileIdx);
-                // v02.1.92: Extract absolute byteOffset from header (bytes 8-11)
-                // We repurpose byte 8-11 which was redundant numChunks in v91
                 const byteOffset = (data.byteLength >= 12) ? view.getUint32(8, true) : undefined;
                 
-                // v02.1.39 (Patch 18/19): Robust Progress & Worker Proxy
-                const currentChunksReceived = (currentFileReceivedRef.current.get(fileIdx) || 0) + 1;
-                currentFileReceivedRef.current.set(fileIdx, currentChunksReceived);
-                totalReceivedChunksCountRef.current++; 
-
+                // v02.2.10: Track arrival for completion check
+                reassemblySetRef.current.add(chunkIdx);
+                
                 workerRef.current.postMessage({
                     type: 'chunk',
                     fileIdx,
                     chunkIdx,
-                    byteOffset, // v02.1.92: CRITICAL - Pass absolute offset to worker
-                    payloadCount: byteOffset, // Backward compatibility alias
+                    byteOffset, 
+                    payloadCount: byteOffset, 
                     originalBuffer: data,
                     offset: 12
                 }, [data]);
+
+                // v02.2.10: Instant Completion Logic (Bitset Match)
+                if (totalChunksExpectedRef.current !== -1 && reassemblySetRef.current.size >= totalChunksExpectedRef.current) {
+                    logDebug(`✅ File ${fileIdx} fully reassembled asynchronously (${reassemblySetRef.current.size} chunks).`);
+                    reassembledCount.current++;
+                    reassemblySetRef.current.clear();
+                    totalChunksExpectedRef.current = -1;
+                    
+                    workerRef.current.postMessage({
+                        type: 'chunk',
+                        fileIdx: fileIdx,
+                        chunkIdx: 0xFFFFFFFE,
+                        payloadCount: -1
+                    });
+                }
+                
+                // v02.2.10: Replaced sequential counter with async bitset size
+                const currentChunksReceived = reassemblySetRef.current.size;
+                totalReceivedChunksCountRef.current++; 
                 
                 if (currentChunksReceived % 10 === 0) {
                     if (incomingMeta && incomingMeta.size) {
