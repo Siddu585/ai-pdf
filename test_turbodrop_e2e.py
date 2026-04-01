@@ -1,6 +1,7 @@
 import asyncio
 import os
 import sys
+import json
 from playwright.async_api import async_playwright
 
 async def run():
@@ -19,7 +20,8 @@ async def run():
         # Create a dummy file
         dummy_file_path = os.path.join(os.getcwd(), "dummy_test_file.txt")
         with open(dummy_file_path, "w") as f:
-            f.write("This is a 1MB test file for testing WebRTC stability." * 20000)
+            # ~10MB file for iterative benchmarking
+            f.write("This is a 1MB test file for testing WebRTC stability." * 200000)
             
         print("[SENDER] Navigating to http://localhost:3000/tools/instant-drop")
         try:
@@ -40,6 +42,16 @@ async def run():
         room_id = room_id.strip()
         print(f"[SENDER] Room ID obtained: {room_id}")
         
+        # v02.2.08.1: Omega-Infinite Stress-Test (Dynamic Balancing)
+        print("[SENDER] [OMEGA] Activating Dynamic Balancing Stress (2 Fast / 2 Slow)...")
+        # Pipe 0,1 = Fast (10ms)
+        # Pipe 2,3 = Slow (200ms)
+        await sender_page.evaluate("""
+            window.__CHAOS_MODE__(true);
+            window.__SET_PIPE_LATENCY__(2, 200); 
+            window.__SET_PIPE_LATENCY__(3, 200);
+        """)
+        
         # RECEIVER CONTEXT
         print(f"\n--- [RECEIVER] Initializing for Room {room_id} ---")
         receiver_context = await browser.new_context()
@@ -52,14 +64,28 @@ async def run():
         print(f"[RECEIVER] Navigating to {receiver_url}")
         await receiver_page.goto(receiver_url, wait_until="networkidle", timeout=30000)
         
-        print("\n--- Waiting for Transfer to Complete (Timeout: 45s) ---")
+        print("\n--- Waiting for Transfer to Complete (Timeout: 300s) ---")
         try:
             # Wait for "Files Received" text specifically on the receiver page
-            await receiver_page.wait_for_selector('text="Files Received"', timeout=45000)
+            await receiver_page.wait_for_selector('text="Files Received"', timeout=300000)
             print("\n✅ E2E TEST PASSED: WebRTC Transfer completed successfully!")
             
         except Exception as e:
             print(f"\n[FAIL] E2E TEST FAILED or TIMED OUT: {e}")
+            
+        # v02.2.08: Extract Final Omega Health (SENDER)
+        omega_data = {"sender": {}, "receiver": {}}
+        try:
+            omega_data["sender"] = await sender_page.evaluate("window.__GET_OMEGA_HEALTH__()")
+        except: pass
+
+        try:
+            omega_data["receiver"] = await receiver_page.evaluate("window.__GET_OMEGA_HEALTH__()")
+        except: pass
+        
+        with open("omega_report.json", "w") as f:
+            json.dump(omega_data, f, indent=2)
+        print(f"\n--- [OMEGA] REPORT SAVED TO omega_report.json ---")
             
         print("\n--- SENDER LOGS DUMP ---")
         for log in sender_logs:
