@@ -27,8 +27,8 @@ import { Footer } from "@/components/layout/Footer";
 import { useUsage } from "@/hooks/useUsage";
 import { PaywallModal } from "@/components/layout/PaywallModal";
 
-// v02.2.10 (Fortress Unordered) - Eliminating Head-of-Line Blocking
-const VERSION = "v02.2.10 (Fortress Unordered)";
+// v02.2.10.1 (Fortress Unordered) - Mobile Download Patch
+const VERSION = "v02.2.10.1 (Fortress Unordered)";
 const PIPES = 4; 
 const CHANNELS_PER_PIPE = 8;
 const CHANNELS = 32; 
