@@ -27,8 +27,8 @@ import { Footer } from "@/components/layout/Footer";
 import { useUsage } from "@/hooks/useUsage";
 import { PaywallModal } from "@/components/layout/PaywallModal";
 
-// v02.2.10.1 (Fortress Unordered) - Mobile Download Patch
-const VERSION = "v02.2.10.1 (Fortress Unordered)";
+// v02.2.10.2 (Fortress Unordered) - Extreme Mobile Diagnostic Patch
+const VERSION = "v02.2.10.2 (Fortress Unordered)";
 const PIPES = 4; 
 const CHANNELS_PER_PIPE = 8;
 const CHANNELS = 32; 
@@ -2065,6 +2065,7 @@ ${capturedLogsRef.current.join('\n')}
         const d = diagnosticMetricsRef.current;
         const deepInsight = `
 --- DEEP DIAGNOSTIC INSIGHT ---
+Version: v02.2.10.2
 Retransmissions: ${d.retransmissions}
 Total Packets Sent: ${d.packetsSent}
 Retransmit Ratio: ${d.packetsSent > 0 ? ((d.retransmissions / d.packetsSent) * 100).toFixed(4) : 0}%
@@ -2075,22 +2076,38 @@ Buffer-Bloat Grade: ${d.bufferBloatGrade}
 -------------------------------
 `;
         const content = deepInsight + capturedLogsRef.current.join('\n');
-        const blob = new Blob([content], { type: 'text/plain' });
-        const url = URL.createObjectURL(blob);
-        const a = document.createElement('a');
-        a.href = url;
-        a.download = `TurboDrop_Diagnostics_${roomId || 'NoRoom'}_${new Date().getTime()}.txt`;
-        a.style.display = 'none'; // v02.2.10: Mobile Guard
-        document.body.appendChild(a);
         
-        // v02.2.10: Trigger download
-        a.click();
-        
-        // v02.2.10: Delayed cleanup for mobile OS hand-off
-        setTimeout(() => {
-            document.body.removeChild(a);
-            URL.revokeObjectURL(url);
-        }, 1000); 
+        try {
+            const blob = new Blob([content], { type: 'text/plain;charset=utf-8' });
+            const url = URL.createObjectURL(blob);
+            const fileName = `TurboDrop_Diagnostics_${roomId || 'NoRoom'}_${new Date().getTime()}.txt`;
+
+            // v02.2.10.2: Extreme Download Compatibility
+            const a = document.createElement('a');
+            a.style.display = 'none';
+            a.href = url;
+            a.download = fileName;
+            
+            document.body.appendChild(a);
+            
+            // Trigger 1: Standard click
+            a.click();
+            
+            // Trigger 2: window.open fallback for some mobile wrappers
+            if (typeof window !== 'undefined' && /iPhone|iPad|iPod|Android/i.test(navigator.userAgent)) {
+                window.open(url, '_blank');
+            }
+
+            logDebug(`💾 Diagnostic Download Triggered: ${fileName}`);
+
+            setTimeout(() => {
+                if (document.body.contains(a)) document.body.removeChild(a);
+                URL.revokeObjectURL(url);
+            }, 3000); // 3s buffer for mobile OS
+        } catch (e: any) {
+            logDebug(`❌ Download Failed: ${e.message}`);
+            alert("Download failed. Copy logs manually from console if possible.");
+        }
     };
 
     const handleFileChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
