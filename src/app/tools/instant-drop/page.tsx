@@ -2080,10 +2080,17 @@ Buffer-Bloat Grade: ${d.bufferBloatGrade}
         const a = document.createElement('a');
         a.href = url;
         a.download = `TurboDrop_Diagnostics_${roomId || 'NoRoom'}_${new Date().getTime()}.txt`;
+        a.style.display = 'none'; // v02.2.10: Mobile Guard
         document.body.appendChild(a);
+        
+        // v02.2.10: Trigger download
         a.click();
-        document.body.removeChild(a);
-        URL.revokeObjectURL(url);
+        
+        // v02.2.10: Delayed cleanup for mobile OS hand-off
+        setTimeout(() => {
+            document.body.removeChild(a);
+            URL.revokeObjectURL(url);
+        }, 1000); 
     };
 
     const handleFileChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
