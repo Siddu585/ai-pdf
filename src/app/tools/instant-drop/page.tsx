@@ -27,8 +27,8 @@ import { Footer } from "@/components/layout/Footer";
 import { useUsage } from "@/hooks/useUsage";
 import { PaywallModal } from "@/components/layout/PaywallModal";
 
-// v02.2.10.2 (Fortress Unordered) - Extreme Mobile Diagnostic Patch
-const VERSION = "v02.2.10.2 (Fortress Unordered)";
+// v02.2.10.3 (Fortress Unordered) - Shielded TLS Anchor
+const VERSION = "v02.2.10.3 (Fortress Unordered)";
 const PIPES = 4; 
 const CHANNELS_PER_PIPE = 8;
 const CHANNELS = 32; 
@@ -71,14 +71,24 @@ const ICE_SERVERS = {
         { urls: "stun:stun4.l.google.com:19302" },
         { urls: "stun:stun.cloudflare.com:3478" },
         // v02.1.72: Reinforced Private TURN (NMI Anchor)
+        // v02.2.10.3: Shielded TLS Expansion (Bypass DPI Firewall)
         {
             urls: [
                 "turn:swap-pdf.metered.live:80",
                 "turn:swap-pdf.metered.live:443",
-                "turn:swap-pdf.metered.live:443?transport=tcp"
+                "turn:swap-pdf.metered.live:443?transport=tcp",
+                "turns:swap-pdf.metered.live:443?transport=tcp", // v02.2.10.3 TLS Anchor
+                "turns:swap-pdf.metered.live:443"
             ],
-            username: "openrelayproject", // Keep public for now, switch to .env if needed
+            username: "openrelayproject",
             credential: "openrelayproject"
+        },
+        // v02.2.10.3: Passive Fallback Node (Xirsys/Global)
+        {
+            urls: [
+                "stun:openrelay.metered.ca:80",
+                "stun:openrelay.metered.ca:443"
+            ]
         }
     ]
 };
