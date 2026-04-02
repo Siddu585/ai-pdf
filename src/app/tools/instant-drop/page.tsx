@@ -27,8 +27,8 @@ import { Footer } from "@/components/layout/Footer";
 import { useUsage } from "@/hooks/useUsage";
 import { PaywallModal } from "@/components/layout/PaywallModal";
 
-// v02.2.10.3 (Fortress Unordered) - Shielded TLS Anchor
-const VERSION = "v02.2.10.3 (Fortress Unordered)";
+// v02.2.10.4 (Fortress Unordered) - Capped Fortress Stability
+const VERSION = "v02.2.10.4 (Fortress Unordered)";
 const PIPES = 4; 
 const CHANNELS_PER_PIPE = 8;
 const CHANNELS = 32; 
@@ -1443,12 +1443,12 @@ ${capturedLogsRef.current.join('\n')}
                 blockedLoopCount.current = 0;
             }
 
-            // GPE Self-Unblock Logic (3s Safety)
+            // GPE Self-Unblock Logic (v02.2.10.4: Aggressive Deadlock Buster)
             if (isGPEBlocked) {
                 if (!gpeBlockedSinceRef.current) gpeBlockedSinceRef.current = Date.now();
-                if (Date.now() - gpeBlockedSinceRef.current > 3000) {
-                    logDebug("⚠️ GPE Deadlock detected (3s). performing Heartbeat Pulse...");
-                    gpeInFlightBytesRef.current = Math.max(0, gpeInFlightBytesRef.current - (4096 * 1024));
+                if (Date.now() - gpeBlockedSinceRef.current > 5000) { // 5s ceiling
+                    logDebug("⚠️ GPE Deadlock detected (5s). Performing Emergency Drain...");
+                    gpeInFlightBytesRef.current = 0; // Complete reset to force stream resumption
                     sendControlMsg({ type: 'heartbeat', ts: Date.now() }); 
                     gpeBlockedSinceRef.current = Date.now();
                 }
@@ -1546,11 +1546,11 @@ ${capturedLogsRef.current.join('\n')}
                                 
                                 const residual = currentChunkResidual as Uint8Array;
                                 if (residual.length >= targetSize) {
-                                    // v02.2.08: Dynamic Piece Upscaling (Omega-Symmetry)
-                                    // On high-jitter/high-RTT links, we upscale chunk size to 256KB-1MB to reduce pacing overhead.
                                     let adaptiveChunkSize = targetSize;
+                                    // v02.2.10.4: Strict physical MTU ceiling (240KB) 
+                                    // Bypassing the 256KB SCTP hardware limit to prevent silent drops.
                                     if (avgRTTRef.current > 0.2 || diagnosticMetricsRef.current.jitter > 10) {
-                                       adaptiveChunkSize = Math.min(1048576, targetSize * 4); // upscale
+                                       adaptiveChunkSize = Math.min(240 * 1024, targetSize * 4); // Capped at 240KB
                                     }
                                     chunkData = residual.slice(0, adaptiveChunkSize);
                                     currentChunkResidual = residual.length > adaptiveChunkSize ? residual.slice(adaptiveChunkSize) : null;
@@ -1573,18 +1573,24 @@ ${capturedLogsRef.current.join('\n')}
                         chunksSentSinceScaleRef.current = 0;
                         const rtt = avgRTTRef.current || 0;
                         const speed = currentMBpsRef.current || 0;
-                        if (rtt < 0.200 && speed > 0.5 && dynamicChunkSizeRef.current < 1024 * 1024) {
-                            dynamicChunkSizeRef.current += 128 * 1024;
-                            logDebug(`🚀 VELOCITY UP: Scaling MTU to ${Math.round(dynamicChunkSizeRef.current/1024)}KB`);
+                        // v02.2.10.4: Strict Scaling Ceiling
+                        if (rtt < 0.200 && speed > 0.5 && dynamicChunkSizeRef.current < 240 * 1024) {
+                            dynamicChunkSizeRef.current = Math.min(240 * 1024, dynamicChunkSizeRef.current + 32 * 1024);
+                            logDebug(`🚀 VELOCITY UP: Scaling MTU to ${Math.round(dynamicChunkSizeRef.current/1024)}KB (CAPPED)`);
                         }
                     }
                     
-                    const packet = new Uint8Array(12 + chunkData.byteLength);
+                    // v02.2.10.4: Session-Signed Packet (16-byte Header)
+                    const dcIdx = dataChannelsRef.current.indexOf(dc);
+                    const pipeIdx = Math.floor(dcIdx / CHANNELS_PER_PIPE);
+                    const currentGen = pipeGenerationRef.current[pipeIdx] || 1;
+                    const packet = new Uint8Array(16 + chunkData.byteLength);
                     const view = new DataView(packet.buffer);
                     view.setUint32(0, index, true);
                     view.setUint32(4, currentSeq, true); 
                     view.setUint32(8, currentOffset, true); 
-                    packet.set(chunkData, 12);
+                    view.setUint32(12, currentGen, true); // Session Signature
+                    packet.set(chunkData, 16);
 
                     try {
                         if (currentSeq % 20 === 0) {
@@ -1823,10 +1829,17 @@ ${capturedLogsRef.current.join('\n')}
                     sendControlMsg({ type: 'chunk-ack', ts: Number(senderTs), pipeIdx: _channelIdx });
                 }
             } else {
-                // Regular Chunk
+                // Regular Chunk (v02.2.10.4: 16-byte Signed Header)
                 const incomingMeta = fileMetas.current.get(fileIdx);
                 const byteOffset = (data.byteLength >= 12) ? view.getUint32(8, true) : undefined;
+                const packetGen = (data.byteLength >= 16) ? view.getUint32(12, true) : 0;
                 
+                // v02.2.10.4: Generation Guard - discard packets from previous failed attempts
+                const currentPipeGen = pipeGenerationRef.current[Math.floor(_channelIdx / CHANNELS_PER_PIPE)] || 0;
+                if (packetGen !== 0 && packetGen < currentPipeGen) {
+                    return; // Ignore stale packet
+                }
+
                 // v02.2.10: Track arrival for completion check
                 reassemblySetRef.current.add(chunkIdx);
                 
@@ -1837,7 +1850,7 @@ ${capturedLogsRef.current.join('\n')}
                     byteOffset, 
                     payloadCount: byteOffset, 
                     originalBuffer: data,
-                    offset: 12
+                    offset: 16 // v02.2.10.4 Signed Header Offset
                 }, [data]);
 
                 // v02.2.10: Instant Completion Logic (Bitset Match)
@@ -2198,7 +2211,13 @@ Buffer-Bloat Grade: ${d.bufferBloatGrade}
                         </div>
                         <div className="flex justify-between items-end">
                             <span className="text-[10px] text-white/60">BDP Cushion</span>
-                            <span className="text-[10px] font-mono text-white/80">{(metrics.bdp / 1024 / 1024).toFixed(2)}MB</span>
+                            <span className="text-[10px] font-bold text-indigo-400">{(diagnosticMetricsRef.current.packetsSent * 64 / 1024).toFixed(0)}KB</span>
+                        </div>
+                        <div className="flex justify-between items-end">
+                            <span className="text-[10px] text-white/60">Packet MTU</span>
+                            <span className={`text-[10px] font-bold ${dynamicChunkSizeRef.current > 240000 ? 'text-red-400' : 'text-indigo-400'}`}>
+                                {Math.round(Math.min(dynamicChunkSizeRef.current, 245760) / 1024)}KB
+                            </span>
                         </div>
                     </div>
                     
