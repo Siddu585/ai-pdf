@@ -27,13 +27,13 @@ import { Footer } from "@/components/layout/Footer";
 import { useUsage } from "@/hooks/useUsage";
 import { PaywallModal } from "@/components/layout/PaywallModal";
 
-// v02.2.10.5 (Fortress Unordered) - Force Sync & Cache Burn
-const VERSION = "v02.2.10.5 (Fortress Unordered)";
+// v02.2.10.6 (Fortress Unordered) - Nano-Velocity MTU (NMI Fix)
+const VERSION = "v02.2.10.6 (Fortress Unordered)";
 const PIPES = 4; 
 const CHANNELS_PER_PIPE = 8;
 const CHANNELS = 32; 
-const CHUNK_SIZE = 512 * 1024; // 512KB Base for High-Performance P2P
-const HIGH_WATER_MARK_MAX = 64 * 1024 * 1024; // 64MB - Deep Buffer for 5MB/s
+const CHUNK_SIZE = 16 * 1024; // 16KB Safe Floor (NMI Fix)
+const HIGH_WATER_MARK_MAX = 8 * 1024 * 1024; // 8MB - Lighter Buffer for High-Frequency
 const PACER_THRESHOLD = 4 * 1024 * 1024; 
 const MAX_IN_FLIGHT = 1024; 
 const DRAIN_THRESHOLD = 32 * 1024 * 1024; 
@@ -1566,11 +1566,9 @@ ${capturedLogsRef.current.join('\n')}
                                 const residual = currentChunkResidual as Uint8Array;
                                 if (residual.length >= targetSize) {
                                     let adaptiveChunkSize = targetSize;
-                                    // v02.2.10.4: Strict physical MTU ceiling (240KB) 
-                                    // Bypassing the 256KB SCTP hardware limit to prevent silent drops.
-                                    if (avgRTTRef.current > 0.2 || diagnosticMetricsRef.current.jitter > 10) {
-                                       adaptiveChunkSize = Math.min(240 * 1024, targetSize * 4); // Capped at 240KB
-                                    }
+                                    // v02.2.10.6: Nano-Velocity MTU (Max 64KB)
+                                    // Large packets (240KB+) were being dropped by restrictive browser-edge SCTP buffers.
+                                    adaptiveChunkSize = Math.min(64 * 1024, targetSize); 
                                     chunkData = residual.slice(0, adaptiveChunkSize);
                                     currentChunkResidual = residual.length > adaptiveChunkSize ? residual.slice(adaptiveChunkSize) : null;
                                 } else {
@@ -1592,9 +1590,9 @@ ${capturedLogsRef.current.join('\n')}
                         chunksSentSinceScaleRef.current = 0;
                         const rtt = avgRTTRef.current || 0;
                         const speed = currentMBpsRef.current || 0;
-                        // v02.2.10.4: Strict Scaling Ceiling
-                        if (rtt < 0.200 && speed > 0.5 && dynamicChunkSizeRef.current < 240 * 1024) {
-                            dynamicChunkSizeRef.current = Math.min(240 * 1024, dynamicChunkSizeRef.current + 32 * 1024);
+                        // v02.2.10.6: Nano-Scaling (Max 64KB)
+                        if (rtt < 0.200 && speed > 0.5 && dynamicChunkSizeRef.current < 64 * 1024) {
+                            dynamicChunkSizeRef.current = Math.min(64 * 1024, dynamicChunkSizeRef.current + 4 * 1024);
                             logDebug(`🚀 VELOCITY UP: Scaling MTU to ${Math.round(dynamicChunkSizeRef.current/1024)}KB (CAPPED)`);
                         }
                     }
@@ -2234,8 +2232,8 @@ Buffer-Bloat Grade: ${d.bufferBloatGrade}
                         </div>
                         <div className="flex justify-between items-end">
                             <span className="text-[10px] text-white/60">Packet MTU</span>
-                            <span className={`text-[10px] font-bold ${dynamicChunkSizeRef.current > 240000 ? 'text-red-400' : 'text-indigo-400'}`}>
-                                {Math.round(Math.min(dynamicChunkSizeRef.current, 245760) / 1024)}KB (CAPPED)
+                            <span className={`text-[10px] font-bold ${dynamicChunkSizeRef.current > 60000 ? 'text-indigo-400' : 'text-emerald-400'}`}>
+                                {Math.round(dynamicChunkSizeRef.current / 1024)}KB (SAFE FLOOR)
                             </span>
                         </div>
                     </div>
