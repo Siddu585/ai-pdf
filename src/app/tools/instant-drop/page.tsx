@@ -27,8 +27,8 @@ import { Footer } from "@/components/layout/Footer";
 import { useUsage } from "@/hooks/useUsage";
 import { PaywallModal } from "@/components/layout/PaywallModal";
 
-// v02.2.10.4 (Fortress Unordered) - Capped Fortress Stability
-const VERSION = "v02.2.10.4 (Fortress Unordered)";
+// v02.2.10.5 (Fortress Unordered) - Force Sync & Cache Burn
+const VERSION = "v02.2.10.5 (Fortress Unordered)";
 const PIPES = 4; 
 const CHANNELS_PER_PIPE = 8;
 const CHANNELS = 32; 
@@ -106,6 +106,25 @@ function InstantDropContent() {
     const [status, setStatus] = useState<"disconnected" | "waiting" | "connecting" | "transferring" | "done" | "error" | "done-waiting">("disconnected");
     const [receivedFiles, setReceivedFiles] = useState<{ blob: Blob | null, name: string }[]>([]);
     const [incomingMeta, setIncomingMeta] = useState<any>(null); // New state for reactive UI labels
+    const [totalSentBytes, setTotalSentBytes] = useState(0);
+    const [isStaleVersion, setIsStaleVersion] = useState(false);
+
+    // v02.2.10.5: Force Sync & Cache Burn Sentinel
+    useEffect(() => {
+        if (typeof window !== 'undefined') {
+            const currentVer = VERSION;
+            const lastVer = localStorage.getItem('turbodrop_version');
+            if (lastVer !== currentVer) {
+                localStorage.setItem('turbodrop_version', currentVer);
+                console.log("%c [FORCE SYNC] Version Mismatch Detected. Hard Reloading...", "color: #ff0000; font-weight: bold;");
+                // Reset cache-bust param and reload
+                const url = new URL(window.location.href);
+                url.searchParams.set('cb', Date.now().toString());
+                window.location.href = url.toString();
+            }
+        }
+    }, []);
+
     const [totalFiles, setTotalFiles] = useState<number>(0); 
     const [isZipping, setIsZipping] = useState(false);
     const [compressImages, setCompressImages] = useState(false);
@@ -1153,7 +1172,7 @@ ${capturedLogsRef.current.join('\n')}
             // v02.0.8: Start transfer as soon as ANY channel is open (resilient to slow index-0)
             const openCount = dataChannelsRef.current.filter(c => c && c.readyState === 'open').length;
             if (openCount >= 1 && modeRef.current === 'send' && !isActive.current) {
-                logDebug(`DataChannel(s) OPEN (${openCount}/${CHANNELS}) - Stability Breath...`);
+                logDebug(`DataChannel(s) OPEN (${openCount}/${CHANNELS}) - Tachyon Start Triggered (v10.5)`);
                 isActive.current = true; // Guard immediately to prevent double-trigger
                 setTimeout(() => {
                     logDebug("Starting Ultimate-Gold parallel transfer...");
@@ -2216,7 +2235,7 @@ Buffer-Bloat Grade: ${d.bufferBloatGrade}
                         <div className="flex justify-between items-end">
                             <span className="text-[10px] text-white/60">Packet MTU</span>
                             <span className={`text-[10px] font-bold ${dynamicChunkSizeRef.current > 240000 ? 'text-red-400' : 'text-indigo-400'}`}>
-                                {Math.round(Math.min(dynamicChunkSizeRef.current, 245760) / 1024)}KB
+                                {Math.round(Math.min(dynamicChunkSizeRef.current, 245760) / 1024)}KB (CAPPED)
                             </span>
                         </div>
                     </div>
