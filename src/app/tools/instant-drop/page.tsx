@@ -27,8 +27,8 @@ import { Footer } from "@/components/layout/Footer";
 import { useUsage } from "@/hooks/useUsage";
 import { PaywallModal } from "@/components/layout/PaywallModal";
 
-// v02.2.10.6 (Fortress Unordered) - Nano-Velocity MTU (NMI Fix)
-const VERSION = "v02.2.10.6 (Fortress Unordered)";
+// v02.2.10.6a (Fortress Unordered) - Batch Harmony Patch (NMI Fix)
+const VERSION = "v02.2.10.6a (Fortress Unordered)";
 const PIPES = 4; 
 const CHANNELS_PER_PIPE = 8;
 const CHANNELS = 32; 
@@ -182,8 +182,9 @@ function InstantDropContent() {
     const eventLoopIntervalRef = useRef<any>(null);
     const workerHeartbeatRef = useRef<number>(Date.now()); // v02.2.08: Worker Pulse
     const reassembledCount = useRef(0);
-    const reassemblySetRef = useRef<Set<number>>(new Set()); // v02.2.10: Unordered Packet Tracker
-    const totalChunksExpectedRef = useRef<number>(-1); // v02.2.10: Finality Target
+    const reassemblyMapRef = useRef<Map<number, Set<number>>>(new Map()); 
+    const expectedChunksMapRef = useRef<Map<number, number>>(new Map()); 
+    const totalChunksExpectedRef = useRef<number>(-1); // Legacy ref (deprecated)
     const nextExpectedChunkRef = useRef<number>(0); 
     const expectedTotalFiles = useRef(-1);
     const lastBytesRef = useRef(0);
@@ -1818,9 +1819,9 @@ ${capturedLogsRef.current.join('\n')}
                         }
                     }, 10000); // v02.2.10: Reduced to 10s as Unordered is faster
                 } else if (chunkIdx === 0xFFFFFFFE) {
-                    // v02.2.10: Store total chunks for this file
-                    totalChunksExpectedRef.current = payloadCount;
-                    logDebug(`Receiver: File EOF Signal. Total Chunks expected: ${payloadCount}`);
+                    // v02.2.10.6a: Store total chunks for this SPECIFIC file
+                    expectedChunksMapRef.current.set(fileIdx, payloadCount);
+                    logDebug(`Receiver: File ${fileIdx} EOF Signal. Total Chunks expected: ${payloadCount}`);
                 }
                 workerRef.current?.postMessage({
                     type: 'chunk',
@@ -1857,8 +1858,12 @@ ${capturedLogsRef.current.join('\n')}
                     return; // Ignore stale packet
                 }
 
-                // v02.2.10: Track arrival for completion check
-                reassemblySetRef.current.add(chunkIdx);
+                // v02.2.10.6a: Multi-File Reassembly Map (Interleaved Isolation)
+                if (!reassemblyMapRef.current.has(fileIdx)) {
+                    reassemblyMapRef.current.set(fileIdx, new Set());
+                }
+                const fileBitset = reassemblyMapRef.current.get(fileIdx)!;
+                fileBitset.add(chunkIdx);
                 
                 workerRef.current.postMessage({
                     type: 'chunk',
@@ -1870,12 +1875,13 @@ ${capturedLogsRef.current.join('\n')}
                     offset: 16 // v02.2.10.4 Signed Header Offset
                 }, [data]);
 
-                // v02.2.10: Instant Completion Logic (Bitset Match)
-                if (totalChunksExpectedRef.current !== -1 && reassemblySetRef.current.size >= totalChunksExpectedRef.current) {
-                    logDebug(`✅ File ${fileIdx} fully reassembled asynchronously (${reassemblySetRef.current.size} chunks).`);
+                // v02.2.10.6a: Per-File Completion Logic (Bitset Match)
+                const expectedForFile = expectedChunksMapRef.current.get(fileIdx) || -1;
+                if (expectedForFile !== -1 && fileBitset.size >= expectedForFile) {
+                    logDebug(`✅ File ${fileIdx} fully reassembled asynchronously (${fileBitset.size} chunks).`);
                     reassembledCount.current++;
-                    reassemblySetRef.current.clear();
-                    totalChunksExpectedRef.current = -1;
+                    reassemblyMapRef.current.delete(fileIdx);
+                    expectedChunksMapRef.current.delete(fileIdx);
                     
                     workerRef.current.postMessage({
                         type: 'chunk',
@@ -1885,8 +1891,7 @@ ${capturedLogsRef.current.join('\n')}
                     });
                 }
                 
-                // v02.2.10: Replaced sequential counter with async bitset size
-                const currentChunksReceived = reassemblySetRef.current.size;
+                const currentChunksReceived = fileBitset.size;
                 totalReceivedChunksCountRef.current++; 
                 
                 if (currentChunksReceived % 10 === 0) {
@@ -2105,7 +2110,7 @@ ${capturedLogsRef.current.join('\n')}
         const d = diagnosticMetricsRef.current;
         const deepInsight = `
 --- DEEP DIAGNOSTIC INSIGHT ---
-Version: v02.2.10.2
+Version: ${VERSION}
 Retransmissions: ${d.retransmissions}
 Total Packets Sent: ${d.packetsSent}
 Retransmit Ratio: ${d.packetsSent > 0 ? ((d.retransmissions / d.packetsSent) * 100).toFixed(4) : 0}%
@@ -2113,6 +2118,7 @@ One-Way-Trip-Time (OWTT): ${d.owtt.toFixed(2)}ms
 JS-Event-Loop Lag: ${d.eventLoopLag}ms
 MTU Ceiling (Probe): ${d.mtuCeiling}
 Buffer-Bloat Grade: ${d.bufferBloatGrade}
+Batch Mode: Multi-Map Harmony Active (v02.2.10.6a)
 -------------------------------
 `;
         const content = deepInsight + capturedLogsRef.current.join('\n');
