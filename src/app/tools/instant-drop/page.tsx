@@ -27,7 +27,7 @@ import { Footer } from "@/components/layout/Footer";
 import { useUsage } from "@/hooks/useUsage";
 import { PaywallModal } from "@/components/layout/PaywallModal";
 
-// v02.2.10.6a (Fortress Unordered) - Batch Harmony Patch (NMI Fix)
+// v02.2.10.6a (Fortress Unordered) - Batch Harmony (NMI Fix)
 const VERSION = "v02.2.10.6a (Fortress Unordered)";
 const PIPES = 4; 
 const CHANNELS_PER_PIPE = 8;
@@ -182,9 +182,8 @@ function InstantDropContent() {
     const eventLoopIntervalRef = useRef<any>(null);
     const workerHeartbeatRef = useRef<number>(Date.now()); // v02.2.08: Worker Pulse
     const reassembledCount = useRef(0);
-    const reassemblyMapRef = useRef<Map<number, Set<number>>>(new Map()); 
-    const expectedChunksMapRef = useRef<Map<number, number>>(new Map()); 
-    const totalChunksExpectedRef = useRef<number>(-1); // Legacy ref (deprecated)
+    const reassemblyMapRef = useRef<Map<number, Set<number>>>(new Map()); // v02.2.10.6a: Per-File Reassembly Bitsets
+    const expectedChunksMapRef = useRef<Map<number, number>>(new Map()); // v02.2.10.6a: Multi-File Target Tracking
     const nextExpectedChunkRef = useRef<number>(0); 
     const expectedTotalFiles = useRef(-1);
     const lastBytesRef = useRef(0);
@@ -1821,7 +1820,7 @@ ${capturedLogsRef.current.join('\n')}
                 } else if (chunkIdx === 0xFFFFFFFE) {
                     // v02.2.10.6a: Store total chunks for this SPECIFIC file
                     expectedChunksMapRef.current.set(fileIdx, payloadCount);
-                    logDebug(`Receiver: File ${fileIdx} EOF Signal. Total Chunks expected: ${payloadCount}`);
+                    logDebug(`Receiver: File-${fileIdx} EOF Signal. Total Chunks expected: ${payloadCount}`);
                 }
                 workerRef.current?.postMessage({
                     type: 'chunk',
@@ -1858,7 +1857,7 @@ ${capturedLogsRef.current.join('\n')}
                     return; // Ignore stale packet
                 }
 
-                // v02.2.10.6a: Multi-File Reassembly Map (Interleaved Isolation)
+                // v02.2.10.6a: Isolated Reassembly Check (Batch Harmony)
                 if (!reassemblyMapRef.current.has(fileIdx)) {
                     reassemblyMapRef.current.set(fileIdx, new Set());
                 }
@@ -1875,9 +1874,9 @@ ${capturedLogsRef.current.join('\n')}
                     offset: 16 // v02.2.10.4 Signed Header Offset
                 }, [data]);
 
-                // v02.2.10.6a: Per-File Completion Logic (Bitset Match)
-                const expectedForFile = expectedChunksMapRef.current.get(fileIdx) || -1;
-                if (expectedForFile !== -1 && fileBitset.size >= expectedForFile) {
+                // v02.2.10.6a: Per-File Instant Completion Logic (Bitset Match)
+                const targetBlocks = expectedChunksMapRef.current.get(fileIdx);
+                if (targetBlocks && fileBitset.size >= targetBlocks) {
                     logDebug(`✅ File ${fileIdx} fully reassembled asynchronously (${fileBitset.size} chunks).`);
                     reassembledCount.current++;
                     reassemblyMapRef.current.delete(fileIdx);
@@ -1891,6 +1890,7 @@ ${capturedLogsRef.current.join('\n')}
                     });
                 }
                 
+                // v02.2.10: Replaced sequential counter with async bitset size
                 const currentChunksReceived = fileBitset.size;
                 totalReceivedChunksCountRef.current++; 
                 
@@ -2110,7 +2110,7 @@ ${capturedLogsRef.current.join('\n')}
         const d = diagnosticMetricsRef.current;
         const deepInsight = `
 --- DEEP DIAGNOSTIC INSIGHT ---
-Version: ${VERSION}
+Version: v02.2.10.2
 Retransmissions: ${d.retransmissions}
 Total Packets Sent: ${d.packetsSent}
 Retransmit Ratio: ${d.packetsSent > 0 ? ((d.retransmissions / d.packetsSent) * 100).toFixed(4) : 0}%
@@ -2118,7 +2118,6 @@ One-Way-Trip-Time (OWTT): ${d.owtt.toFixed(2)}ms
 JS-Event-Loop Lag: ${d.eventLoopLag}ms
 MTU Ceiling (Probe): ${d.mtuCeiling}
 Buffer-Bloat Grade: ${d.bufferBloatGrade}
-Batch Mode: Multi-Map Harmony Active (v02.2.10.6a)
 -------------------------------
 `;
         const content = deepInsight + capturedLogsRef.current.join('\n');
