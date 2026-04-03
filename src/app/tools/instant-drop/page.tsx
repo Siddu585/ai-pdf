@@ -27,8 +27,8 @@ import { Footer } from "@/components/layout/Footer";
 import { useUsage } from "@/hooks/useUsage";
 import { PaywallModal } from "@/components/layout/PaywallModal";
 
-// v02.2.10.6b (Symmetry Pulse) - Patching Unordered Batch Race
-const VERSION = "v02.2.10.6b (Symmetry Pulse)";
+// v02.2.10.6c (NMI Protocol) - Core Stabilization
+const VERSION = "v02.2.10.6c (NMI Protocol)";
 const PIPES = 4; 
 const CHANNELS_PER_PIPE = 8;
 const CHANNELS = 32; 
@@ -294,28 +294,27 @@ function InstantDropContent() {
 
     function sendControlMsg(payload: any, priority = false) {
         const msgStr = JSON.stringify(payload);
-        let sent = false;
-        if (wsRef.current?.readyState === WebSocket.OPEN) {
-            try { wsRef.current.send(msgStr); sent = true; } catch(e) {}
-        }
-        // v02.1.65: Signal Broadcast Fallback - prefer Anchor, fallback to any open pipe
+        
+        // 1. Try WebRTC Fast Path on ONE Anchor Channel
         const channels = dataChannelsRef.current.filter(c => c && c.readyState === 'open');
-        if (priority) {
-            // v02.1.71: Reinforced Signal Path (Prefer Anchor for all control msgs on mobile)
+        if (channels.length > 0) {
             const anchor = channels.find(c => {
                 const idx = parseInt(c.label.split('-').pop() || '0');
                 return idx < 4;
-            });
-            if (anchor) {
-                try { anchor.send(msgStr); sent = true; } catch(e) {}
-                if (payload.type === 'gpe-pull') return sent; // Pulls only need one successful path
-            }
+            }) || channels[0];
+            
+            try { 
+                anchor.send(msgStr); 
+                return true; 
+            } catch(e) {}
         }
-        // Fallback: If anchor failed or not priority, broadcast to all
-        channels.forEach(dc => {
-            try { dc.send(msgStr); sent = true; } catch(e) {}
-        });
-        return sent;
+        
+        // 2. Fallback to reliable WebSocket if WebRTC fails
+        if (wsRef.current?.readyState === WebSocket.OPEN) {
+            try { wsRef.current.send(msgStr); return true; } catch(e) {}
+        }
+
+        return false;
     }
 
     function disconnectEverything() {
@@ -1323,10 +1322,6 @@ ${capturedLogsRef.current.join('\n')}
         });
         sendControlMsg({ type: 'batch-eof', totalFiles: currentFiles.length });
         
-        // v02.1.96: Strict Verification Handshake
-        // Symmetry pulse to trigger receiver completion check
-        sendControlMsg({ type: 'force-verify' });
-        
         logDebug("Sender: Batch sent. Awaiting receiver verification (Ready ACK)...");
         setStatus('done-waiting'); 
 
@@ -1351,7 +1346,30 @@ ${capturedLogsRef.current.join('\n')}
                 }
             };
 
+            // Post-Transmission NACK Drainer
+            const nackInterval = setInterval(() => {
+                if (nackQueueRef.current.length > 0 && isActive.current) {
+                    const openChannels = dataChannelsRef.current.filter(dc => dc && dc.readyState === 'open');
+                    if (openChannels.length === 0) return;
+                    
+                    for(let i=0; i < openChannels.length; i++) {
+                        if (nackQueueRef.current.length === 0) break;
+                        const nack = nackQueueRef.current.shift();
+                        if (nack) {
+                            const cacheKey = `${nack.fileIdx}_${nack.chunkIdx}`;
+                            const cachedPacket = senderChunkCacheRef.current.get(cacheKey);
+                            if (cachedPacket) {
+                                try {
+                                    openChannels[i].send(cachedPacket as any);
+                                } catch(e) {}
+                            }
+                        }
+                    }
+                }
+            }, 20);
+
             const cleanup = () => {
+                clearInterval(nackInterval);
                 window.removeEventListener('webrtc-sender-msg', wsHandler);
                 dataChannelsRef.current.forEach(dc => {
                     if (dc) dc.removeEventListener('message', dcHandler);
@@ -1363,7 +1381,7 @@ ${capturedLogsRef.current.join('\n')}
                 if (dc) dc.addEventListener('message', dcHandler);
             });
 
-            // v02.1.96: Increased safety net to 90s for ultra-high latency (6.8s case).
+            // Increased safety net to 90s for ultra-high latency (6.8s case).
             setTimeout(() => {
                 cleanup();
                 if (statusRef.current === 'done-waiting') {
