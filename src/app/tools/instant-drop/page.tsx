@@ -149,6 +149,7 @@ function InstantDropContent() {
         eventLoopLag: 0,
         mtuCeiling: CHUNK_SIZE,
         bufferBloatGrade: 0,
+        bytesCleared: 0, // v02.2.10.8: GPE Synchronization Fix
         lastAckTs: 0,
         // v02.2.08 Omega Stats
         transportType: "unknown" as "unknown" | "host" | "srflx" | "relay",
@@ -719,6 +720,9 @@ ${capturedLogsRef.current.join('\n')}
                                 chunkIds.add(chunkIdx);
                                 const bytesBefore = bytesReceivedMap.get(fileIdx) || 0;
                                 bytesReceivedMap.set(fileIdx, bytesBefore + chunk.length);
+                                
+                                // v02.2.10.8: Explicit GPE Pull Primitive (Length-Safe)
+                                self.postMessage({ type: 'gpe-pull', bytesCleared: chunk.length });
                             }
                         } else if (!buffer) {
                              if (!self.stashedChunks) self.stashedChunks = new Map();
@@ -805,6 +809,9 @@ ${capturedLogsRef.current.join('\n')}
                  const fIdx = e.data.fileIdx;
                  logDebug(`Receiver: Missing metadata for file ${fIdx}. Requesting...`);
                  sendControlMsg({ type: 'request-metadata', fileIdx: fIdx });
+            } else if (e.data.type === 'gpe-pull') {
+                // v02.2.10.8: GPE Sync Defibrillator
+                diagnosticMetricsRef.current.bytesCleared += e.data.bytesCleared;
             } else if (e.data.type === 'all-done') {
                  logDebug("Receiver: Data fully reassembled. Verifying...");
                  if (doneWaitingTimeoutRef.current) { clearTimeout(doneWaitingTimeoutRef.current); doneWaitingTimeoutRef.current = null; }
@@ -1084,8 +1091,8 @@ ${capturedLogsRef.current.join('\n')}
                     });
                     dataChannelsRef.current[channelIdx] = dc;
                     setupDataChannel(dc, channelIdx);
-                    // v02.2.02: Proactive Buffer Refill (8MB threshold for smooth 5-10MB/s flow)
-                    dc.bufferedAmountLowThreshold = 8 * 1024 * 1024;
+                    // v02.2.10.8: Saturate 10MB/s pipe (16MB threshold for smooth flow)
+                    dc.bufferedAmountLowThreshold = 16 * 1024 * 1024;
                 }
             } else {
                 peer.ondatachannel = (e) => {
@@ -1103,7 +1110,7 @@ ${capturedLogsRef.current.join('\n')}
                         if (ws.readyState === WebSocket.OPEN) {
                             ws.send(JSON.stringify({ type: 'flow', status: 'ready' }));
                         }
-                    }, 800);
+                    }, 500); // Reduced to 500ms for more responsive flow
                     peer.addEventListener('connectionstatechange', () => {
                         if (peer.connectionState === 'disconnected' || peer.connectionState === 'failed' || peer.connectionState === 'closed') {
                             clearInterval(flowTimer);
@@ -1270,6 +1277,11 @@ ${capturedLogsRef.current.join('\n')}
         isInitializingRef.current = false; // v02.1.68: Unlock handshake ONLY once transfer loop starts.
         setStatus('transferring');
         
+        // v02.2.10.8: NAT Warm-up Pulse (200ms)
+        // Ensures the Mumbai relay and client NAT mappings are fully established before the first metadata blast.
+        await new Promise(resolve => setTimeout(resolve, 200));
+        logDebug("✅ NAT WARMED: Starting High-Speed Batch broadcast.");
+
         // v02.1.39 (Patch 6): Initial Metadata Sweep (Redundant)
         broadcastMetadata();
         
@@ -1360,7 +1372,7 @@ ${capturedLogsRef.current.join('\n')}
                         }
                     }
                 }
-            }, 500);
+            }, 20); // v02.2.10.8: Rapid NACK Draining (20ms)
             const cleanup = () => {
                 clearInterval(nackInterval);
                 window.removeEventListener('webrtc-sender-msg', wsHandler);
@@ -1425,10 +1437,8 @@ ${capturedLogsRef.current.join('\n')}
             const currentRTT = avgRTTRef.current || 0;
 
             const isGPEBlocked = gpeInFlightBytesRef.current > (256 * 1024 * 1024); 
-            // v02.2.10.7: Damped Scaling (Stay at 2 pipes for first 5s to stabilize SCTP)
-            const sessionDuration = startTimeRef.current ? (Date.now() - startTimeRef.current) / 1000 : 0;
+            // v02.2.10.8: Damping Removed (Nitro Scaling enabled immediately for Mumbai)
             let targetPipeCount = getAdaptivePipeCount(currentRTT);
-            if (sessionDuration < 5) targetPipeCount = Math.min(2, targetPipeCount);
             const targetChannelLimit = targetPipeCount * CHANNELS_PER_PIPE;
 
             if (targetPipeCount !== lastScaleRef.current) {
@@ -1508,7 +1518,7 @@ ${capturedLogsRef.current.join('\n')}
                     // If pipe is amber, we only use it 50% of the time
                     if (health === 'amber' && Math.random() > 0.5) continue;
 
-                    if (dc.bufferedAmount <= 8 * 1024 * 1024) { // Tighten per-channel buffer
+                    if (dc.bufferedAmount <= 16 * 1024 * 1024) { // v02.2.10.8: Saturate pipe with 16MB in-flight
                         selectedDC = dc;
                         break;
                     }
@@ -1612,10 +1622,10 @@ ${capturedLogsRef.current.join('\n')}
                         chunksSentSinceScaleRef.current = 0;
                         const rtt = avgRTTRef.current || 0;
                         const speed = currentMBpsRef.current || 0;
-                        // v02.2.10.7: Nano-Scaling Stability Cap (32KB)
-                        if (rtt < 0.200 && speed > 0.5 && dynamicChunkSizeRef.current < 32 * 1024) {
-                            dynamicChunkSizeRef.current = Math.min(32 * 1024, dynamicChunkSizeRef.current + 4 * 1024);
-                            logDebug(`🚀 VELOCITY UP: Scaling MTU to ${Math.round(dynamicChunkSizeRef.current/1024)}KB (STABLE CAP)`);
+                        // v02.2.10.8: Nano-Scaling Velocity Cap (64KB Standard Nitro)
+                        if (rtt < 0.200 && speed > 0.5 && dynamicChunkSizeRef.current < 64 * 1024) {
+                            dynamicChunkSizeRef.current = Math.min(64 * 1024, dynamicChunkSizeRef.current + 4 * 1024);
+                            logDebug(`🚀 VELOCITY UP: Scaling MTU to ${Math.round(dynamicChunkSizeRef.current/1024)}KB (NITRO CAP)`);
                         }
                     }
                     
