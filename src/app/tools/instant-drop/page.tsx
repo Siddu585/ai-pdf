@@ -27,8 +27,8 @@ import { Footer } from "@/components/layout/Footer";
 import { useUsage } from "@/hooks/useUsage";
 import { PaywallModal } from "@/components/layout/PaywallModal";
 
-// v02.2.10.6c (NMI Protocol) - Core Stabilization
-const VERSION = "v02.2.10.6c (NMI Protocol)";
+// v02.2.10.6d (NMI Protocol) - Fix Fatal NACK ReferenceError
+const VERSION = "v02.2.10.6d (NMI Protocol)";
 const PIPES = 4; 
 const CHANNELS_PER_PIPE = 8;
 const CHANNELS = 32; 
@@ -653,6 +653,8 @@ ${capturedLogsRef.current.join('\n')}
                 if (fileBuffers.size > 0 || expectedTotalFiles !== -1) {
                     self.postMessage({ type: 'worker-pulse', ts: Date.now() });
                 }
+                
+                const now = Date.now();
                 
                 // v02.1.95: Hole Detection (NACK Trigger)
                 // v02.2.06: Fast Hole Detection (1s NACK Trigger for unordered pipes)
