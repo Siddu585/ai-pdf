@@ -28,7 +28,7 @@ import { useUsage } from "@/hooks/useUsage";
 import { PaywallModal } from "@/components/layout/PaywallModal";
 
 // v02.2.10.6d (NMI Protocol) - Fix Fatal NACK ReferenceError
-const VERSION = "v02.2.10.6e (NMI Protocol)";
+const VERSION = "v02.2.10.7 (NMI Protocol)";
 const PIPES = 4; 
 const CHANNELS_PER_PIPE = 8;
 const CHANNELS = 32; 
@@ -207,7 +207,8 @@ function InstantDropContent() {
     const blockedLoopCount = useRef(0); // v02.1.57: Diagnostic Flow Counter
     const senderChunkCacheRef = useRef<Map<string, Uint8Array>>(new Map()); // v02.1.95: NACK Sliding Window
     const lastScaleRef = useRef<number>(PIPES); // v02.2.00: Adaptive Scale Memory
-    const nackQueueRef = useRef<{fileIdx: number, chunkIdx: number}[]>([]); // v02.2.01: Retransmission Throttling
+    const nackQueueRef = useRef<Map<string, {fileIdx: number, chunkIdx: number, ts: number}>>(new Map()); // v02.2.10.7: Deduplicated Map
+    const startTimeRef = useRef<number | null>(null); // v02.2.10.7: Scaling Anchor
 
     // v02.1.74: Global Pre-flight Readiness Check
     useEffect(() => {
@@ -373,10 +374,13 @@ function InstantDropContent() {
                 break;
             case 'nack':
                 if (modeRef.current === 'send') {
-                    // v02.2.01: Retransmission Throttling (Queue instead of immediate send)
-                    nackQueueRef.current.push({ fileIdx: msg.fileIdx, chunkIdx: msg.chunkIdx });
-                    if (nackQueueRef.current.length % 50 === 0) {
-                        logDebug(`📥 NACK Queue Growth: ${nackQueueRef.current.length} pending resends.`);
+                    // v02.2.10.7: NACK Bloom Deduplication
+                    const nackKey = `${msg.fileIdx}-${msg.chunkIdx}`;
+                    if (!nackQueueRef.current.has(nackKey)) {
+                        nackQueueRef.current.set(nackKey, { fileIdx: msg.fileIdx, chunkIdx: msg.chunkIdx, ts: Date.now() });
+                        if (nackQueueRef.current.size % 50 === 0) {
+                            logDebug(`📥 NACK Queue Growth: ${nackQueueRef.current.size} unique pending resends.`);
+                        }
                     }
                 }
                 break;
@@ -818,14 +822,15 @@ ${capturedLogsRef.current.join('\n')}
         };
     }, []);
 
-    // v02.1.33 Anti-Throttling Screen Wake Lock
-    const requestWakeLock = async () => {
+    // v02.2.10.7: Shield Persistence (Wake Lock Retry Loop)
+    const requestWakeLock = async (retryCount = 0) => {
         if (typeof window !== 'undefined' && 'wakeLock' in navigator) {
             try {
                 wakeLockRef.current = await (navigator as any).wakeLock.request('screen');
-                logDebug("✅ Screen Wake Lock Active (v02.1.33)");
+                logDebug("✅ Screen Wake Lock Active (v02.2.10.7)");
             } catch (err: any) {
-                logDebug(`⚠️ Wake Lock failed: ${err.message}`);
+                logDebug(`⚠️ Wake Lock failed (Attempt ${retryCount}): ${err.message}`);
+                if (retryCount < 5) setTimeout(() => requestWakeLock(retryCount + 1), 3000);
             }
         }
     };
@@ -909,6 +914,7 @@ ${capturedLogsRef.current.join('\n')}
 
         // v02.1.33: Lockdown screen to prevent background throttling
         await requestWakeLock();
+        startTimeRef.current = Date.now(); // v02.2.10.7: Start Scaling Clock
 
         // v02.1.20: Backend Wake-Up Pre-flight
         logDebug("Attempting to wake up signaling server...");
@@ -940,7 +946,9 @@ ${capturedLogsRef.current.join('\n')}
                 setWsConnected(true); // v02.1.74: Pulse Sync
                 const heartbeat = setInterval(() => {
                     if (ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify({ type: 'ping' }));
-                }, 5000);
+                    // v02.2.10.7: Visual Pulse logic - trigger a minor UI update to prevent backgrounding
+                    if (statusRef.current === 'transferring') setProgress(p => p);
+                }, 3000); // 3s for higher resilience
                 heartbeatIntervalRef.current = heartbeat;
             };
 
@@ -1330,26 +1338,29 @@ ${capturedLogsRef.current.join('\n')}
 
             // Post-Transmission NACK Drainer
             const nackInterval = setInterval(() => {
-                if (nackQueueRef.current.length > 0 && isActive.current) {
+                if (nackQueueRef.current.size > 0 && isActive.current) {
                     const openChannels = dataChannelsRef.current.filter(dc => dc && dc.readyState === 'open');
                     if (openChannels.length === 0) return;
                     
                     for(let i=0; i < openChannels.length; i++) {
-                        if (nackQueueRef.current.length === 0) break;
-                        const nack = nackQueueRef.current.shift();
-                        if (nack) {
-                            const cacheKey = `${nack.fileIdx}_${nack.chunkIdx}`;
-                            const cachedPacket = senderChunkCacheRef.current.get(cacheKey);
-                            if (cachedPacket) {
-                                try {
-                                    openChannels[i].send(cachedPacket as any);
-                                } catch(e) {}
+                        if (nackQueueRef.current.size === 0) break;
+                        const nextEntry = nackQueueRef.current.entries().next().value;
+                        if (nextEntry) {
+                            const [key, nack] = nextEntry;
+                            nackQueueRef.current.delete(key);
+                            if (nack) {
+                                const cacheKey = `${nack.fileIdx}_${nack.chunkIdx}`;
+                                const cachedPacket = senderChunkCacheRef.current.get(cacheKey);
+                                if (cachedPacket) {
+                                    try {
+                                        openChannels[i].send(cachedPacket as any);
+                                    } catch(e) {}
+                                }
                             }
                         }
                     }
                 }
-            }, 20);
-
+            }, 500);
             const cleanup = () => {
                 clearInterval(nackInterval);
                 window.removeEventListener('webrtc-sender-msg', wsHandler);
@@ -1414,7 +1425,10 @@ ${capturedLogsRef.current.join('\n')}
             const currentRTT = avgRTTRef.current || 0;
 
             const isGPEBlocked = gpeInFlightBytesRef.current > (256 * 1024 * 1024); 
-            const targetPipeCount = getAdaptivePipeCount(currentRTT);
+            // v02.2.10.7: Damped Scaling (Stay at 2 pipes for first 5s to stabilize SCTP)
+            const sessionDuration = startTimeRef.current ? (Date.now() - startTimeRef.current) / 1000 : 0;
+            let targetPipeCount = getAdaptivePipeCount(currentRTT);
+            if (sessionDuration < 5) targetPipeCount = Math.min(2, targetPipeCount);
             const targetChannelLimit = targetPipeCount * CHANNELS_PER_PIPE;
 
             if (targetPipeCount !== lastScaleRef.current) {
@@ -1521,18 +1535,25 @@ ${capturedLogsRef.current.join('\n')}
 
                 const dc = selectedDC;
                 if (dc && dc.readyState === 'open') {
-                    if (nackQueueRef.current.length > 0) {
-                        const nack = nackQueueRef.current.shift();
-                        if (nack) {
-                            const cacheKey = `${nack.fileIdx}_${nack.chunkIdx}`;
-                            const cachedPacket = senderChunkCacheRef.current.get(cacheKey);
-                            if (cachedPacket) {
-                                try {
-                                    dc.send(cachedPacket as any);
-                                    gpeInFlightBytesRef.current += cachedPacket.byteLength;
-                                    if (nack.chunkIdx % 20 === 0) logDebug(`🚀 NACK Resend Sent: File-${nack.fileIdx} Chunk-${nack.chunkIdx}`);
-                                    continue; 
-                                } catch (e) {}
+                    // v02.2.10.7: NACK Interleaving logic
+                    if (nackQueueRef.current.size > 0) {
+                        const nextNack = nackQueueRef.current.entries().next().value;
+                        if (nextNack) {
+                            const [key, nack] = nextNack;
+                            // 500ms cool-down to prevent storming the same chunk
+                            if (Date.now() - (nack.ts || 0) > 500) {
+                                nackQueueRef.current.delete(key);
+                                const cacheKey = `${nack.fileIdx}_${nack.chunkIdx}`;
+                                const cachedPacket = senderChunkCacheRef.current.get(cacheKey);
+                                if (cachedPacket) {
+                                    try {
+                                        dc.send(cachedPacket as any);
+                                        gpeInFlightBytesRef.current += cachedPacket.byteLength;
+                                        if (nack.chunkIdx % 20 === 0) logDebug(`🚀 NACK Resend Sent: File-${nack.fileIdx} Chunk-${nack.chunkIdx}`);
+                                        // Update the NACK timestamp to avoid immediate re-request storm
+                                        nack.ts = Date.now(); 
+                                    } catch (e) {}
+                                }
                             }
                         }
                     }
@@ -1591,10 +1612,10 @@ ${capturedLogsRef.current.join('\n')}
                         chunksSentSinceScaleRef.current = 0;
                         const rtt = avgRTTRef.current || 0;
                         const speed = currentMBpsRef.current || 0;
-                        // v02.2.10.6: Nano-Scaling (Max 64KB)
-                        if (rtt < 0.200 && speed > 0.5 && dynamicChunkSizeRef.current < 64 * 1024) {
-                            dynamicChunkSizeRef.current = Math.min(64 * 1024, dynamicChunkSizeRef.current + 4 * 1024);
-                            logDebug(`🚀 VELOCITY UP: Scaling MTU to ${Math.round(dynamicChunkSizeRef.current/1024)}KB (CAPPED)`);
+                        // v02.2.10.7: Nano-Scaling Stability Cap (32KB)
+                        if (rtt < 0.200 && speed > 0.5 && dynamicChunkSizeRef.current < 32 * 1024) {
+                            dynamicChunkSizeRef.current = Math.min(32 * 1024, dynamicChunkSizeRef.current + 4 * 1024);
+                            logDebug(`🚀 VELOCITY UP: Scaling MTU to ${Math.round(dynamicChunkSizeRef.current/1024)}KB (STABLE CAP)`);
                         }
                     }
                     
@@ -1907,9 +1928,11 @@ ${capturedLogsRef.current.join('\n')}
                     }
                     const pullInterval = currentChunksReceived < 10 ? 1 : 10;
                     if (currentChunksReceived % pullInterval === 0) {
+                        // v02.2.10.7: Critical Sync Fix - capture length BEFORE worker transfer
+                        const bytesToClear = pullInterval * data.byteLength;
                         sendControlMsg({ 
                             type: 'gpe-pull', 
-                            bytesCleared: pullInterval * data.byteLength, 
+                            bytesCleared: bytesToClear, 
                             pipeIdx: _channelIdx 
                         }, true);
                     }
