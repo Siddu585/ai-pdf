@@ -100,14 +100,39 @@ async def get_turn_servers(
     deviceId: str = "",
     email: str = ""
 ):
-    print(f"TURN request: Routing user to dedicated Mumbai Relay")
+    print(f"TURN request: Assessing user limits...")
     
-    # 1. AWS Mumbai Coturn (Ultra-Low Latency for Indian Mobile Users)
-    # No usage limits needed since we own the hardware with 1TB free bandwidth.
+    # Check eligibility: Pro users OR first 5 free users get Indian TURN access
+    email_norm = email.lower().strip() if email else ""
+    is_pro = (deviceId in tracker.pro_users if deviceId else False) or \
+             (email_norm in tracker.pro_users if email_norm else False) or \
+             (email_norm in tracker.HARDCODED_PRO if email_norm else False)
+    
+    usage_allowed = True
+    if not is_pro:
+        key = tracker.get_key(request, deviceId)
+        today = datetime.now().strftime("%Y-%m-%d")
+        count = tracker.data.get(today, {}).get(key, 0)
+        
+        # Enforce exactly 5 free TURN accesses per day
+        if count >= 5: 
+            usage_allowed = False
+            k_id = (key or "")[:8]
+            print(f"🚫 TURN Limit Reached: {k_id} used {count} times (Limit: 5)")
+
+    if is_pro or usage_allowed:
+        print(f"✅ Fast-Lane Granted: Routing to AWS Mumbai Relay")
+        return [
+            {"urls": "stun:13.233.19.209:3478"},
+            {"urls": "turn:13.233.19.209:3478", "username": "turbodrop", "credential": "pdfninja2026"},
+            {"urls": "turn:13.233.19.209:3478?transport=tcp", "username": "turbodrop", "credential": "pdfninja2026"},
+            {"urls": "stun:stun.l.google.com:19302"},
+            {"urls": "stun:stun.cloudflare.com:3478"}
+        ]
+    
+    print(f"⚠️ Free Tier Exceeded: Falling back to Public STUN only")
+    # Fallback for free users who exceeded 5 limits - Public STUN only (No TURN)
     return [
-        {"urls": "stun:13.233.19.209:3478"},
-        {"urls": "turn:13.233.19.209:3478", "username": "turbodrop", "credential": "pdfninja2026"},
-        {"urls": "turn:13.233.19.209:3478?transport=tcp", "username": "turbodrop", "credential": "pdfninja2026"},
         {"urls": "stun:stun.l.google.com:19302"},
         {"urls": "stun:stun.cloudflare.com:3478"}
     ]
