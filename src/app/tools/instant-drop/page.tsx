@@ -27,8 +27,8 @@ import { Footer } from "@/components/layout/Footer";
 import { useUsage } from "@/hooks/useUsage";
 import { PaywallModal } from "@/components/layout/PaywallModal";
 
-// v02.2.10.6a (Fortress Unordered) - Batch Harmony (NMI Fix)
-const VERSION = "v02.2.10.6a (Fortress Unordered)";
+// v02.2.10.6b (Symmetry Pulse) - Patching Unordered Batch Race
+const VERSION = "v02.2.10.6b (Symmetry Pulse)";
 const PIPES = 4; 
 const CHANNELS_PER_PIPE = 8;
 const CHANNELS = 32; 
@@ -770,23 +770,24 @@ ${capturedLogsRef.current.join('\n')}
                         // v02.2.06: Dual-Condition Completion (Byte-count + Chunk-count)
                         const isDone = (bytesReceived >= meta.size) && (!expectedChunks || chunkCount >= expectedChunks);
                         
-                        if (isDone) {
-                            self.postMessage({ 
-                                type: 'reassembled', 
-                                fileIdx: fIdx, 
-                                name: meta.name, 
-                                fileType: meta.fileType, 
-                                chunks: [buffer.buffer],
-                                chunkCount: -1 
-                            }, [buffer.buffer]);
-                            fileBuffers.delete(fIdx); 
-                            fileMetas.delete(fIdx); 
-                            receivedChunkIds.delete(fIdx); 
-                            bytesReceivedMap.delete(fIdx);
-                            reassembledFiles.add(fIdx);
-                            self.postMessage({ type: 'file-done', fileIdx: fIdx });
-                        }
+                    if (isDone) {
+                        // v02.1.80: Worker ownership of 'reassembled' signal
+                        self.postMessage({ 
+                            type: 'reassembled', 
+                            fileIdx: fIdx, 
+                            name: meta.name, 
+                            fileType: meta.fileType, 
+                            chunks: [buffer.buffer],
+                            chunkCount: -1 
+                        }, [buffer.buffer]);
+                        fileBuffers.delete(fIdx); 
+                        fileMetas.delete(fIdx); 
+                        receivedChunkIds.delete(fIdx); 
+                        bytesReceivedMap.delete(fIdx);
+                        reassembledFiles.add(fIdx);
+                        self.postMessage({ type: 'file-done', fileIdx: fIdx });
                     }
+                }
                 }
                 
                 if (type === 'force-all-done') {
@@ -1788,6 +1789,28 @@ ${capturedLogsRef.current.join('\n')}
         connect();
     };
 
+    const triggerFileCompletion = (fileIdx: number) => {
+        const fileBitset = reassemblyMapRef.current.get(fileIdx);
+        const targetBlocks = expectedChunksMapRef.current.get(fileIdx);
+        
+        if (targetBlocks && fileBitset && fileBitset.size >= targetBlocks) {
+            logDebug(`✅ File ${fileIdx} fully reassembled asynchronously (${fileBitset.size} chunks). Symmetry Verified.`);
+            
+            // v02.2.10.6b: Don't increment reassembledCount here. 
+            // We wait for the Worker to finish 'reassembled' for an accurate file list.
+            
+            reassemblyMapRef.current.delete(fileIdx);
+            expectedChunksMapRef.current.delete(fileIdx);
+            
+            workerRef.current?.postMessage({
+                type: 'chunk',
+                fileIdx: fileIdx,
+                chunkIdx: 0xFFFFFFFE,
+                payloadCount: -1
+            });
+        }
+    };
+
     const handleIncomingData = (data: any, _channelIdx: number) => {
         if (!workerRef.current) return;
 
@@ -1804,7 +1827,6 @@ ${capturedLogsRef.current.join('\n')}
             if (chunkIdx === 0xFFFFFFFF) return; // Nitro Warmup
             
             if (chunkIdx === 0xFFFFFFFD || chunkIdx === 0xFFFFFFFE) {
-                // v02.1.36: 12-byte Rich Signaling Parsing
                 const payloadCount = (data.byteLength >= 12) ? view.getUint32(8, true) : -1;
                 if (chunkIdx === 0xFFFFFFFD) {
                     expectedTotalFiles.current = payloadCount;
@@ -1816,11 +1838,12 @@ ${capturedLogsRef.current.join('\n')}
                         if (statusRef.current === 'done-waiting') {
                             setStatus('done');
                         }
-                    }, 10000); // v02.2.10: Reduced to 10s as Unordered is faster
+                    }, 10000); 
                 } else if (chunkIdx === 0xFFFFFFFE) {
-                    // v02.2.10.6a: Store total chunks for this SPECIFIC file
                     expectedChunksMapRef.current.set(fileIdx, payloadCount);
-                    logDebug(`Receiver: File-${fileIdx} EOF Signal. Total Chunks expected: ${payloadCount}`);
+                    logDebug(`Receiver: File-${fileIdx} EOF Signal. Total Chunks expected: ${payloadCount}. Checking Symmetry Pulse...`);
+                    // v02.2.10.6b: Trigger Immediate Pulse Check for Late-EOF arrival
+                    triggerFileCompletion(fileIdx);
                 }
                 workerRef.current?.postMessage({
                     type: 'chunk',
@@ -1829,35 +1852,29 @@ ${capturedLogsRef.current.join('\n')}
                     payloadCount
                 });
             } else if (chunkIdx === 0xFFFFFFF9) {
-                // v02.1.39: Active Singularity Probe ACK
-                if (statusRef.current === 'transferring' && reassembledCount.current >= expectedTotalFiles.current && expectedTotalFiles.current !== -1) {
+                if (statusRef.current === 'transferring' && receivedFiles.length >= expectedTotalFiles.current && expectedTotalFiles.current !== -1) {
                     setStatus('done');
                 }
             } else if (chunkIdx === 0xFFFFFFFC) {
-                // v02.2.08: Worker Pulse Handshake (Heartbeat)
                 const now = Date.now();
                 diagnosticMetricsRef.current.workerLag = now - workerHeartbeatRef.current;
                 workerHeartbeatRef.current = now;
                 logDebug(`Receiver: Symmetry Pulse. Lag=${diagnosticMetricsRef.current.workerLag}ms`);
             } else if (chunkIdx === 0xFFFFFFFA) {
-                // v02.1.40 (Phase 1): Deep-Insight Timed ACK
                 const senderTs = (data.byteLength >= 16) ? view.getBigUint64(8, true) : BigInt(0);
                 if (senderTs > BigInt(0)) {
                     sendControlMsg({ type: 'chunk-ack', ts: Number(senderTs), pipeIdx: _channelIdx });
                 }
             } else {
-                // Regular Chunk (v02.2.10.4: 16-byte Signed Header)
                 const incomingMeta = fileMetas.current.get(fileIdx);
                 const byteOffset = (data.byteLength >= 12) ? view.getUint32(8, true) : undefined;
                 const packetGen = (data.byteLength >= 16) ? view.getUint32(12, true) : 0;
                 
-                // v02.2.10.4: Generation Guard - discard packets from previous failed attempts
                 const currentPipeGen = pipeGenerationRef.current[Math.floor(_channelIdx / CHANNELS_PER_PIPE)] || 0;
                 if (packetGen !== 0 && packetGen < currentPipeGen) {
-                    return; // Ignore stale packet
+                    return; 
                 }
 
-                // v02.2.10.6a: Isolated Reassembly Check (Batch Harmony)
                 if (!reassemblyMapRef.current.has(fileIdx)) {
                     reassemblyMapRef.current.set(fileIdx, new Set());
                 }
@@ -1871,26 +1888,12 @@ ${capturedLogsRef.current.join('\n')}
                     byteOffset, 
                     payloadCount: byteOffset, 
                     originalBuffer: data,
-                    offset: 16 // v02.2.10.4 Signed Header Offset
+                    offset: 16 
                 }, [data]);
 
-                // v02.2.10.6a: Per-File Instant Completion Logic (Bitset Match)
-                const targetBlocks = expectedChunksMapRef.current.get(fileIdx);
-                if (targetBlocks && fileBitset.size >= targetBlocks) {
-                    logDebug(`✅ File ${fileIdx} fully reassembled asynchronously (${fileBitset.size} chunks).`);
-                    reassembledCount.current++;
-                    reassemblyMapRef.current.delete(fileIdx);
-                    expectedChunksMapRef.current.delete(fileIdx);
-                    
-                    workerRef.current.postMessage({
-                        type: 'chunk',
-                        fileIdx: fileIdx,
-                        chunkIdx: 0xFFFFFFFE,
-                        payloadCount: -1
-                    });
-                }
+                // v02.2.10.6b: Use triggerFileCompletion for Chunk arrival
+                triggerFileCompletion(fileIdx);
                 
-                // v02.2.10: Replaced sequential counter with async bitset size
                 const currentChunksReceived = fileBitset.size;
                 totalReceivedChunksCountRef.current++; 
                 
@@ -1902,12 +1905,8 @@ ${capturedLogsRef.current.join('\n')}
                     } else {
                         setProgress(p => Math.min(99, p + 2)); 
                     }
-                    
-                    // v02.1.54 (Phase 3): GPE Gated-Pull Signal (Priming + Periodic)
-                    // We pull more frequently at the start to "prime" the sender's flow.
                     const pullInterval = currentChunksReceived < 10 ? 1 : 10;
                     if (currentChunksReceived % pullInterval === 0) {
-                        // v02.1.63: Priority Signaling (Reroute via Anchor)
                         sendControlMsg({ 
                             type: 'gpe-pull', 
                             bytesCleared: pullInterval * data.byteLength, 
@@ -1932,7 +1931,7 @@ ${capturedLogsRef.current.join('\n')}
     useEffect(() => {
         let ackTimer: any = null;
         const totalFilesExpected = expectedTotalFiles.current;
-        const currentCount = receivedFiles.length;
+        const currentCount = reassembledCount.current; // v02.2.10.6b: Use synchronous Ref count
         
         // Only send success if we actually have all files reassembled
         if (mode === 'receive' && (status === 'done' || status === 'done-waiting') && currentCount > 0 && currentCount >= totalFilesExpected) {
@@ -1942,8 +1941,6 @@ ${capturedLogsRef.current.join('\n')}
             }
             
             const sendAck = () => {
-                // v02.1.82: Multi-Path Verification (Zinc Sync Ultra)
-                // Send ACK through both signaling (WS) and data (P2P) paths
                 if (statusRef.current === 'done') {
                     const ackPkt = new Uint8Array(12);
                     const ackView = new DataView(ackPkt.buffer);
@@ -1962,13 +1959,13 @@ ${capturedLogsRef.current.join('\n')}
                         fileNames: receivedFiles.map(f => f.name)
                     });
                     sendControlMsg({ type: 'batch-ack' });
-                    ackTimer = setTimeout(sendAck, 1000); // 1s sync frequency
+                    ackTimer = setTimeout(sendAck, 1000); 
                 }
             };
             sendAck();
         }
         return () => { if (ackTimer) clearTimeout(ackTimer); };
-    }, [status, mode, receivedFiles.length]);
+    }, [status, mode, receivedFiles.length, reassembledCount.current]);
 
     // Cleanup WebRTC and WS on unmount
     useEffect(() => {
@@ -2110,7 +2107,7 @@ ${capturedLogsRef.current.join('\n')}
         const d = diagnosticMetricsRef.current;
         const deepInsight = `
 --- DEEP DIAGNOSTIC INSIGHT ---
-Version: v02.2.10.2
+Version: ${VERSION}
 Retransmissions: ${d.retransmissions}
 Total Packets Sent: ${d.packetsSent}
 Retransmit Ratio: ${d.packetsSent > 0 ? ((d.retransmissions / d.packetsSent) * 100).toFixed(4) : 0}%
