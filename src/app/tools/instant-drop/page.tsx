@@ -3,7 +3,23 @@
 import { useState, useRef, useEffect, Suspense } from "react";
 import { useSearchParams } from "next/navigation";
 import { QRCodeSVG } from "qrcode.react";
-import { UploadCloud, Download, CheckCircle, Smartphone, Loader2, Archive, Zap } from "lucide-react";
+import { 
+    UploadCloud, 
+    Download, 
+    CheckCircle, 
+    Smartphone, 
+    Loader2, 
+    Archive, 
+    Zap,
+    X,
+    MessageSquare, 
+    Check, 
+    Copy, 
+    ChevronRight, 
+    ArrowRight,
+    AlertTriangle,
+    Activity
+} from "lucide-react";
 import JSZip from "jszip";
 import { Button } from "@/components/ui/button";
 import { Navbar } from "@/components/layout/Navbar";
@@ -11,15 +27,15 @@ import { Footer } from "@/components/layout/Footer";
 import { useUsage } from "@/hooks/useUsage";
 import { PaywallModal } from "@/components/layout/PaywallModal";
 
-// v02.2.06 (Unshackled Flow) - 30 MB/s Burst Capable
-const VERSION = "v02.2.06 (Unshackled Flow)";
+// v02.2.10.6d (NMI Protocol) - Fix Fatal NACK ReferenceError
+const VERSION = "v02.2.10.6d (NMI Protocol)";
 const PIPES = 4; 
-const CHANNELS_PER_PIPE = 4;
-const CHANNELS = 16; 
-const CHUNK_SIZE = 256 * 1024; // 256KB - Fortress Velocity
-const HIGH_WATER_MARK_MAX = 32 * 1024 * 1024; // 32MB - Prime Capacity for High Latency
-const PACER_THRESHOLD = 2 * 1024 * 1024; 
-const MAX_IN_FLIGHT = 256; 
+const CHANNELS_PER_PIPE = 8;
+const CHANNELS = 32; 
+const CHUNK_SIZE = 16 * 1024; // 16KB Safe Floor (NMI Fix)
+const HIGH_WATER_MARK_MAX = 8 * 1024 * 1024; // 8MB - Lighter Buffer for High-Frequency
+const PACER_THRESHOLD = 4 * 1024 * 1024; 
+const MAX_IN_FLIGHT = 1024; 
 const DRAIN_THRESHOLD = 32 * 1024 * 1024; 
 const getAdaptivePipeCount = (rtt: number) => {
     if (rtt < 0.200) return 4; // 16 Channels (Max Velocity)
@@ -55,14 +71,24 @@ const ICE_SERVERS = {
         { urls: "stun:stun4.l.google.com:19302" },
         { urls: "stun:stun.cloudflare.com:3478" },
         // v02.1.72: Reinforced Private TURN (NMI Anchor)
+        // v02.2.10.3: Shielded TLS Expansion (Bypass DPI Firewall)
         {
             urls: [
                 "turn:swap-pdf.metered.live:80",
                 "turn:swap-pdf.metered.live:443",
-                "turn:swap-pdf.metered.live:443?transport=tcp"
+                "turn:swap-pdf.metered.live:443?transport=tcp",
+                "turns:swap-pdf.metered.live:443?transport=tcp", // v02.2.10.3 TLS Anchor
+                "turns:swap-pdf.metered.live:443"
             ],
-            username: "openrelayproject", // Keep public for now, switch to .env if needed
+            username: "openrelayproject",
             credential: "openrelayproject"
+        },
+        // v02.2.10.3: Passive Fallback Node (Xirsys/Global)
+        {
+            urls: [
+                "stun:openrelay.metered.ca:80",
+                "stun:openrelay.metered.ca:443"
+            ]
         }
     ]
 };
@@ -80,6 +106,25 @@ function InstantDropContent() {
     const [status, setStatus] = useState<"disconnected" | "waiting" | "connecting" | "transferring" | "done" | "error" | "done-waiting">("disconnected");
     const [receivedFiles, setReceivedFiles] = useState<{ blob: Blob | null, name: string }[]>([]);
     const [incomingMeta, setIncomingMeta] = useState<any>(null); // New state for reactive UI labels
+    const [totalSentBytes, setTotalSentBytes] = useState(0);
+    const [isStaleVersion, setIsStaleVersion] = useState(false);
+
+    // v02.2.10.5: Force Sync & Cache Burn Sentinel
+    useEffect(() => {
+        if (typeof window !== 'undefined') {
+            const currentVer = VERSION;
+            const lastVer = localStorage.getItem('turbodrop_version');
+            if (lastVer !== currentVer) {
+                localStorage.setItem('turbodrop_version', currentVer);
+                console.log("%c [FORCE SYNC] Version Mismatch Detected. Hard Reloading...", "color: #ff0000; font-weight: bold;");
+                // Reset cache-bust param and reload
+                const url = new URL(window.location.href);
+                url.searchParams.set('cb', Date.now().toString());
+                window.location.href = url.toString();
+            }
+        }
+    }, []);
+
     const [totalFiles, setTotalFiles] = useState<number>(0); 
     const [isZipping, setIsZipping] = useState(false);
     const [compressImages, setCompressImages] = useState(false);
@@ -124,10 +169,22 @@ function InstantDropContent() {
         eventLoopLag: 0,
         mtuCeiling: CHUNK_SIZE,
         bufferBloatGrade: 0,
-        lastAckTs: 0
+        lastAckTs: 0,
+        // v02.2.08 Omega Stats
+        transportType: "unknown" as "unknown" | "host" | "srflx" | "relay",
+        protocol: "udp" as "udp" | "tcp",
+        workerLag: 0,
+        bdp: 0,
+        pistonStats: Array(4).fill({ speed: 0, health: 'green' }),
+        isChaosMode: false
     });
+    const pipeLatenciesRef = useRef<number[]>(new Array(PIPES).fill(0));
     const eventLoopIntervalRef = useRef<any>(null);
+    const workerHeartbeatRef = useRef<number>(Date.now()); // v02.2.08: Worker Pulse
     const reassembledCount = useRef(0);
+    const reassemblyMapRef = useRef<Map<number, Set<number>>>(new Map()); // v02.2.10.6a: Per-File Reassembly Bitsets
+    const expectedChunksMapRef = useRef<Map<number, number>>(new Map()); // v02.2.10.6a: Multi-File Target Tracking
+    const nextExpectedChunkRef = useRef<number>(0); 
     const expectedTotalFiles = useRef(-1);
     const lastBytesRef = useRef(0);
     const avgRTTRef = useRef<number>(0.1); // v02.1.39 (Patch 24.1): BDP-Snap Average RTT
@@ -144,6 +201,28 @@ function InstantDropContent() {
     const heartbeatIntervalRef = useRef<any>(null);
     const workerRef = useRef<Worker | null>(null);
     const totalReceivedChunksCountRef = useRef(0); // v02.1.39 (Patch 12): Lightweight Flow Control
+
+    // v02.2.08: Autonomous Engineering Hooks (Omega)
+    useEffect(() => {
+        (window as any).__CHAOS_MODE__ = (active: boolean) => {
+            diagnosticMetricsRef.current.isChaosMode = active;
+            logDebug(`🚨 Chaos Mode: ${active ? 'ACTIVE (Injecting 100ms Jitter)' : 'OFF'}`);
+        };
+        (window as any).__SET_PIPE_LATENCY__ = (pipeIdx: number, ms: number) => {
+            logDebug(`[OMEGA] CHAOS: Throttling Pipe-${pipeIdx} to ${ms}ms latency.`);
+            pipeLatenciesRef.current[pipeIdx] = ms;
+        };
+        (window as any).__FORCE_RELAY__ = () => {
+            logDebug("🛡️ FORCING RELAY: Stripping STUN/Host candidates...");
+            relayServersRef.current = relayServersRef.current.filter(s => s.urls.includes("turn:"));
+        };
+        (window as any).__GET_OMEGA_HEALTH__ = () => ({
+            ...diagnosticMetricsRef.current,
+            status: statusRef.current,
+            progress: progress
+        });
+    }, [progress]);
+
     const doneWaitingTimeoutRef = useRef<any>(null); // v02.1.39 (Patch 12): Receiver Safety Net
     const blockedLoopCount = useRef(0); // v02.1.57: Diagnostic Flow Counter
     const senderChunkCacheRef = useRef<Map<string, Uint8Array>>(new Map()); // v02.1.95: NACK Sliding Window
@@ -215,28 +294,27 @@ function InstantDropContent() {
 
     function sendControlMsg(payload: any, priority = false) {
         const msgStr = JSON.stringify(payload);
-        let sent = false;
-        if (wsRef.current?.readyState === WebSocket.OPEN) {
-            try { wsRef.current.send(msgStr); sent = true; } catch(e) {}
-        }
-        // v02.1.65: Signal Broadcast Fallback - prefer Anchor, fallback to any open pipe
+        
+        // 1. Try WebRTC Fast Path on ONE Anchor Channel
         const channels = dataChannelsRef.current.filter(c => c && c.readyState === 'open');
-        if (priority) {
-            // v02.1.71: Reinforced Signal Path (Prefer Anchor for all control msgs on mobile)
+        if (channels.length > 0) {
             const anchor = channels.find(c => {
                 const idx = parseInt(c.label.split('-').pop() || '0');
                 return idx < 4;
-            });
-            if (anchor) {
-                try { anchor.send(msgStr); sent = true; } catch(e) {}
-                if (payload.type === 'gpe-pull') return sent; // Pulls only need one successful path
-            }
+            }) || channels[0];
+            
+            try { 
+                anchor.send(msgStr); 
+                return true; 
+            } catch(e) {}
         }
-        // Fallback: If anchor failed or not priority, broadcast to all
-        channels.forEach(dc => {
-            try { dc.send(msgStr); sent = true; } catch(e) {}
-        });
-        return sent;
+        
+        // 2. Fallback to reliable WebSocket if WebRTC fails
+        if (wsRef.current?.readyState === WebSocket.OPEN) {
+            try { wsRef.current.send(msgStr); return true; } catch(e) {}
+        }
+
+        return false;
     }
 
     function disconnectEverything() {
@@ -482,30 +560,54 @@ ${capturedLogsRef.current.join('\n')}
         if (status === 'transferring') {
             const statsInterval = setInterval(async () => {
                 try {
-                    let reportStr = "--- WebRTC Stats (Singularity Triple-Pipe) ---\n";
                     let rttSum = 0;
                     let rttCount = 0;
+                    const newPistonStats = [...diagnosticMetricsRef.current.pistonStats];
+
                     for (let i = 0; i < PIPES; i++) {
                         const peer = peersRef.current[i];
                         if (!peer) continue;
                         const stats = await peer.getStats();
                         stats.forEach(report => {
+                            if (report.type === 'outbound-rtp' || report.type === 'data-channel') {
+                                if (report.packetsSent) diagnosticMetricsRef.current.packetsSent += report.packetsSent;
+                                if (report.retransmittedPacketsSent) diagnosticMetricsRef.current.retransmissions += report.retransmittedPacketsSent;
+                            }
                             if (report.type === 'candidate-pair' && report.state === 'succeeded') {
-                                reportStr += `Pipe-${i}: RTT=${report.currentRoundTripTime} SpeedMultiplier=1.0\n`;
+                                // v02.2.08: Capture Transport DNA
+                                const localCand = stats.get(report.localCandidateId);
+                                if (localCand) {
+                                    diagnosticMetricsRef.current.transportType = localCand.candidateType;
+                                    diagnosticMetricsRef.current.protocol = localCand.protocol;
+                                }
+
                                 if (report.currentRoundTripTime) {
                                     rttSum += report.currentRoundTripTime;
                                     rttCount++;
+                                    
+                                    // Piston Health Logic
+                                    const rttMs = report.currentRoundTripTime * 1000;
+                                    let health: 'green' | 'amber' | 'red' = 'green';
+                                    if (rttMs > 400) health = 'red';
+                                    else if (rttMs > 150) health = 'amber';
+                                    
+                                    newPistonStats[i] = { 
+                                        speed: transferSpeed || 0, 
+                                        health 
+                                    };
                                 }
                             }
                         });
                     }
                     if (rttCount > 0) avgRTTRef.current = rttSum / rttCount;
-                    logDebug(reportStr);
+                    diagnosticMetricsRef.current.pistonStats = newPistonStats;
+                    // BDP Calculation: Bandwidth (bytes/s) * RTT (s)
+                    diagnosticMetricsRef.current.bdp = (transferSpeed || 0) * (avgRTTRef.current || 0);
                 } catch (e) {}
-            }, 5000);
+            }, 1000); // 1s high-fidelity polling
             return () => clearInterval(statsInterval);
         }
-    }, [status]);
+    }, [status, transferSpeed]);
 
     // Compress an image file to JPG using canvas
     const compressImageFile = async (file: File): Promise<File> => {
@@ -551,6 +653,8 @@ ${capturedLogsRef.current.join('\n')}
                 if (fileBuffers.size > 0 || expectedTotalFiles !== -1) {
                     self.postMessage({ type: 'worker-pulse', ts: Date.now() });
                 }
+                
+                const now = Date.now();
                 
                 // v02.1.95: Hole Detection (NACK Trigger)
                 // v02.2.06: Fast Hole Detection (1s NACK Trigger for unordered pipes)
@@ -667,23 +771,24 @@ ${capturedLogsRef.current.join('\n')}
                         // v02.2.06: Dual-Condition Completion (Byte-count + Chunk-count)
                         const isDone = (bytesReceived >= meta.size) && (!expectedChunks || chunkCount >= expectedChunks);
                         
-                        if (isDone) {
-                            self.postMessage({ 
-                                type: 'reassembled', 
-                                fileIdx: fIdx, 
-                                name: meta.name, 
-                                fileType: meta.fileType, 
-                                chunks: [buffer.buffer],
-                                chunkCount: -1 
-                            }, [buffer.buffer]);
-                            fileBuffers.delete(fIdx); 
-                            fileMetas.delete(fIdx); 
-                            receivedChunkIds.delete(fIdx); 
-                            bytesReceivedMap.delete(fIdx);
-                            reassembledFiles.add(fIdx);
-                            self.postMessage({ type: 'file-done', fileIdx: fIdx });
-                        }
+                    if (isDone) {
+                        // v02.1.80: Worker ownership of 'reassembled' signal
+                        self.postMessage({ 
+                            type: 'reassembled', 
+                            fileIdx: fIdx, 
+                            name: meta.name, 
+                            fileType: meta.fileType, 
+                            chunks: [buffer.buffer],
+                            chunkCount: -1 
+                        }, [buffer.buffer]);
+                        fileBuffers.delete(fIdx); 
+                        fileMetas.delete(fIdx); 
+                        receivedChunkIds.delete(fIdx); 
+                        bytesReceivedMap.delete(fIdx);
+                        reassembledFiles.add(fIdx);
+                        self.postMessage({ type: 'file-done', fileIdx: fIdx });
                     }
+                }
                 }
                 
                 if (type === 'force-all-done') {
@@ -745,22 +850,43 @@ ${capturedLogsRef.current.join('\n')}
         }
     };
 
-    // v02.1.40 (Phase 1): Transport Stats Poller
+    // v02.2.08: Omega Multi-Pipe Analytics Poller
     useEffect(() => {
         if (status !== 'transferring') return;
         
         const pollStats = async () => {
             let totalRetransmits = 0;
             let totalSent = 0;
-            
-            for (const peer of peersRef.current) {
+            let rttSum = 0;
+            let rttCount = 0;
+            const newPistonStats = [...diagnosticMetricsRef.current.pistonStats];
+
+            for (let i = 0; i < PIPES; i++) {
+                const peer = peersRef.current[i];
                 if (!peer) continue;
                 try {
                     const stats = await peer.getStats();
                     stats.forEach((report: any) => {
-                        if (report.type === 'transport') {
-                            totalRetransmits += (report.packetsRetransmitted || 0);
-                            totalSent += (report.packetsSent || 0);
+                        if (report.type === 'outbound-rtp' || report.type === 'data-channel') {
+                            if (report.retransmittedPacketsSent) totalRetransmits += report.retransmittedPacketsSent;
+                            if (report.packetsSent) totalSent += report.packetsSent;
+                        }
+                        if (report.type === 'candidate-pair' && report.state === 'succeeded') {
+                             // Transport DNA
+                             const localCand = stats.get(report.localCandidateId);
+                             if (localCand) {
+                                 diagnosticMetricsRef.current.transportType = localCand.candidateType;
+                                 diagnosticMetricsRef.current.protocol = localCand.protocol;
+                             }
+                             if (report.currentRoundTripTime) {
+                                rttSum += report.currentRoundTripTime;
+                                rttCount++;
+                                const rttMs = report.currentRoundTripTime * 1000;
+                                let health: 'green' | 'amber' | 'red' = 'green';
+                                if (rttMs > 400) health = 'red';
+                                else if (rttMs > 150) health = 'amber';
+                                newPistonStats[i] = { speed: transferSpeed || 0, health };
+                             }
                         }
                     });
                 } catch (e) {}
@@ -769,16 +895,14 @@ ${capturedLogsRef.current.join('\n')}
             if (totalSent > 0) {
                 diagnosticMetricsRef.current.retransmissions = totalRetransmits;
                 diagnosticMetricsRef.current.packetsSent = totalSent;
-                const ratio = ((totalRetransmits / totalSent) * 100).toFixed(2);
-                if (totalRetransmits > 0) {
-                    logDebug(`⚠️ Deep-Insight: Retransmit Ratio = ${ratio}% (${totalRetransmits}/${totalSent})`);
-                }
             }
+            if (rttCount > 0) avgRTTRef.current = rttSum / rttCount;
+            diagnosticMetricsRef.current.pistonStats = newPistonStats;
         };
         
-        const timer = setInterval(pollStats, 2000);
+        const timer = setInterval(pollStats, 1000);
         return () => clearInterval(timer);
-    }, [status]);
+    }, [status, transferSpeed]);
 
     const releaseWakeLock = () => {
         if (wakeLockRef.current) {
@@ -963,6 +1087,7 @@ ${capturedLogsRef.current.join('\n')}
                 const startIdx = pipeIdx * CHANNELS_PER_PIPE;
                 for (let i = 0; i < CHANNELS_PER_PIPE; i++) {
                     const channelIdx = startIdx + i;
+                    // v02.2.10: Unordered Transport (Bypasses HoL Blocking)
                     const dc = peer.createDataChannel(`data-${channelIdx}`, {
                         ordered: false,
                         maxRetransmits: 0, // v02.1.95: Eliminate HOL blocking for bulk data
@@ -1002,7 +1127,17 @@ ${capturedLogsRef.current.join('\n')}
             peer.oniceconnectionstatechange = () => {
                 logDebug(`Pipe-${pipeIdx} ICE State: ${peer.iceConnectionState}`);
                 if (peer.iceConnectionState === 'disconnected' || peer.iceConnectionState === 'failed') {
+                    diagnosticMetricsRef.current.pistonStats[pipeIdx] = { speed: 0, health: 'red' };
                     try { peer.restartIce(); } catch (e) {}
+                }
+            };
+
+            // v02.2.10: Proactive Dead-Pipe Pruning (Log-Aware 701 Detector)
+            peer.onicecandidateerror = (e: any) => {
+                if (e.errorCode === 701) {
+                    logDebug(`🛰️ ICE Candidate Error (Pipe-${pipeIdx}): ${e.errorCode} - ${e.errorText} [${e.url}]`);
+                    // Immediate health downgrade to avoid load-balancing onto blocked relay
+                    diagnosticMetricsRef.current.pistonStats[pipeIdx] = { speed: 0, health: 'red' };
                 }
             };
 
@@ -1039,7 +1174,7 @@ ${capturedLogsRef.current.join('\n')}
             // v02.0.8: Start transfer as soon as ANY channel is open (resilient to slow index-0)
             const openCount = dataChannelsRef.current.filter(c => c && c.readyState === 'open').length;
             if (openCount >= 1 && modeRef.current === 'send' && !isActive.current) {
-                logDebug(`DataChannel(s) OPEN (${openCount}/${CHANNELS}) - Stability Breath...`);
+                logDebug(`DataChannel(s) OPEN (${openCount}/${CHANNELS}) - Tachyon Start Triggered (v10.5)`);
                 isActive.current = true; // Guard immediately to prevent double-trigger
                 setTimeout(() => {
                     logDebug("Starting Ultimate-Gold parallel transfer...");
@@ -1189,10 +1324,6 @@ ${capturedLogsRef.current.join('\n')}
         });
         sendControlMsg({ type: 'batch-eof', totalFiles: currentFiles.length });
         
-        // v02.1.96: Strict Verification Handshake
-        // Symmetry pulse to trigger receiver completion check
-        sendControlMsg({ type: 'force-verify' });
-        
         logDebug("Sender: Batch sent. Awaiting receiver verification (Ready ACK)...");
         setStatus('done-waiting'); 
 
@@ -1217,7 +1348,30 @@ ${capturedLogsRef.current.join('\n')}
                 }
             };
 
+            // Post-Transmission NACK Drainer
+            const nackInterval = setInterval(() => {
+                if (nackQueueRef.current.length > 0 && isActive.current) {
+                    const openChannels = dataChannelsRef.current.filter(dc => dc && dc.readyState === 'open');
+                    if (openChannels.length === 0) return;
+                    
+                    for(let i=0; i < openChannels.length; i++) {
+                        if (nackQueueRef.current.length === 0) break;
+                        const nack = nackQueueRef.current.shift();
+                        if (nack) {
+                            const cacheKey = `${nack.fileIdx}_${nack.chunkIdx}`;
+                            const cachedPacket = senderChunkCacheRef.current.get(cacheKey);
+                            if (cachedPacket) {
+                                try {
+                                    openChannels[i].send(cachedPacket as any);
+                                } catch(e) {}
+                            }
+                        }
+                    }
+                }
+            }, 20);
+
             const cleanup = () => {
+                clearInterval(nackInterval);
                 window.removeEventListener('webrtc-sender-msg', wsHandler);
                 dataChannelsRef.current.forEach(dc => {
                     if (dc) dc.removeEventListener('message', dcHandler);
@@ -1229,7 +1383,7 @@ ${capturedLogsRef.current.join('\n')}
                 if (dc) dc.addEventListener('message', dcHandler);
             });
 
-            // v02.1.96: Increased safety net to 90s for ultra-high latency (6.8s case).
+            // Increased safety net to 90s for ultra-high latency (6.8s case).
             setTimeout(() => {
                 cleanup();
                 if (statusRef.current === 'done-waiting') {
@@ -1279,51 +1433,7 @@ ${capturedLogsRef.current.join('\n')}
             // Unshackled Flow: RTT Guard Removed to prevent artificial stalling
             const currentRTT = avgRTTRef.current || 0;
 
-            const totalBuffered = dataChannelsRef.current.reduce(
-                (acc, c) => acc + (c?.readyState === 'open' ? c.bufferedAmount : 0), 0
-            );
-
-            // v02.2.03 (Patch 27.4): Buffer-Aware Sentinel Pacer
-            const currentSpeed = currentMBpsRef.current || 0;
-            if (currentSpeed < 0.2 && statusRef.current === 'transferring' && totalBuffered < 4 * 1024 * 1024) {
-                if (!stallWatchdogRef.current) {
-                    const sentinelTimeout = Math.max(30000, Math.min(90000, currentRTT * 30000));
-                    
-                    stallWatchdogRef.current = setTimeout(() => {
-                        logDebug(`🛰️ Stall Detected (${currentSpeed.toFixed(2)}MB/s at ${currentRTT.toFixed(2)}s RTT). Triggering Sentinel Auto-Resume (${sentinelTimeout}ms)...`);
-                        lastSuccessfulChunkIdxRef.current = byteOffset; 
-                        isResumingRef.current = true;
-                        
-                        sendControlMsg({
-                            type: 'metadata',
-                            name: file.name,
-                            size: file.size,
-                            fileType: file.type,
-                            currentIdx: index,
-                            totalFiles: expectedTotalFiles.current !== -1 ? expectedTotalFiles.current : 1,
-                            isParallel: true,
-                            parallelChannels: dataChannelsRef.current.length
-                        });
-
-                        resetSessionRefs(true); 
-                        if (wsRef.current) {
-                            const recoveryPipeCount = getAdaptivePipeCount(currentRTT);
-                            logDebug(`🛰️ Sentinel Recovery: Scaling to ${recoveryPipeCount} pipes for ${currentRTT.toFixed(2)}s RTT.`);
-                            for (let p = 0; p < recoveryPipeCount; p++) setupWebRTC(wsRef.current, true, p);
-                        }
-                    }, sentinelTimeout); 
-                }
-            } else {
-                if (stallWatchdogRef.current) {
-                    clearTimeout(stallWatchdogRef.current);
-                    stallWatchdogRef.current = null;
-                }
-            }
-
-            const bdpLimit = Math.max(256 * 1024 * 1024, Math.min(512 * 1024 * 1024, (currentMBpsRef.current * 1024 * 1024 * avgRTTRef.current * 8.0)));
-            const GPE_CAP = 256 * 1024 * 1024; 
-            const isGPEBlocked = gpeInFlightBytesRef.current > GPE_CAP;
-            
+            const isGPEBlocked = gpeInFlightBytesRef.current > (256 * 1024 * 1024); 
             const targetPipeCount = getAdaptivePipeCount(currentRTT);
             const targetChannelLimit = targetPipeCount * CHANNELS_PER_PIPE;
 
@@ -1338,23 +1448,47 @@ ${capturedLogsRef.current.join('\n')}
                 if (dc && dc.readyState === 'open') openChannels.push(dc);
             }
 
-            if (isGPEBlocked || openChannels.length === 0) {
+            const totalBuffered = dataChannelsRef.current.reduce((acc, dc) => acc + (dc?.bufferedAmount || 0), 0);
+            
+            // v02.2.09: Dynamic "Deep" Buffer Tuning
+            // Scale between 8MB (base) and 64MB (high-speed fiber saturation)
+            const speedMBps = currentMBpsRef.current || 0.1;
+            const NITRO_THRESHOLD = Math.max(8 * 1024 * 1024, Math.min(64 * 1024 * 1024, speedMBps * 4 * 1024 * 1024)); // 4-second buffer cushion
+
+            if (isGPEBlocked || openChannels.length === 0 || totalBuffered > NITRO_THRESHOLD) {
                 blockedLoopCount.current++;
-                if (blockedLoopCount.current % 10000 === 0) {
-                    logDebug(`🛰️ FLOW BLOCKED: GPE=${isGPEBlocked}, BDP=${totalBuffered >= bdpLimit}, Pipes=${openChannels.length}`);
+                if (blockedLoopCount.current % 5000 === 0 && totalBuffered > NITRO_THRESHOLD) {
+                    logDebug(`🚀 NITRO FLOW HANG: Buffer=${(totalBuffered / 1024 / 1024).toFixed(1)}MB / Threshold=${(NITRO_THRESHOLD / 1024 / 1024).toFixed(1)}MB`);
                 }
-                await new Promise(resolve => setTimeout(resolve, 10)); // Added pulse back-off
+                
+                // Use bufferedamountlow for zero-latency wakeup if possible
+                if (totalBuffered > NITRO_THRESHOLD) {
+                    const dc = openChannels[0];
+                    if (dc) {
+                        dc.bufferedAmountLowThreshold = NITRO_THRESHOLD / 4;
+                        await new Promise(resolve => {
+                            const handler = () => {
+                                dc.removeEventListener('bufferedamountlow', handler);
+                                resolve(null);
+                            };
+                            dc.addEventListener('bufferedamountlow', handler);
+                            setTimeout(handler, 100); // 100ms Safety Timeout
+                        });
+                    }
+                } else {
+                    await new Promise(resolve => setTimeout(resolve, 10)); 
+                }
                 continue; 
             } else {
                 blockedLoopCount.current = 0;
             }
 
-            // GPE Self-Unblock Logic (3s Safety)
+            // GPE Self-Unblock Logic (v02.2.10.4: Aggressive Deadlock Buster)
             if (isGPEBlocked) {
                 if (!gpeBlockedSinceRef.current) gpeBlockedSinceRef.current = Date.now();
-                if (Date.now() - gpeBlockedSinceRef.current > 3000) {
-                    logDebug("⚠️ GPE Deadlock detected (3s). performing Heartbeat Pulse...");
-                    gpeInFlightBytesRef.current = Math.max(0, gpeInFlightBytesRef.current - (4096 * 1024));
+                if (Date.now() - gpeBlockedSinceRef.current > 5000) { // 5s ceiling
+                    logDebug("⚠️ GPE Deadlock detected (5s). Performing Emergency Drain...");
+                    gpeInFlightBytesRef.current = 0; // Complete reset to force stream resumption
                     sendControlMsg({ type: 'heartbeat', ts: Date.now() }); 
                     gpeBlockedSinceRef.current = Date.now();
                 }
@@ -1369,7 +1503,18 @@ ${capturedLogsRef.current.join('\n')}
                 for (let i = 0; i < openChannels.length; i++) {
                     const testIdx = (baseIdx + i) % openChannels.length;
                     const dc = openChannels[testIdx];
-                    if (dc && dc.readyState === 'open' && dc.bufferedAmount <= 16 * 1024 * 1024) {
+                    if (!dc || dc.readyState !== 'open') continue;
+
+                    // v02.2.08.1: Omega-Infinite Load Balancing
+                    const pipeIdx = Math.floor(testIdx / CHANNELS_PER_PIPE);
+                    const health = diagnosticMetricsRef.current.pistonStats[pipeIdx]?.health || 'green';
+                    
+                    // If pipe is red, we only use it 10% of the time to avoid clog
+                    if (health === 'red' && Math.random() > 0.1) continue;
+                    // If pipe is amber, we only use it 50% of the time
+                    if (health === 'amber' && Math.random() > 0.5) continue;
+
+                    if (dc.bufferedAmount <= 8 * 1024 * 1024) { // Tighten per-channel buffer
                         selectedDC = dc;
                         break;
                     }
@@ -1441,8 +1586,12 @@ ${capturedLogsRef.current.join('\n')}
                                 
                                 const residual = currentChunkResidual as Uint8Array;
                                 if (residual.length >= targetSize) {
-                                    chunkData = residual.slice(0, targetSize);
-                                    currentChunkResidual = residual.length > targetSize ? residual.slice(targetSize) : null;
+                                    let adaptiveChunkSize = targetSize;
+                                    // v02.2.10.6: Nano-Velocity MTU (Max 64KB)
+                                    // Large packets (240KB+) were being dropped by restrictive browser-edge SCTP buffers.
+                                    adaptiveChunkSize = Math.min(64 * 1024, targetSize); 
+                                    chunkData = residual.slice(0, adaptiveChunkSize);
+                                    currentChunkResidual = residual.length > adaptiveChunkSize ? residual.slice(adaptiveChunkSize) : null;
                                 } else {
                                     chunkData = residual;
                                     currentChunkResidual = null;
@@ -1462,18 +1611,24 @@ ${capturedLogsRef.current.join('\n')}
                         chunksSentSinceScaleRef.current = 0;
                         const rtt = avgRTTRef.current || 0;
                         const speed = currentMBpsRef.current || 0;
-                        if (rtt < 0.200 && speed > 0.5 && dynamicChunkSizeRef.current < 1024 * 1024) {
-                            dynamicChunkSizeRef.current += 128 * 1024;
-                            logDebug(`🚀 VELOCITY UP: Scaling MTU to ${Math.round(dynamicChunkSizeRef.current/1024)}KB`);
+                        // v02.2.10.6: Nano-Scaling (Max 64KB)
+                        if (rtt < 0.200 && speed > 0.5 && dynamicChunkSizeRef.current < 64 * 1024) {
+                            dynamicChunkSizeRef.current = Math.min(64 * 1024, dynamicChunkSizeRef.current + 4 * 1024);
+                            logDebug(`🚀 VELOCITY UP: Scaling MTU to ${Math.round(dynamicChunkSizeRef.current/1024)}KB (CAPPED)`);
                         }
                     }
                     
-                    const packet = new Uint8Array(12 + chunkData.byteLength);
+                    // v02.2.10.4: Session-Signed Packet (16-byte Header)
+                    const dcIdx = dataChannelsRef.current.indexOf(dc);
+                    const pipeIdx = Math.floor(dcIdx / CHANNELS_PER_PIPE);
+                    const currentGen = pipeGenerationRef.current[pipeIdx] || 1;
+                    const packet = new Uint8Array(16 + chunkData.byteLength);
                     const view = new DataView(packet.buffer);
                     view.setUint32(0, index, true);
                     view.setUint32(4, currentSeq, true); 
                     view.setUint32(8, currentOffset, true); 
-                    packet.set(chunkData, 12);
+                    view.setUint32(12, currentGen, true); // Session Signature
+                    packet.set(chunkData, 16);
 
                     try {
                         if (currentSeq % 20 === 0) {
@@ -1489,6 +1644,15 @@ ${capturedLogsRef.current.join('\n')}
                             logDebug(`⚠️ DataChannel ${dc.label} not open while sending. Retrying current chunk (Seq: ${currentSeq})...`);
                             await new Promise(resolve => setTimeout(resolve, 200));
                             continue;
+                        }
+
+                        // v02.2.08: Chaos Injection (Omega)
+                        // Latency is injected PER PACKET, not per loop, to simulate network jitter correctly.
+                        if (diagnosticMetricsRef.current.isChaosMode) {
+                           const pipeIdx = Math.floor(openChannels.indexOf(dc) / CHANNELS_PER_PIPE);
+                           const baseJitter = pipeLatenciesRef.current[pipeIdx] || 50; 
+                           const jitter = Math.random() * baseJitter; 
+                           await new Promise(resolve => setTimeout(resolve, jitter));
                         }
                         
                         dc.send(packet);
@@ -1645,6 +1809,28 @@ ${capturedLogsRef.current.join('\n')}
         connect();
     };
 
+    const triggerFileCompletion = (fileIdx: number) => {
+        const fileBitset = reassemblyMapRef.current.get(fileIdx);
+        const targetBlocks = expectedChunksMapRef.current.get(fileIdx);
+        
+        if (targetBlocks && fileBitset && fileBitset.size >= targetBlocks) {
+            logDebug(`✅ File ${fileIdx} fully reassembled asynchronously (${fileBitset.size} chunks). Symmetry Verified.`);
+            
+            // v02.2.10.6b: Don't increment reassembledCount here. 
+            // We wait for the Worker to finish 'reassembled' for an accurate file list.
+            
+            reassemblyMapRef.current.delete(fileIdx);
+            expectedChunksMapRef.current.delete(fileIdx);
+            
+            workerRef.current?.postMessage({
+                type: 'chunk',
+                fileIdx: fileIdx,
+                chunkIdx: 0xFFFFFFFE,
+                payloadCount: -1
+            });
+        }
+    };
+
     const handleIncomingData = (data: any, _channelIdx: number) => {
         if (!workerRef.current) return;
 
@@ -1661,22 +1847,23 @@ ${capturedLogsRef.current.join('\n')}
             if (chunkIdx === 0xFFFFFFFF) return; // Nitro Warmup
             
             if (chunkIdx === 0xFFFFFFFD || chunkIdx === 0xFFFFFFFE) {
-                // v02.1.36: 12-byte Rich Signaling Parsing
                 const payloadCount = (data.byteLength >= 12) ? view.getUint32(8, true) : -1;
                 if (chunkIdx === 0xFFFFFFFD) {
                     expectedTotalFiles.current = payloadCount;
-                    // v02.1.82: Immediate Verification Feedback
                     setStatus('done-waiting'); 
-                    logDebug(`Receiver: Batch EOF received (File Loop). Finalizing reassembly...`);
+                    logDebug(`Receiver: Batch EOF received. Expected Files: ${payloadCount}`);
                     
-                    // v02.1.39 (Patch 12): Receiver Safety Net
                     if (doneWaitingTimeoutRef.current) clearTimeout(doneWaitingTimeoutRef.current);
                     doneWaitingTimeoutRef.current = setTimeout(() => {
                         if (statusRef.current === 'done-waiting') {
-                            logDebug("Receiver: Safety Net (30s) triggered in done-waiting. Forcing completion.");
                             setStatus('done');
                         }
-                    }, 30000); // 30s Safety Net for large batches
+                    }, 10000); 
+                } else if (chunkIdx === 0xFFFFFFFE) {
+                    expectedChunksMapRef.current.set(fileIdx, payloadCount);
+                    logDebug(`Receiver: File-${fileIdx} EOF Signal. Total Chunks expected: ${payloadCount}. Checking Symmetry Pulse...`);
+                    // v02.2.10.6b: Trigger Immediate Pulse Check for Late-EOF arrival
+                    triggerFileCompletion(fileIdx);
                 }
                 workerRef.current?.postMessage({
                     type: 'chunk',
@@ -1685,39 +1872,50 @@ ${capturedLogsRef.current.join('\n')}
                     payloadCount
                 });
             } else if (chunkIdx === 0xFFFFFFF9) {
-                // v02.1.39: Active Singularity Probe ACK
-                if (statusRef.current === 'transferring' && reassembledCount.current >= expectedTotalFiles.current && expectedTotalFiles.current !== -1) {
+                if (statusRef.current === 'transferring' && receivedFiles.length >= expectedTotalFiles.current && expectedTotalFiles.current !== -1) {
                     setStatus('done');
                 }
             } else if (chunkIdx === 0xFFFFFFFC) {
-                logDebug(`Receiver: Symmetry Pulse for ${fileIdx}.`);
+                const now = Date.now();
+                diagnosticMetricsRef.current.workerLag = now - workerHeartbeatRef.current;
+                workerHeartbeatRef.current = now;
+                logDebug(`Receiver: Symmetry Pulse. Lag=${diagnosticMetricsRef.current.workerLag}ms`);
             } else if (chunkIdx === 0xFFFFFFFA) {
-                // v02.1.40 (Phase 1): Deep-Insight Timed ACK
                 const senderTs = (data.byteLength >= 16) ? view.getBigUint64(8, true) : BigInt(0);
                 if (senderTs > BigInt(0)) {
                     sendControlMsg({ type: 'chunk-ack', ts: Number(senderTs), pipeIdx: _channelIdx });
                 }
             } else {
-                // Regular Chunk
                 const incomingMeta = fileMetas.current.get(fileIdx);
-                // v02.1.92: Extract absolute byteOffset from header (bytes 8-11)
-                // We repurpose byte 8-11 which was redundant numChunks in v91
                 const byteOffset = (data.byteLength >= 12) ? view.getUint32(8, true) : undefined;
+                const packetGen = (data.byteLength >= 16) ? view.getUint32(12, true) : 0;
                 
-                // v02.1.39 (Patch 18/19): Robust Progress & Worker Proxy
-                const currentChunksReceived = (currentFileReceivedRef.current.get(fileIdx) || 0) + 1;
-                currentFileReceivedRef.current.set(fileIdx, currentChunksReceived);
-                totalReceivedChunksCountRef.current++; 
+                const currentPipeGen = pipeGenerationRef.current[Math.floor(_channelIdx / CHANNELS_PER_PIPE)] || 0;
+                if (packetGen !== 0 && packetGen < currentPipeGen) {
+                    return; 
+                }
 
+                if (!reassemblyMapRef.current.has(fileIdx)) {
+                    reassemblyMapRef.current.set(fileIdx, new Set());
+                }
+                const fileBitset = reassemblyMapRef.current.get(fileIdx)!;
+                fileBitset.add(chunkIdx);
+                
                 workerRef.current.postMessage({
                     type: 'chunk',
                     fileIdx,
                     chunkIdx,
-                    byteOffset, // v02.1.92: CRITICAL - Pass absolute offset to worker
-                    payloadCount: byteOffset, // Backward compatibility alias
+                    byteOffset, 
+                    payloadCount: byteOffset, 
                     originalBuffer: data,
-                    offset: 12
+                    offset: 16 
                 }, [data]);
+
+                // v02.2.10.6b: Use triggerFileCompletion for Chunk arrival
+                triggerFileCompletion(fileIdx);
+                
+                const currentChunksReceived = fileBitset.size;
+                totalReceivedChunksCountRef.current++; 
                 
                 if (currentChunksReceived % 10 === 0) {
                     if (incomingMeta && incomingMeta.size) {
@@ -1727,12 +1925,8 @@ ${capturedLogsRef.current.join('\n')}
                     } else {
                         setProgress(p => Math.min(99, p + 2)); 
                     }
-                    
-                    // v02.1.54 (Phase 3): GPE Gated-Pull Signal (Priming + Periodic)
-                    // We pull more frequently at the start to "prime" the sender's flow.
                     const pullInterval = currentChunksReceived < 10 ? 1 : 10;
                     if (currentChunksReceived % pullInterval === 0) {
-                        // v02.1.63: Priority Signaling (Reroute via Anchor)
                         sendControlMsg({ 
                             type: 'gpe-pull', 
                             bytesCleared: pullInterval * data.byteLength, 
@@ -1757,7 +1951,7 @@ ${capturedLogsRef.current.join('\n')}
     useEffect(() => {
         let ackTimer: any = null;
         const totalFilesExpected = expectedTotalFiles.current;
-        const currentCount = receivedFiles.length;
+        const currentCount = reassembledCount.current; // v02.2.10.6b: Use synchronous Ref count
         
         // Only send success if we actually have all files reassembled
         if (mode === 'receive' && (status === 'done' || status === 'done-waiting') && currentCount > 0 && currentCount >= totalFilesExpected) {
@@ -1767,8 +1961,6 @@ ${capturedLogsRef.current.join('\n')}
             }
             
             const sendAck = () => {
-                // v02.1.82: Multi-Path Verification (Zinc Sync Ultra)
-                // Send ACK through both signaling (WS) and data (P2P) paths
                 if (statusRef.current === 'done') {
                     const ackPkt = new Uint8Array(12);
                     const ackView = new DataView(ackPkt.buffer);
@@ -1787,13 +1979,13 @@ ${capturedLogsRef.current.join('\n')}
                         fileNames: receivedFiles.map(f => f.name)
                     });
                     sendControlMsg({ type: 'batch-ack' });
-                    ackTimer = setTimeout(sendAck, 1000); // 1s sync frequency
+                    ackTimer = setTimeout(sendAck, 1000); 
                 }
             };
             sendAck();
         }
         return () => { if (ackTimer) clearTimeout(ackTimer); };
-    }, [status, mode, receivedFiles.length]);
+    }, [status, mode, receivedFiles.length, reassembledCount.current]);
 
     // Cleanup WebRTC and WS on unmount
     useEffect(() => {
@@ -1935,6 +2127,7 @@ ${capturedLogsRef.current.join('\n')}
         const d = diagnosticMetricsRef.current;
         const deepInsight = `
 --- DEEP DIAGNOSTIC INSIGHT ---
+Version: ${VERSION}
 Retransmissions: ${d.retransmissions}
 Total Packets Sent: ${d.packetsSent}
 Retransmit Ratio: ${d.packetsSent > 0 ? ((d.retransmissions / d.packetsSent) * 100).toFixed(4) : 0}%
@@ -1945,15 +2138,38 @@ Buffer-Bloat Grade: ${d.bufferBloatGrade}
 -------------------------------
 `;
         const content = deepInsight + capturedLogsRef.current.join('\n');
-        const blob = new Blob([content], { type: 'text/plain' });
-        const url = URL.createObjectURL(blob);
-        const a = document.createElement('a');
-        a.href = url;
-        a.download = `TurboDrop_Diagnostics_${roomId || 'NoRoom'}_${new Date().getTime()}.txt`;
-        document.body.appendChild(a);
-        a.click();
-        document.body.removeChild(a);
-        URL.revokeObjectURL(url);
+        
+        try {
+            const blob = new Blob([content], { type: 'text/plain;charset=utf-8' });
+            const url = URL.createObjectURL(blob);
+            const fileName = `TurboDrop_Diagnostics_${roomId || 'NoRoom'}_${new Date().getTime()}.txt`;
+
+            // v02.2.10.2: Extreme Download Compatibility
+            const a = document.createElement('a');
+            a.style.display = 'none';
+            a.href = url;
+            a.download = fileName;
+            
+            document.body.appendChild(a);
+            
+            // Trigger 1: Standard click
+            a.click();
+            
+            // Trigger 2: window.open fallback for some mobile wrappers
+            if (typeof window !== 'undefined' && /iPhone|iPad|iPod|Android/i.test(navigator.userAgent)) {
+                window.open(url, '_blank');
+            }
+
+            logDebug(`💾 Diagnostic Download Triggered: ${fileName}`);
+
+            setTimeout(() => {
+                if (document.body.contains(a)) document.body.removeChild(a);
+                URL.revokeObjectURL(url);
+            }, 3000); // 3s buffer for mobile OS
+        } catch (e: any) {
+            logDebug(`❌ Download Failed: ${e.message}`);
+            alert("Download failed. Copy logs manually from console if possible.");
+        }
     };
 
     const handleFileChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -1967,10 +2183,98 @@ Buffer-Bloat Grade: ${d.bufferBloatGrade}
             handleAction(() => startSending(fileList));
         }
     };
+    
+    // v02.2.08.1: Nitro Dashboard UI Component
+    const NitroDashboard = () => {
+        const [isVisible, setIsVisible] = useState(true);
+        const metrics = { ...diagnosticMetricsRef.current };
+        const transportColor = metrics.transportType === 'relay' ? 'text-amber-400' : 'text-green-400';
+        
+        if (status !== 'transferring' && status !== 'done' && status !== 'done-waiting') return null;
+
+        return (
+            <div className={`fixed bottom-6 right-6 z-50 transition-all duration-500 ${isVisible ? 'translate-y-0 opacity-100' : 'translate-y-12 opacity-0'}`}>
+                <div className="bg-slate-900/80 backdrop-blur-xl border border-white/10 rounded-2xl p-4 shadow-2xl w-72 overflow-hidden relative group">
+                    {/* Background Pulse */}
+                    <div className="absolute top-0 right-0 w-32 h-32 bg-indigo-500/10 blur-3xl -z-10 animate-pulse" />
+                    
+                    <div className="flex items-center justify-between mb-4">
+                        <div className="flex items-center gap-2">
+                            <div className="w-2 h-2 rounded-full bg-indigo-500 animate-ping" />
+                            <span className="text-[10px] font-black text-indigo-400 uppercase tracking-widest">Omega Engine v02.2</span>
+                        </div>
+                        <button onClick={() => setIsVisible(false)} className="text-white/40 hover:text-white transition-colors">
+                            <X className="w-4 h-4" />
+                        </button>
+                    </div>
+
+                    <div className="grid grid-cols-4 gap-2 mb-4">
+                        {metrics.pistonStats.map((p: any, i: number) => (
+                            <div key={i} className="flex flex-col items-center">
+                                <div className={`w-full h-16 rounded-lg border border-white/5 relative overflow-hidden flex flex-wrap gap-[1px] p-1 bg-black/20`}>
+                                    {/* 8 Sub-channels per Pipe (Total 32) */}
+                                    {Array.from({ length: 8 }).map((_: any, subIdx: number) => {
+                                        const dcIdx = (i * 8) + subIdx;
+                                        const dc = dataChannelsRef.current[dcIdx];
+                                        const isActive = dc && dc.readyState === 'open';
+                                        return (
+                                            <div 
+                                                key={subIdx}
+                                                className={`w-[calc(50%-1px)] h-[calc(25%-1px)] rounded-[1px] transition-all duration-300 ${
+                                                    !isActive ? 'bg-white/5' : 
+                                                    p.health === 'red' ? 'bg-red-500/80 animate-pulse' :
+                                                    p.health === 'amber' ? 'bg-amber-500/80 animate-pulse' :
+                                                    'bg-green-500/80 shadow-[0_0_5px_rgba(34,197,94,0.5)]'
+                                                }`}
+                                            />
+                                        );
+                                    })}
+                                    {/* Animation Piston Effect */}
+                                    {status === 'transferring' && (
+                                        <div className="absolute inset-0 bg-gradient-to-t from-transparent via-white/5 to-transparent h-4 animate-piston pointer-events-none" />
+                                    )}
+                                </div>
+                                <span className="text-[8px] font-bold text-white/40 mt-1 uppercase">P-{i}</span>
+                            </div>
+                        ))}
+                    </div>
+
+                    <div className="space-y-2">
+                        <div className="flex justify-between items-end">
+                            <span className="text-[10px] text-white/60">Transport DNA</span>
+                            <span className={`text-[10px] font-bold uppercase ${transportColor}`}>{metrics.transportType} ({metrics.protocol})</span>
+                        </div>
+                        <div className="flex justify-between items-end">
+                            <span className="text-[10px] text-white/60">Symmetry Pulse</span>
+                            <span className={`text-[10px] font-bold ${metrics.workerLag > 50 ? 'text-red-400' : 'text-indigo-400'}`}>{metrics.workerLag}ms</span>
+                        </div>
+                        <div className="flex justify-between items-end">
+                            <span className="text-[10px] text-white/60">BDP Cushion</span>
+                            <span className="text-[10px] font-bold text-indigo-400">{(diagnosticMetricsRef.current.packetsSent * 64 / 1024).toFixed(0)}KB</span>
+                        </div>
+                        <div className="flex justify-between items-end">
+                            <span className="text-[10px] text-white/60">Packet MTU</span>
+                            <span className={`text-[10px] font-bold ${dynamicChunkSizeRef.current > 60000 ? 'text-indigo-400' : 'text-emerald-400'}`}>
+                                {Math.round(dynamicChunkSizeRef.current / 1024)}KB (SAFE FLOOR)
+                            </span>
+                        </div>
+                    </div>
+                    
+                    {metrics.isChaosMode && (
+                        <div className="mt-4 pt-3 border-t border-white/5 flex items-center gap-2">
+                            <Zap className="w-3 h-3 text-amber-500 fill-amber-500" />
+                            <span className="text-[9px] font-bold text-amber-500 uppercase italic">Chaos Injection Active</span>
+                        </div>
+                    )}
+                </div>
+            </div>
+        );
+    };
 
     return (
         <div className="min-h-screen bg-background flex flex-col font-sans">
             <Navbar />
+            <NitroDashboard />
 
             <main className="flex-1 container mx-auto px-4 max-w-4xl py-12">
                 <div className="text-center mb-12">
@@ -2158,19 +2462,48 @@ Buffer-Bloat Grade: ${d.bufferBloatGrade}
                                         </div>
                                     )}
 
-                                    {/* v02.0.0: Live Performance Insights Dashboard */}
-                                    <div className="mt-4 flex flex-wrap justify-center gap-3">
-                                        <div className="bg-muted/50 backdrop-blur-sm rounded-lg px-3 py-1.5 border border-border/50 flex flex-col items-center min-w-[100px]">
-                                            <span className="text-[10px] text-muted-foreground uppercase tracking-widest font-bold">Pistons</span>
-                                            <span className="text-sm font-black text-indigo-600 dark:text-indigo-400">{CHANNELS} Channels</span>
+                                    {/* v02.2.08: Omega Performance Heatmap */}
+                                    <div className="w-full space-y-4">
+                                        <div className="grid grid-cols-4 gap-2">
+                                            {diagnosticMetricsRef.current.pistonStats.map((piston, idx) => (
+                                                <div key={idx} className="flex flex-col items-center gap-1">
+                                                    <div className={`w-full h-8 rounded-md transition-all duration-500 relative overflow-hidden ${
+                                                        piston.health === 'green' ? 'bg-green-500/20 border-green-500/50' :
+                                                        piston.health === 'amber' ? 'bg-amber-500/20 border-amber-500/50' :
+                                                        'bg-red-500/20 border-red-500/50'
+                                                    } border`}>
+                                                        <div 
+                                                            className={`absolute bottom-0 w-full transition-all duration-300 ${
+                                                                piston.health === 'green' ? 'bg-green-500' :
+                                                                piston.health === 'amber' ? 'bg-amber-500' :
+                                                                'bg-red-500'
+                                                            }`}
+                                                            style={{ height: `${Math.min(100, (piston.speed / 5) * 100)}%` }}
+                                                        />
+                                                    </div>
+                                                    <span className="text-[10px] font-bold text-muted-foreground uppercase">P-{idx+1}</span>
+                                                </div>
+                                            ))}
                                         </div>
-                                        <div className="bg-muted/50 backdrop-blur-sm rounded-lg px-3 py-1.5 border border-border/50 flex flex-col items-center min-w-[100px]">
-                                            <span className="text-[10px] text-muted-foreground uppercase tracking-widest font-bold">Shield</span>
-                                            <span className="text-sm font-black text-emerald-600 dark:text-emerald-400">400s Timeout</span>
-                                        </div>
-                                        <div className="bg-muted/50 backdrop-blur-sm rounded-lg px-3 py-1.5 border border-border/50 flex flex-col items-center min-w-[100px]">
-                                            <span className="text-[10px] text-muted-foreground uppercase tracking-widest font-bold">Logic</span>
-                                            <span className="text-sm font-black text-amber-600 dark:text-amber-500 text-center">DYNAMIC POWER PACER</span>
+                                        
+                                        {/* Omega Critical Alerts */}
+                                        <div className="flex flex-col gap-2">
+                                            {diagnosticMetricsRef.current.transportType === 'relay' && (
+                                                <div className="text-[10px] font-bold bg-amber-100 text-amber-700 dark:bg-amber-900/30 dark:text-amber-400 px-3 py-1 rounded-md border border-amber-200/50 flex items-center justify-between">
+                                                    <span>🚨 TRANSPORT: TURN RELAY (Throttled Path)</span>
+                                                    <span className="uppercase text-[8px] opacity-70">{diagnosticMetricsRef.current.protocol}</span>
+                                                </div>
+                                            )}
+                                            {diagnosticMetricsRef.current.workerLag > 50 && (
+                                                <div className="text-[10px] font-bold bg-red-100 text-red-700 dark:bg-red-900/30 dark:text-red-400 px-3 py-1 rounded-md border border-red-200/50">
+                                                    🔥 CPU PRESSURE: Worker Lag {diagnosticMetricsRef.current.workerLag}ms
+                                                </div>
+                                            )}
+                                            {diagnosticMetricsRef.current.retransmissions > 100 && (
+                                                <div className="text-[10px] font-bold bg-indigo-100 text-indigo-700 dark:bg-indigo-900/30 dark:text-indigo-400 px-3 py-1 rounded-md border border-indigo-200/50">
+                                                    📡 LOSS DETECTED: Application NACK Recovery Active
+                                                </div>
+                                            )}
                                         </div>
                                     </div>
 

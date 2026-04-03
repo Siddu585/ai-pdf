@@ -1,0 +1,72 @@
+{
+  "sender": {
+    "retransmissions": 0,
+    "packetsSent": 0,
+    "owtt": 41,
+    "jitter": 0,
+    "eventLoopLag": 1,
+    "mtuCeiling": 524288,
+    "bufferBloatGrade": 0,
+    "lastAckTs": 1775035951388,
+    "transportType": "unknown",
+    "protocol": "udp",
+    "workerLag": 0,
+    "bdp": 0,
+    "pistonStats": [
+      {
+        "speed": 0,
+        "health": "green"
+      },
+      {
+        "speed": 0,
+        "health": "green"
+      },
+      {
+        "speed": 0,
+        "health": "green"
+      },
+      {
+        "speed": 0,
+        "health": "green"
+      }
+    ],
+    "isChaosMode": true,
+    "status": "done",
+    "progress": 100
+  },
+  "receiver": {
+    "retransmissions": 0,
+    "packetsSent": 0,
+    "owtt": 0,
+    "jitter": 0,
+    "eventLoopLag": 0,
+    "mtuCeiling": 524288,
+    "bufferBloatGrade": 0,
+    "lastAckTs": 0,
+    "transportType": "unknown",
+    "protocol": "udp",
+    "workerLag": 0,
+    "bdp": 0,
+    "pistonStats": [
+      {
+        "speed": 0,
+        "health": "green"
+      },
+      {
+        "speed": 0,
+        "health": "green"
+      },
+      {
+        "speed": 0,
+        "health": "green"
+      },
+      {
+        "speed": 0,
+        "health": "green"
+      }
+    ],
+    "isChaosMode": false,
+    "status": "done-waiting",
+    "progress": 0
+  }
+}
