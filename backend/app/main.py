@@ -91,11 +91,8 @@ manager = ConnectionManager()
 
 # -----------------------------------------------------------------------
 # TURN SERVER RELAY ENDPOINT
-# Uses paid Metered TURN servers (swap-pdf.metered.live) for reliable
-# cross-network WebRTC relay. These are the user's own paid credentials.
+# Uses dedicated Coturn relay on AWS Mumbai (ap-south-1) for ultra-low latency.
 # -----------------------------------------------------------------------
-METERED_API_KEY = os.getenv("METERED_API_KEY", "mSZ3akdkY-TDVeBBnlGLnosmH8XVA83ZfuQ339frN2IZnjnB")
-METERED_DOMAIN = "swap-pdf.metered.live"
 
 @app.get("/api/turn")
 async def get_turn_servers(
@@ -103,48 +100,14 @@ async def get_turn_servers(
     deviceId: str = "",
     email: str = ""
 ):
-    # Safer slicing for IDE
-    d_id = (deviceId or "")[:8]
-    e_mail = (email or "")[:15]
-    print(f"TURN request: device={d_id}... email={e_mail}...")
+    print(f"TURN request: Routing user to dedicated Mumbai Relay")
     
-    # Check eligibility: Pro users OR first free users get paid TURN access
-    email_norm = email.lower().strip() if email else ""
-    is_pro = (deviceId in tracker.pro_users if deviceId else False) or \
-             (email_norm in tracker.pro_users if email_norm else False) or \
-             (email_norm in tracker.HARDCODED_PRO if email_norm else False)
-    
-    usage_allowed = True
-    if not is_pro:
-        key = tracker.get_key(request, deviceId)
-        today = datetime.now().strftime("%Y-%m-%d")
-        count = tracker.data.get(today, {}).get(key, 0)
-        # User said first 5 instances get Pro service (TURN)
-        if count >= 8: # 8 instead of 5 for buffer
-            usage_allowed = False
-            k_id = (key or "")[:8]
-            print(f"🚫 TURN Limit: {k_id} used {count} times")
-
-    if is_pro or usage_allowed:
-        try:
-            async with httpx.AsyncClient(timeout=3.0) as client:
-                resp = await client.get(
-                    f"https://{METERED_DOMAIN}/api/v1/turn/credentials",
-                    params={"apiKey": METERED_API_KEY}
-                )
-                if resp.status_code == 200:
-                    servers = resp.json()
-                    status_log = "Pro" if is_pro else "Trial"
-                    print(f"Metered TURN: Returning {len(servers)} servers ({status_log})")
-                    return servers
-        except Exception as e:
-            print(f"Metered API error: {e}")
-
-    # Fallback to Public OpenRelay for others
+    # 1. AWS Mumbai Coturn (Ultra-Low Latency for Indian Mobile Users)
+    # No usage limits needed since we own the hardware with 1TB free bandwidth.
     return [
-        {"urls": "turn:openrelay.metered.ca:80", "username": "openrelayproject", "credential": "openrelayproject"},
-        {"urls": "turn:openrelay.metered.ca:443", "username": "openrelayproject", "credential": "openrelayproject"},
-        {"urls": "turn:openrelay.metered.ca:443?transport=tcp", "username": "openrelayproject", "credential": "openrelayproject"},
+        {"urls": "stun:13.233.19.209:3478"},
+        {"urls": "turn:13.233.19.209:3478", "username": "turbodrop", "credential": "pdfninja2026"},
+        {"urls": "turn:13.233.19.209:3478?transport=tcp", "username": "turbodrop", "credential": "pdfninja2026"},
         {"urls": "stun:stun.l.google.com:19302"},
         {"urls": "stun:stun.cloudflare.com:3478"}
     ]
