@@ -69,27 +69,7 @@ const ICE_SERVERS = {
         { urls: "stun:stun2.l.google.com:19302" },
         { urls: "stun:stun3.l.google.com:19302" },
         { urls: "stun:stun4.l.google.com:19302" },
-        { urls: "stun:stun.cloudflare.com:3478" },
-        // v02.1.72: Reinforced Private TURN (NMI Anchor)
-        // v02.2.10.3: Shielded TLS Expansion (Bypass DPI Firewall)
-        {
-            urls: [
-                "turn:swap-pdf.metered.live:80",
-                "turn:swap-pdf.metered.live:443",
-                "turn:swap-pdf.metered.live:443?transport=tcp",
-                "turns:swap-pdf.metered.live:443?transport=tcp", // v02.2.10.3 TLS Anchor
-                "turns:swap-pdf.metered.live:443"
-            ],
-            username: "openrelayproject",
-            credential: "openrelayproject"
-        },
-        // v02.2.10.3: Passive Fallback Node (Xirsys/Global)
-        {
-            urls: [
-                "stun:openrelay.metered.ca:80",
-                "stun:openrelay.metered.ca:443"
-            ]
-        }
+        { urls: "stun:stun.cloudflare.com:3478" }
     ]
 };
 
