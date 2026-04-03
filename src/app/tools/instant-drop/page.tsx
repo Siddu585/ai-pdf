@@ -28,7 +28,7 @@ import { useUsage } from "@/hooks/useUsage";
 import { PaywallModal } from "@/components/layout/PaywallModal";
 
 // v02.2.10.6d (NMI Protocol) - Fix Fatal NACK ReferenceError
-const VERSION = "v02.2.10.7 (NMI Protocol)";
+const VERSION = "v02.2.10.8 (NMI Protocol)";
 const PIPES = 4; 
 const CHANNELS_PER_PIPE = 8;
 const CHANNELS = 32; 
@@ -208,8 +208,8 @@ function InstantDropContent() {
     const blockedLoopCount = useRef(0); // v02.1.57: Diagnostic Flow Counter
     const senderChunkCacheRef = useRef<Map<string, Uint8Array>>(new Map()); // v02.1.95: NACK Sliding Window
     const lastScaleRef = useRef<number>(PIPES); // v02.2.00: Adaptive Scale Memory
-    const nackQueueRef = useRef<Map<string, {fileIdx: number, chunkIdx: number, ts: number}>>(new Map()); // v02.2.10.7: Deduplicated Map
-    const startTimeRef = useRef<number | null>(null); // v02.2.10.7: Scaling Anchor
+    const nackQueueRef = useRef<Map<string, {fileIdx: number, chunkIdx: number, ts: number}>>(new Map()); // v02.2.10.8: Deduplicated Map
+    const startTimeRef = useRef<number | null>(null); // v02.2.10.8: Scaling Anchor
 
     // v02.1.74: Global Pre-flight Readiness Check
     useEffect(() => {
