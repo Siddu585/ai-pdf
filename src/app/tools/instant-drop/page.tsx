@@ -28,7 +28,7 @@ import { useUsage } from "@/hooks/useUsage";
 import { PaywallModal } from "@/components/layout/PaywallModal";
 
 // v02.2.10.6d (NMI Protocol) - Fix Fatal NACK ReferenceError
-const VERSION = "v02.2.15 (Nitro Velocity) Symmetry Fixed";
+const VERSION = "v02.2.16 (Ultimate Nitro) Velocity Cap Fix";
 const PIPES = 4; 
 const CHANNELS_PER_PIPE = 8;
 const CHANNELS = 32; 
@@ -1535,10 +1535,9 @@ ${capturedLogsRef.current.join('\n')}
                     // If pipe is amber, we only use it 50% of the time
                     if (health === 'amber' && Math.random() > 0.5) continue;
 
-                    // v02.2.10.9: Adaptive Buffer Saturation Logic
-                    // Base: 16MB. Scale up with RTT to keep the pipe saturated.
+                    // v02.2.16: SCTP Saturation Tuning - 16MB is the reliable ceiling for libwebrtc buffers.
                     const rttMs = (smoothedRTT || 0.1) * 1000;
-                    const saturationThreshold = Math.min(64 * 1024 * 1024, Math.max(16 * 1024 * 1024, (rttMs / 50) * 12 * 1024 * 1024));
+                    const saturationThreshold = Math.min(16 * 1024 * 1024, Math.max(4 * 1024 * 1024, (rttMs / 50) * 4 * 1024 * 1024));
                     
                     if (dc.bufferedAmount <= saturationThreshold) { 
                         selectedDC = dc;
@@ -1559,7 +1558,12 @@ ${capturedLogsRef.current.join('\n')}
                                 }
                             };
                             dc.addEventListener('bufferedamountlow', handler);
-                            setTimeout(handler, 200); 
+                            setTimeout(() => {
+                                if (!resolved) {
+                                    logDebug(`[PACER] Pipe Stalled. Buffered: ${Math.round(dc.bufferedAmount/1024)}KB`);
+                                    handler();
+                                }
+                            }, 100); 
                         });
                     }
                     continue; 
@@ -1972,7 +1976,7 @@ ${capturedLogsRef.current.join('\n')}
                     } else {
                         setProgress(p => Math.min(99, p + 2)); 
                     }
-                    const pullInterval = currentChunksReceived < 10 ? 1 : 4;
+                    const pullInterval = currentChunksReceived < 5 ? 1 : 2;
                     if (currentChunksReceived % pullInterval === 0) {
                         // v02.2.15: Explicit Length Signal using pre-transfer packetLen
                         const bytesToClear = pullInterval * packetLen;
