@@ -28,19 +28,30 @@ import { useUsage } from "@/hooks/useUsage";
 import { PaywallModal } from "@/components/layout/PaywallModal";
 
 // v02.2.10.6d (NMI Protocol) - Fix Fatal NACK ReferenceError
-const VERSION = "v02.2.16 (Ultimate Nitro) Velocity Cap Fix";
+const VERSION = "v02.2.17 (Mobile Nitro) Context-Aware Engine";
 const PIPES = 4; 
 const CHANNELS_PER_PIPE = 8;
 const CHANNELS = 32; 
-const CHUNK_SIZE = 64 * 1024; // 64KB - Nitro Velocity Standard
-const HIGH_WATER_MARK_MAX = 8 * 1024 * 1024; // 8MB - Lighter Buffer for High-Frequency
-const PACER_THRESHOLD = 4 * 1024 * 1024; 
-const MAX_IN_FLIGHT = 1024; 
-const DRAIN_THRESHOLD = 32 * 1024 * 1024; 
-const getAdaptivePipeCount = (rtt: number) => {
-    if (rtt < 0.400) return 4; // 16 Channels (High Performance Plateau)
-    if (rtt < 0.800) return 2; // 8 Channels (Intermediate Guard)
-    return 1; // 4 Channels (Base Anchor)
+const CHUNK_SIZE = 32 * 1024; // 32KB - Velocity Max (Mobile Resilient)
+const HIGH_WATER_MARK_MAX = 32 * 1024 * 1024; // 32MB Jumbo Window for 10 MB/s saturation 
+const PACER_THRESHOLD = 16 * 1024 * 1024; // 16MB Pacer Threshold
+const MAX_IN_FLIGHT = 4096; // 4096 chunks (x32KB = 128MB ceiling)
+const DRAIN_THRESHOLD = 64 * 1024 * 1024; 
+const getAdaptivePipeCount = (rtt: number, engineMode: string = 'NITRO') => {
+    if (engineMode === 'M2M') {
+        if (rtt < 0.200) return 4; // Velocity Jump (5G/Fiber) 
+        if (rtt < 0.500) return 2; // Balanced Nitro
+        return 1; // Reliable Anchor
+    }
+    if (engineMode === 'HYBRID') return 2;
+    if (rtt < 0.400) return 4; 
+    if (rtt < 0.800) return 2; 
+    return 1; 
+};
+
+const isMobileDevice = () => {
+    if (typeof window === 'undefined') return false;
+    return /Android|webOS|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini/i.test(navigator.userAgent);
 };
 const getBackendUrls = () => {
     let rawUrl = (process.env.NEXT_PUBLIC_API_URL || "").trim().replace(/\/$/, "");
@@ -78,6 +89,7 @@ function InstantDropContent() {
     const initialRoom = searchParams.get("room");
 
     const [mode, setMode] = useState<'select' | 'send' | 'receive'>(initialRoom ? 'receive' : 'select');
+    const [engineMode, setEngineMode] = useState<'M2M' | 'HYBRID' | 'NITRO'>('NITRO');
     const [roomId, setRoomId] = useState<string>(initialRoom || "");
     const { recordUsage, isPaywallOpen, setIsPaywallOpen, handleAction, deviceId, isPro, email } = useUsage();
     const [files, setFiles] = useState<File[]>([]);
@@ -169,6 +181,7 @@ function InstantDropContent() {
     const nextExpectedChunkRef = useRef<number>(0); 
     const expectedTotalFiles = useRef(-1);
     const lastBytesRef = useRef(0);
+    const remoteCapabilityRef = useRef({ isMobile: false }); // v02.2.17 Peer Device Tracking
     const avgRTTRef = useRef<number>(0.1); // v02.1.39 (Patch 24.1): BDP-Snap Average RTT
     const currentMBpsRef = useRef<number>(1.0); // v02.1.39 (Patch 24.1): Current Speed for BDP
     const channelFileIndex = useRef<number[]>(new Array(CHANNELS).fill(0));
@@ -509,6 +522,7 @@ ${capturedLogsRef.current.join('\n')}
                 currentIdx: i,
                 totalFiles: currentFiles.length,
                 isParallel: true,
+                isMobile: isMobileDevice(), // v02.2.17 Capability Exchange
                 parallelChannels: dataChannelsRef.current.length
             };
             const msgStr = JSON.stringify(metaPayload);
@@ -549,7 +563,6 @@ ${capturedLogsRef.current.join('\n')}
                     let rttSum = 0;
                     let rttCount = 0;
                     const newPistonStats = [...diagnosticMetricsRef.current.pistonStats];
-
                     for (let i = 0; i < PIPES; i++) {
                         const peer = peersRef.current[i];
                         if (!peer) continue;
@@ -633,6 +646,7 @@ ${capturedLogsRef.current.join('\n')}
             let expectedTotalFiles = -1;
             let lastHoleCheck = 0;
             let isNackLoopStopped = false; // v02.1.97: Quiescence Flag
+            let avgRtt = 0.25; // v02.2.17: Adaptive RTT (Default 250ms)
             
             // v02.1.83: Worker Heartbeat Pulse (Keep-Alive)
             setInterval(() => {
@@ -642,8 +656,9 @@ ${capturedLogsRef.current.join('\n')}
                 
                 const now = Date.now();
                 
-                // v02.2.12: Rapid Recovery Hole Detection (250ms NACK Trigger)
-                if (now - lastHoleCheck > 250 && !isNackLoopStopped) {
+                // v02.2.17: Adaptive Velocity Hole Detection (RT-Matched)
+                const interval = Math.max(250, Math.floor(avgRtt * 1250)); // rtt in s to ms * 1.25
+                if (now - lastHoleCheck > interval && !isNackLoopStopped) {
                     lastHoleCheck = now;
                     fileBuffers.forEach((buffer, fileIdx) => {
                         if (reassembledFiles.has(fileIdx)) return;
@@ -689,6 +704,12 @@ ${capturedLogsRef.current.join('\n')}
                     expectedTotalChunks = new Map();
                     expectedTotalFiles = -1;
                     isNackLoopStopped = false; // Reset flag
+                    return;
+                }
+
+                // v02.2.17: Multi-Threaded RTT Pulse
+                if (type === 'RTT_UPDATE') {
+                    avgRtt = e.data.rtt || 0.25;
                     return;
                 }
 
@@ -896,6 +917,9 @@ ${capturedLogsRef.current.join('\n')}
             if (rttCount > 0) {
                 const currentAvg = rttSum / rttCount;
                 avgRTTRef.current = currentAvg;
+                // v02.2.17: Update Worker with Real-Time RTT for Adaptive NACK
+                workerRef.current?.postMessage({ type: 'RTT_UPDATE', rtt: currentAvg });
+                
                 // v02.2.10.9: RTT Smoothing (3-sample Moving Average)
                 rttBufferRef.current.push(currentAvg);
                 if (rttBufferRef.current.length > 3) rttBufferRef.current.shift();
@@ -978,6 +1002,7 @@ ${capturedLogsRef.current.join('\n')}
                         logDebug("Peer joined, waiting for receiver-ready signal...");
                     } else if (data.type === 'receiver-ready') {
                         // v02.1.67: Sentinel Handshake Lock
+                        remoteCapabilityRef.current.isMobile = !!data.isMobile; // Capture Peer Capability
                         // v02.1.68: Added 'connecting' status guard to prevent redundant resets during ICE.
                         if (isActive.current || isInitializingRef.current || statusRef.current === 'connecting') {
                             logDebug(`⚠️ Receiver Ready Sig Ignored: status=${statusRef.current} init=${isInitializingRef.current}`);
@@ -1453,9 +1478,13 @@ ${capturedLogsRef.current.join('\n')}
             
             const currentRTT = smoothedRTT;
 
-            const isGPEBlocked = gpeInFlightBytesRef.current > (256 * 1024 * 1024); 
-            // v02.2.10.8: Damping Removed (Nitro Scaling enabled immediately for Mumbai)
-            let targetPipeCount = getAdaptivePipeCount(currentRTT);
+            // v02.2.17: Velocity Max Engine Negotiation
+            const isSelfMobile = isMobileDevice();
+            const activeEngine = (isSelfMobile && remoteCapabilityRef.current.isMobile) ? 'M2M' : (isSelfMobile || remoteCapabilityRef.current.isMobile) ? 'HYBRID' : 'NITRO';
+            const currentChunkSize = activeEngine === 'M2M' ? 32 * 1024 : 64 * 1024;
+
+            const isGPEBlocked = gpeInFlightBytesRef.current > (512 * 1024 * 1024); // 512MB GPE Ceiling
+            let targetPipeCount = getAdaptivePipeCount(currentRTT, activeEngine);
             const targetChannelLimit = targetPipeCount * CHANNELS_PER_PIPE;
 
             if (targetPipeCount !== lastScaleRef.current) {
@@ -1758,9 +1787,10 @@ ${capturedLogsRef.current.join('\n')}
         if (status === 'disconnected') return;
         const interval = setInterval(() => {
             if (wsRef.current?.readyState === WebSocket.OPEN) {
+                // v02.2.17: Debounced Signal Ready (Reduce Radio Wake-up Pollution)
                 wsRef.current.send(JSON.stringify({ type: 'heartbeat', ts: Date.now() }));
             }
-        }, 5000);
+        }, 10000); // 10s Heartbeat for lower overhead
         return () => clearInterval(interval);
     }, [status]);
 
@@ -1800,7 +1830,10 @@ ${capturedLogsRef.current.join('\n')}
 
             ws.onopen = () => {
                 logDebug("Receiver WS Opened. Signaling Ready...");
-                ws.send(JSON.stringify({ type: 'receiver-ready' }));
+                ws.send(JSON.stringify({ 
+                    type: 'receiver-ready', 
+                    isMobile: isMobileDevice() // v02.2.17 Capability Exchange
+                }));
                 const heartbeat = setInterval(() => {
                     if (ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify({ type: 'ping' }));
                 }, 5000);
@@ -1938,6 +1971,8 @@ ${capturedLogsRef.current.join('\n')}
                 }
             } else {
                 const incomingMeta = fileMetas.current.get(fileIdx);
+                if (incomingMeta?.isMobile) remoteCapabilityRef.current.isMobile = true; // Update from metadata if missed in handshake
+                
                 const byteOffset = (data.byteLength >= 12) ? view.getUint32(8, true) : undefined;
                 const packetGen = (data.byteLength >= 16) ? view.getUint32(12, true) : 0;
                 
@@ -2017,7 +2052,7 @@ ${capturedLogsRef.current.join('\n')}
                 if (statusRef.current === 'done') {
                     const ackPkt = new Uint8Array(12);
                     const ackView = new DataView(ackPkt.buffer);
-                    ackView.setUint16(0, 0, true); // v02.2.10.9: Nitro Standard
+                    ackView.setUint16(0, 0, true);
                     ackView.setUint16(2, 0, true);
                     ackView.setUint32(4, 0xFFFFFFFB, true); // Batch-ACK Pulsar
                     ackView.setUint32(8, 0, true);
@@ -2034,7 +2069,7 @@ ${capturedLogsRef.current.join('\n')}
                         fileNames: receivedFiles.map(f => f.name)
                     });
                     sendControlMsg({ type: 'batch-ack' });
-                    ackTimer = setTimeout(sendAck, 1000); 
+                    ackTimer = setTimeout(sendAck, 2000); // v02.2.17: 2s Debounce (ACK Bombing Fix)
                 }
             };
             sendAck();
