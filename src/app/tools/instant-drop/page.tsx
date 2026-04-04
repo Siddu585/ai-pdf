@@ -28,7 +28,7 @@ import { useUsage } from "@/hooks/useUsage";
 import { PaywallModal } from "@/components/layout/PaywallModal";
 
 // v02.2.10.6d (NMI Protocol) - Fix Fatal NACK ReferenceError
-const VERSION = "v02.2.10.9 (NMI Protocol)";
+const VERSION = "v02.2.11 (Nitro Velocity)";
 const PIPES = 4; 
 const CHANNELS_PER_PIPE = 8;
 const CHANNELS = 32; 
@@ -2332,7 +2332,7 @@ Buffer-Bloat Grade: ${d.bufferBloatGrade}
                     <p className="text-xs text-indigo-600 font-black tracking-[0.2em] uppercase mb-2 flex items-center justify-center gap-2">
                         <span className={`w-2 h-2 rounded-full ${wsConnected ? 'bg-green-500 animate-pulse' : 'bg-red-500'}`} />
                         {VERSION} 
-                        Fortress Velocity
+                        NITRO PULSE
                     </p>
                     <p className="text-lg text-muted-foreground max-w-2xl mx-auto">
                         The ultimate high-speed file sharing app. Transfer photos and large files (up to 200MB) from desktop to mobile or mobile to mobile instantly.
