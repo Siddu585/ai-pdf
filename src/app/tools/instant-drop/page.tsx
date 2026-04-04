@@ -1322,8 +1322,9 @@ ${capturedLogsRef.current.join('\n')}
         // v02.1.37: 12-Channel EOF Broadcast (Redundancy)
         const batchEofPkt = new Uint8Array(12);
         const batchView = new DataView(batchEofPkt.buffer);
-        batchView.setUint32(0, 0, true);
-        batchView.setUint32(4, 0xFFFFFFFD, true);
+        batchView.setUint16(0, 0, true); // v02.2.10.9: Nitro Standard
+        batchView.setUint16(2, 0, true); 
+        batchView.setUint32(4, 0xFFFFFFFD, true); // Batch-EOF
         batchView.setUint32(8, currentFiles.length, true);
         dataChannelsRef.current.forEach(dc => {
             if (dc.readyState === 'open') {
@@ -1717,8 +1718,9 @@ ${capturedLogsRef.current.join('\n')}
         // v02.1.92: Multi-Pipe EOF Broadcast (Byte-Offset Aware)
         const eofPacket = new Uint8Array(12);
         const eofView = new DataView(eofPacket.buffer);
-        eofView.setUint32(0, index, true);
-        eofView.setUint32(4, 0xFFFFFFFE, true); 
+        eofView.setUint16(0, index, true); // v02.2.10.9: Nitro Standard
+        eofView.setUint16(2, 0, true);
+        eofView.setUint32(4, 0xFFFFFFFE, true); // Sector EOF
         eofView.setUint32(8, chunkSeqIdx, true); // Total chunks sent
         
         dataChannelsRef.current.forEach(dc => {
@@ -2007,8 +2009,10 @@ ${capturedLogsRef.current.join('\n')}
                 if (statusRef.current === 'done') {
                     const ackPkt = new Uint8Array(12);
                     const ackView = new DataView(ackPkt.buffer);
-                    ackView.setUint32(0, 0, true);
+                    ackView.setUint16(0, 0, true); // v02.2.10.9: Nitro Standard
+                    ackView.setUint16(2, 0, true);
                     ackView.setUint32(4, 0xFFFFFFFB, true); // Batch-ACK Pulsar
+                    ackView.setUint32(8, 0, true);
                     dataChannelsRef.current.forEach(dc => {
                         if (dc?.readyState === 'open') {
                             try { dc.send(ackPkt); } catch(e) {}
