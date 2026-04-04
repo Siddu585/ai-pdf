@@ -28,7 +28,7 @@ import { useUsage } from "@/hooks/useUsage";
 import { PaywallModal } from "@/components/layout/PaywallModal";
 
 // v02.2.10.6d (NMI Protocol) - Fix Fatal NACK ReferenceError
-const VERSION = "v02.2.12 (Nitro Velocity) Rapid Recovery";
+const VERSION = "v02.2.13 (Nitro Velocity) Quad-Pipe";
 const PIPES = 4; 
 const CHANNELS_PER_PIPE = 8;
 const CHANNELS = 32; 
@@ -987,6 +987,7 @@ ${capturedLogsRef.current.join('\n')}
                         setupWebRTC(ws, true, 0); 
                         setupWebRTC(ws, true, 1);
                         setupWebRTC(ws, true, 2);
+                        setupWebRTC(ws, true, 3);
                     } else if (data.type === 'answer') {
                         const pIdx = data.pipeIdx || 0;
                         const gen = data.gen || 0;
@@ -1691,7 +1692,7 @@ ${capturedLogsRef.current.join('\n')}
                         
                         const cacheKey = `${index}_${currentSeq}`;
                         senderChunkCacheRef.current.set(cacheKey, packet);
-                        if (senderChunkCacheRef.current.size > 1000) {
+                        if (senderChunkCacheRef.current.size > 4096) {
                             const firstKey = senderChunkCacheRef.current.keys().next().value;
                             if (firstKey) senderChunkCacheRef.current.delete(firstKey);
                         }
@@ -1967,7 +1968,7 @@ ${capturedLogsRef.current.join('\n')}
                     } else {
                         setProgress(p => Math.min(99, p + 2)); 
                     }
-                    const pullInterval = currentChunksReceived < 10 ? 1 : 10;
+                    const pullInterval = currentChunksReceived < 10 ? 1 : 4;
                     if (currentChunksReceived % pullInterval === 0) {
                         // v02.2.12: Explicit Length Capture BEFORE Transfer (Fix Phantom Buffer)
                         const currentByteLength = (data instanceof ArrayBuffer) ? data.byteLength : 0;
