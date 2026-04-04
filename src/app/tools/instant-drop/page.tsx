@@ -28,7 +28,7 @@ import { useUsage } from "@/hooks/useUsage";
 import { PaywallModal } from "@/components/layout/PaywallModal";
 
 // v02.2.10.6d (NMI Protocol) - Fix Fatal NACK ReferenceError
-const VERSION = "v02.2.10.8 (NMI Protocol)";
+const VERSION = "v02.2.10.9 (NMI Protocol)";
 const PIPES = 4; 
 const CHANNELS_PER_PIPE = 8;
 const CHANNELS = 32; 
@@ -138,6 +138,7 @@ function InstantDropContent() {
     const gpeInFlightBytesRef = useRef(0); // v02.1.50: GPE Gated In-Flight Tracking
     const gpePullRequestsRef = useRef(0); // v02.1.50: GPE Pull Request Counter
     const dynamicChunkSizeRef = useRef(CHUNK_SIZE); // v02.1.50: Adaptive MTU
+    const rttBufferRef = useRef<number[]>([]); // v02.2.10.9: RTT Smoothing Buffer
     const chunksSentSinceScaleRef = useRef(0);
     const gpeBlockedSinceRef = useRef<number | null>(null); // v02.1.56: Deadlock Safety
     const lastProgressTimeRef = useRef<number>(Date.now()); // v02.1.77: Deadlock Buster
@@ -810,8 +811,10 @@ ${capturedLogsRef.current.join('\n')}
                  logDebug(`Receiver: Missing metadata for file ${fIdx}. Requesting...`);
                  sendControlMsg({ type: 'request-metadata', fileIdx: fIdx });
             } else if (e.data.type === 'gpe-pull') {
-                // v02.2.10.8: GPE Sync Defibrillator
-                diagnosticMetricsRef.current.bytesCleared += e.data.bytesCleared;
+                // v02.2.10.9: GPE Sync Unlock (The Drain)
+                const cleared = e.data.bytesCleared || 0;
+                diagnosticMetricsRef.current.bytesCleared += cleared;
+                gpeInFlightBytesRef.current = Math.max(0, gpeInFlightBytesRef.current - cleared);
             } else if (e.data.type === 'all-done') {
                  logDebug("Receiver: Data fully reassembled. Verifying...");
                  if (doneWaitingTimeoutRef.current) { clearTimeout(doneWaitingTimeoutRef.current); doneWaitingTimeoutRef.current = null; }
@@ -888,7 +891,13 @@ ${capturedLogsRef.current.join('\n')}
                 diagnosticMetricsRef.current.retransmissions = totalRetransmits;
                 diagnosticMetricsRef.current.packetsSent = totalSent;
             }
-            if (rttCount > 0) avgRTTRef.current = rttSum / rttCount;
+            if (rttCount > 0) {
+                const currentAvg = rttSum / rttCount;
+                avgRTTRef.current = currentAvg;
+                // v02.2.10.9: RTT Smoothing (3-sample Moving Average)
+                rttBufferRef.current.push(currentAvg);
+                if (rttBufferRef.current.length > 3) rttBufferRef.current.shift();
+            }
             diagnosticMetricsRef.current.pistonStats = newPistonStats;
         };
         
@@ -1433,8 +1442,12 @@ ${capturedLogsRef.current.join('\n')}
         while (byteOffset < file.size || pendingChunk) {
             if (!isActive.current) return;
 
-            // Unshackled Flow: RTT Guard Removed to prevent artificial stalling
-            const currentRTT = avgRTTRef.current || 0;
+            // v02.2.10.9: Smoothed RTT for Scaling
+            const smoothedRTT = rttBufferRef.current.length > 0 
+                ? rttBufferRef.current.reduce((a, b) => a + b) / rttBufferRef.current.length 
+                : avgRTTRef.current || 0.1;
+            
+            const currentRTT = smoothedRTT;
 
             const isGPEBlocked = gpeInFlightBytesRef.current > (256 * 1024 * 1024); 
             // v02.2.10.8: Damping Removed (Nitro Scaling enabled immediately for Mumbai)
@@ -1518,7 +1531,12 @@ ${capturedLogsRef.current.join('\n')}
                     // If pipe is amber, we only use it 50% of the time
                     if (health === 'amber' && Math.random() > 0.5) continue;
 
-                    if (dc.bufferedAmount <= 16 * 1024 * 1024) { // v02.2.10.8: Saturate pipe with 16MB in-flight
+                    // v02.2.10.9: Adaptive Buffer Saturation Logic
+                    // Base: 16MB. Scale up with RTT to keep the pipe saturated.
+                    const rttMs = (smoothedRTT || 0.1) * 1000;
+                    const saturationThreshold = Math.min(64 * 1024 * 1024, Math.max(16 * 1024 * 1024, (rttMs / 50) * 12 * 1024 * 1024));
+                    
+                    if (dc.bufferedAmount <= saturationThreshold) { 
                         selectedDC = dc;
                         break;
                     }
@@ -1629,25 +1647,28 @@ ${capturedLogsRef.current.join('\n')}
                         }
                     }
                     
-                    // v02.2.10.4: Session-Signed Packet (16-byte Header)
+                    // v02.2.10.9: Compressed Nitro Header (12-byte)
+                    // [16-bit Index | 16-bit Gen] [32-bit Seq] [32-bit Offset]
                     const dcIdx = dataChannelsRef.current.indexOf(dc);
                     const pipeIdx = Math.floor(dcIdx / CHANNELS_PER_PIPE);
                     const currentGen = pipeGenerationRef.current[pipeIdx] || 1;
-                    const packet = new Uint8Array(16 + chunkData.byteLength);
+                    
+                    const packet = new Uint8Array(12 + chunkData.byteLength);
                     const view = new DataView(packet.buffer);
-                    view.setUint32(0, index, true);
+                    view.setUint16(0, index, true);
+                    view.setUint16(2, currentGen, true);
                     view.setUint32(4, currentSeq, true); 
                     view.setUint32(8, currentOffset, true); 
-                    view.setUint32(12, currentGen, true); // Session Signature
-                    packet.set(chunkData, 16);
+                    packet.set(chunkData, 12);
 
                     try {
                         if (currentSeq % 20 === 0) {
-                            const probePkt = new Uint8Array(16);
+                            const probePkt = new Uint8Array(12);
                             const probeView = new DataView(probePkt.buffer);
-                            probeView.setUint32(0, index, true);
+                            probeView.setUint16(0, index, true);
+                            probeView.setUint16(2, 0xFFFF, true); 
                             probeView.setUint32(4, 0xFFFFFFFA, true); 
-                            probeView.setBigUint64(8, BigInt(Date.now()), true);
+                            probeView.setUint32(8, Math.floor(Date.now() % 0xFFFFFFFF), true);
                             dc.send(probePkt);
                         }
 
@@ -1852,11 +1873,20 @@ ${capturedLogsRef.current.join('\n')}
             } catch (e) {}
         } else if (data instanceof ArrayBuffer) {
             const view = new DataView(data);
-            const fileIdx = view.getUint32(0, true);
+            // v02.2.10.9: Handle 12-byte Nitro Header
+            const fileIdx = view.getUint16(0, true);
+            const gen = view.getUint16(2, true);
             const chunkIdx = view.getUint32(4, true);
+            const byteOffset = view.getUint32(8, true);
             
             if (chunkIdx === 0xFFFFFFFF) return; // Nitro Warmup
             
+            // v02.2.10.9: Drop stale generation packets immediately
+            if (modeRef.current === 'receive') {
+                const pipeIdx = Math.floor(_channelIdx / CHANNELS_PER_PIPE);
+                if (gen !== pipeGenerationRef.current[pipeIdx]) return;
+            }
+
             if (chunkIdx === 0xFFFFFFFD || chunkIdx === 0xFFFFFFFE) {
                 const payloadCount = (data.byteLength >= 12) ? view.getUint32(8, true) : -1;
                 if (chunkIdx === 0xFFFFFFFD) {
@@ -1919,7 +1949,7 @@ ${capturedLogsRef.current.join('\n')}
                     byteOffset, 
                     payloadCount: byteOffset, 
                     originalBuffer: data,
-                    offset: 16 
+                    offset: 12 // v02.2.10.9: Nitro 12-byte header
                 }, [data]);
 
                 // v02.2.10.6b: Use triggerFileCompletion for Chunk arrival
