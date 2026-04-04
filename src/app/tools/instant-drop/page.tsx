@@ -28,7 +28,7 @@ import { useUsage } from "@/hooks/useUsage";
 import { PaywallModal } from "@/components/layout/PaywallModal";
 
 // v02.2.10.6d (NMI Protocol) - Fix Fatal NACK ReferenceError
-const VERSION = "v02.2.11 (Nitro Velocity)";
+const VERSION = "v02.2.12 (Nitro Velocity) Rapid Recovery";
 const PIPES = 4; 
 const CHANNELS_PER_PIPE = 8;
 const CHANNELS = 32; 
@@ -642,9 +642,8 @@ ${capturedLogsRef.current.join('\n')}
                 
                 const now = Date.now();
                 
-                // v02.1.95: Hole Detection (NACK Trigger)
-                // v02.2.06: Fast Hole Detection (1s NACK Trigger for unordered pipes)
-                if (now - lastHoleCheck > 1000 && !isNackLoopStopped) {
+                // v02.2.12: Rapid Recovery Hole Detection (250ms NACK Trigger)
+                if (now - lastHoleCheck > 250 && !isNackLoopStopped) {
                     lastHoleCheck = now;
                     fileBuffers.forEach((buffer, fileIdx) => {
                         if (reassembledFiles.has(fileIdx)) return;
@@ -1970,8 +1969,9 @@ ${capturedLogsRef.current.join('\n')}
                     }
                     const pullInterval = currentChunksReceived < 10 ? 1 : 10;
                     if (currentChunksReceived % pullInterval === 0) {
-                        // v02.2.10.7: Critical Sync Fix - capture length BEFORE worker transfer
-                        const bytesToClear = pullInterval * data.byteLength;
+                        // v02.2.12: Explicit Length Capture BEFORE Transfer (Fix Phantom Buffer)
+                        const currentByteLength = (data instanceof ArrayBuffer) ? data.byteLength : 0;
+                        const bytesToClear = pullInterval * currentByteLength;
                         sendControlMsg({ 
                             type: 'gpe-pull', 
                             bytesCleared: bytesToClear, 
