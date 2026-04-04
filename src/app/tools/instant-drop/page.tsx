@@ -32,15 +32,15 @@ const VERSION = "v02.2.10.9 (NMI Protocol)";
 const PIPES = 4; 
 const CHANNELS_PER_PIPE = 8;
 const CHANNELS = 32; 
-const CHUNK_SIZE = 16 * 1024; // 16KB Safe Floor (NMI Fix)
+const CHUNK_SIZE = 64 * 1024; // 64KB - Nitro Velocity Standard
 const HIGH_WATER_MARK_MAX = 8 * 1024 * 1024; // 8MB - Lighter Buffer for High-Frequency
 const PACER_THRESHOLD = 4 * 1024 * 1024; 
 const MAX_IN_FLIGHT = 1024; 
 const DRAIN_THRESHOLD = 32 * 1024 * 1024; 
 const getAdaptivePipeCount = (rtt: number) => {
-    if (rtt < 0.200) return 4; // 16 Channels (Max Velocity)
-    if (rtt < 0.500) return 2; // 8 Channels (Congestion Guard)
-    return 1; // 4 Channels (Survival Mode / Anchor Only)
+    if (rtt < 0.400) return 4; // 16 Channels (High Performance Plateau)
+    if (rtt < 0.800) return 2; // 8 Channels (Intermediate Guard)
+    return 1; // 4 Channels (Base Anchor)
 };
 const getBackendUrls = () => {
     let rawUrl = (process.env.NEXT_PUBLIC_API_URL || "").trim().replace(/\/$/, "");
