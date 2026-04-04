@@ -28,7 +28,7 @@ import { useUsage } from "@/hooks/useUsage";
 import { PaywallModal } from "@/components/layout/PaywallModal";
 
 // v02.2.10.6d (NMI Protocol) - Fix Fatal NACK ReferenceError
-const VERSION = "v02.2.13 (Nitro Velocity) Quad-Pipe";
+const VERSION = "v02.2.15 (Nitro Velocity) Symmetry Fixed";
 const PIPES = 4; 
 const CHANNELS_PER_PIPE = 8;
 const CHANNELS = 32; 
@@ -879,6 +879,9 @@ ${capturedLogsRef.current.join('\n')}
                                 let health: 'green' | 'amber' | 'red' = 'green';
                                 if (rttMs > 400) health = 'red';
                                 else if (rttMs > 150) health = 'amber';
+                                
+                                // v02.2.15: Fix HUD Display RTT (0ms bug)
+                                diagnosticMetricsRef.current.owtt = rttMs;
                                 newPistonStats[i] = { speed: transferSpeed || 0, health };
                              }
                         }
@@ -1874,6 +1877,7 @@ ${capturedLogsRef.current.join('\n')}
                 handleControlMessage(msg);
             } catch (e) {}
         } else if (data instanceof ArrayBuffer) {
+            const packetLen = data.byteLength; // [NITRO: v02.2.15] - Capture BEFORE postMessage transfer
             const view = new DataView(data);
             // v02.2.10.9: Handle 12-byte Nitro Header
             const fileIdx = view.getUint16(0, true);
@@ -1970,9 +1974,8 @@ ${capturedLogsRef.current.join('\n')}
                     }
                     const pullInterval = currentChunksReceived < 10 ? 1 : 4;
                     if (currentChunksReceived % pullInterval === 0) {
-                        // v02.2.12: Explicit Length Capture BEFORE Transfer (Fix Phantom Buffer)
-                        const currentByteLength = (data instanceof ArrayBuffer) ? data.byteLength : 0;
-                        const bytesToClear = pullInterval * currentByteLength;
+                        // v02.2.15: Explicit Length Signal using pre-transfer packetLen
+                        const bytesToClear = pullInterval * packetLen;
                         sendControlMsg({ 
                             type: 'gpe-pull', 
                             bytesCleared: bytesToClear, 
