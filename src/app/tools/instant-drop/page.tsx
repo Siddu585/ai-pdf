@@ -30,8 +30,8 @@ import { PaywallModal } from "@/components/layout/PaywallModal";
 // v02.2.10.6d (NMI Protocol) - Fix Fatal NACK ReferenceError
 // v02.2.21 (Tachyon Overdrive) - M2M vs L2M Engine Differentiation
 // v02.2.23 (Tachyon Omega) - Structural Alignment & Physical Sync
-// v02.2.24 (Tachyon Alpha) - Floor-Raise & UA Hardening
-const VERSION = "v02.2.24 (Tachyon Alpha)";
+// v02.2.25 (Tachyon Alpha Refined) - Serialized Handshake & 4-Pipe Resilience
+const VERSION = "v02.2.25 (Tachyon Alpha Refined)";
 function getEngineConfig(engine: 'M2M' | 'HYBRID' | 'NITRO') {
     if (engine === 'M2M') {
         return {
@@ -1108,10 +1108,22 @@ ${capturedLogsRef.current.join('\n')}
                         // v02.2.23: Explicit Screen Persistence Handshake (Satisfy Gesture Policy)
                         requestWakeLock();
                         
-                        // v02.2.22: Dynamic Handshake Signaling
-                        for (let i = 0; i < config.pipes; i++) {
-                            setupWebRTC(ws, true, i);
-                        }
+                        // v02.2.25: [ALPHA-REFINED] Staggered Batch Handshake
+                        // Prevents Carrier NAT 'Signaling Storm' drops for pipes 4-11
+                        const startStaggeredHandshake = async () => {
+                            for (let i = 0; i < config.pipes; i++) {
+                                setupWebRTC(ws, true, i);
+                                // Batch every 4 pipes to let Carrier NAT and Mobile CPU 'breathe'
+                                if ((i + 1) % 4 === 0 && i < config.pipes - 1) {
+                                    logDebug(`--- Handshake Batch Complete. Cooldown 600ms before P-${i+1} ---`);
+                                    await new Promise(resolve => setTimeout(resolve, 600));
+                                } else {
+                                    // 50ms signaling debounce between individual pipes
+                                    await new Promise(resolve => setTimeout(resolve, 50));
+                                }
+                            }
+                        };
+                        startStaggeredHandshake();
                     } else if (data.type === 'answer') {
                         const pIdx = data.pipeIdx || 0;
                         const gen = data.gen || 0;
@@ -1201,11 +1213,19 @@ ${capturedLogsRef.current.join('\n')}
             }
             peersRef.current[pipeIdx] = peer;
 
+            // v02.2.25: [ALPHA-REFINED] High-Precision ICE Resuscitator
+            // Re-pairing candidates every 4s if connection persists in checking/new
+            const resuscitatorTimeout = 4000;
+            const resuscitatorTimer = setTimeout(() => {
+                const pc = peersRef.current[pipeIdx];
+                if (pc && (pc.iceConnectionState === 'new' || pc.iceConnectionState === 'checking')) {
+                    logDebug(`🚨 Pipe-${pipeIdx} HANG [Carrier Black-Hole] detected. Resuscitating...`);
+                    try { pc.restartIce(); } catch (e) {}
+                }
+            }, resuscitatorTimeout);
+
             if (!useFallback && isSender && (pipeIdx >= 0)) {
                 // v02.1.69: Symmetric Escalation Watchdog (Sender-Only)
-                // Prevents collisions where both try to save the link simultaneously.
-                // Pipe-0: 25s (Anchor link, give it absolute priority)
-                // Booster Pipes: 15s (Escalate fast to Relay)
                 const escalationTimeout = (pipeIdx === 0) ? 25 * 1000 : 15 * 1000;
                 setTimeout(() => {
                     const pc = peersRef.current[pipeIdx];
@@ -1555,7 +1575,7 @@ ${capturedLogsRef.current.join('\n')}
         let chunkSeqIdx = 0; 
         isResumingRef.current = false;
 
-        logDebug(`Sender: ${VERSION} ${byteOffset > 0 ? 'RESUMING' : 'Quasar Start (Alpha)'} for ${file.name} (Size: ${file.size} bytes)`);
+        logDebug(`Sender: ${VERSION} ${byteOffset > 0 ? 'RESUMING' : 'Quasar Start (Alpha-Refined)'} for ${file.name} (Size: ${file.size} bytes)`);
         
         // v02.1.52 (Patch 25.2): GPE Counter Reset
         gpeInFlightBytesRef.current = 0;
@@ -2424,7 +2444,7 @@ Buffer-Bloat Grade: ${d.bufferBloatGrade}
                     <div className="flex items-center justify-between mb-4">
                         <div className="flex items-center gap-2">
                             <div className="w-2 h-2 rounded-full bg-indigo-500 animate-ping" />
-                            <span className="text-[10px] font-black text-indigo-400 uppercase tracking-widest">Omega Engine v02.2.24</span>
+                            <span className="text-[10px] font-black text-indigo-400 uppercase tracking-widest">Omega Engine v02.2.25</span>
                         </div>
                         <button onClick={() => setIsVisible(false)} className="text-white/40 hover:text-white transition-colors">
                             <X className="w-4 h-4" />
@@ -2515,6 +2535,7 @@ Buffer-Bloat Grade: ${d.bufferBloatGrade}
                     <p className="text-xs text-indigo-600 font-black tracking-[0.2em] uppercase mb-2 flex items-center justify-center gap-2">
                         <span className={`w-2 h-2 rounded-full ${wsConnected ? 'bg-green-500 animate-pulse' : 'bg-red-500'}`} />
                         {VERSION} 
+                        <span className="ml-2 px-1 py-[1px] bg-indigo-500 text-[8px] rounded-sm text-white animate-pulse">Ω-Alpha-Refined</span>
                         NITRO PULSE
                     </p>
                     <p className="text-lg text-muted-foreground max-w-2xl mx-auto">
