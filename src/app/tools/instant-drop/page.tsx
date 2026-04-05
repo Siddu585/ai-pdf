@@ -33,7 +33,7 @@ import { PaywallModal } from "@/components/layout/PaywallModal";
 // v02.2.23 (Tachyon Omega) - Structural Alignment & Physical Sync
 // v02.2.28 (Tachyon Omega - Piston Core) - Final Stability & UI Fix
 // v02.2.29 (Tachyon Omega - Quasar) - Stabilization Hub
-const VERSION = "v02.2.40 (Tachyon Omega - Piston Bypass)";
+const VERSION = "v02.2.41 (Tachyon Omega - Omega Sync)";
 function getEngineConfig(engine: 'M2M' | 'HYBRID' | 'NITRO') {
     if (engine === 'M2M') {
         return {
@@ -621,6 +621,12 @@ ${capturedLogsRef.current.join('\n')}
                             if (!useEmergencyTunnel) setUseEmergencyTunnel(true);
                         } catch (e) {}
                     }
+                }
+                break;
+            case 'force-tunnel':
+                if (modeRef.current === 'send') {
+                    logDebug("🚀 Remote REQUEST: Forcing Emergency Tunnel Mode.");
+                    setUseEmergencyTunnel(true);
                 }
                 break;
             case 'diagnostic-dump':
@@ -1964,9 +1970,8 @@ ${capturedLogsRef.current.join('\n')}
                                 const residual = currentChunkResidual as Uint8Array;
                                 if (residual.length >= targetSize) {
                                     let adaptiveChunkSize = targetSize;
-                                    // v02.2.10.6: Nano-Velocity MTU (Max 64KB)
-                                    // Large packets (240KB+) were being dropped by restrictive browser-edge SCTP buffers.
-                                    adaptiveChunkSize = Math.min(64 * 1024, targetSize); 
+                                    // v02.2.41: Omega MTU (16KB for Tunnel Reliability)
+                                    adaptiveChunkSize = useEmergencyTunnel ? 16384 : Math.min(64 * 1024, targetSize); 
                                     chunkData = residual.slice(0, adaptiveChunkSize);
                                     currentChunkResidual = residual.length > adaptiveChunkSize ? residual.slice(adaptiveChunkSize) : null;
                                 } else {
@@ -2095,7 +2100,10 @@ ${capturedLogsRef.current.join('\n')}
                             chunkSeqIdx++;
                             pendingChunk = null;
                             if (!useEmergencyTunnel) setUseEmergencyTunnel(true);
-                            if (currentSeq % 50 === 0) logDebug(`🛡️ Emergency Tunnel Sent: Chunk-${currentSeq}`);
+                            if (currentSeq % 10 === 0) logDebug(`🛡️ Emergency Tunnel Sent: Chunk-${currentSeq}`);
+                            
+                            // v02.2.41: Rate-Limit Tunnel (15ms delay per 16KB)
+                            await new Promise(resolve => setTimeout(resolve, 15));
                         }
                     } catch (e) {}
                 }
@@ -2731,6 +2739,16 @@ Buffer-Bloat Grade: ${d.bufferBloatGrade}
                             <span className="text-[9px] font-bold text-amber-500 uppercase italic">Chaos Injection Active</span>
                         </div>
                     )}
+                    
+                    {/* v02.2.41: Signal Monitor HUD */}
+                    <div className="mt-4 pt-3 border-t border-white/5">
+                        <div className="text-[8px] text-white/40 uppercase font-bold mb-2">Internal Signal Log</div>
+                        <div className="bg-black/20 rounded p-2 text-[7px] font-mono text-emerald-400/80 text-left h-20 overflow-y-auto space-y-1">
+                            {capturedLogsRef.current.slice(-5).map((l, i) => (
+                                <div key={i} className="truncate border-b border-white/5 pb-1 opacity-80">{l}</div>
+                            ))}
+                        </div>
+                    </div>
                 </div>
             </div>
         );
@@ -3139,6 +3157,28 @@ Buffer-Bloat Grade: ${d.bufferBloatGrade}
                                                 <RefreshCcw className="w-4 h-4" />
                                                 Re-join Signaling Room
                                             </Button>
+                                            
+                                            {/* v02.2.41: Force Tunnel Fallback */}
+                                            {!useEmergencyTunnel && (
+                                                <div className="pt-4 border-t border-border/50 w-full">
+                                                    <p className="text-[10px] text-muted-foreground mb-3 font-bold uppercase tracking-widest leading-relaxed">
+                                                        Stall detected? Force carrier bypass.
+                                                    </p>
+                                                    <Button 
+                                                        variant="ghost" 
+                                                        size="sm"
+                                                        className="w-full text-indigo-600 dark:text-indigo-400 font-black h-12 uppercase tracking-widest text-[9px] border-2 border-dashed border-indigo-200"
+                                                        onClick={() => {
+                                                            logDebug("🛑 Manual Override: FORCING WebSocket Tunnel.");
+                                                            sendControlMsg({ type: 'force-tunnel' });
+                                                            setUseEmergencyTunnel(true);
+                                                        }}
+                                                    >
+                                                        <Zap className="w-4 h-4 mr-2" />
+                                                        Force Engine Bypass
+                                                    </Button>
+                                                </div>
+                                            )}
                                         </div>
                                     )}
 
