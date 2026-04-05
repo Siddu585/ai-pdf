@@ -30,8 +30,8 @@ import { PaywallModal } from "@/components/layout/PaywallModal";
 // v02.2.10.6d (NMI Protocol) - Fix Fatal NACK ReferenceError
 // v02.2.21 (Tachyon Overdrive) - M2M vs L2M Engine Differentiation
 // v02.2.23 (Tachyon Omega) - Structural Alignment & Physical Sync
-// v02.2.25/26 (Tachyon Omega - Final) - Global Signal Sync & Carrier Fix
-const VERSION = "v02.2.26 (Tachyon Omega - Final)";
+// v02.2.25/27 (Tachyon Omega - Recovery Plus) - Metadata Sync & Finality Fix
+const VERSION = "v02.2.27 (Tachyon Omega - Recovery Plus)";
 function getEngineConfig(engine: 'M2M' | 'HYBRID' | 'NITRO') {
     if (engine === 'M2M') {
         return {
@@ -143,6 +143,7 @@ function InstantDropContent() {
     const isProRef = useRef(isPro);
     const emailRef = useRef(email);
     const deviceIdRef = useRef(deviceId);
+    const currentTransferRef = useRef<{name: string, size: number, index: number} | null>(null); // v02.2.27: Metadata sync
     const isInitializingRef = useRef(false);
     const isReceiverReadyRef = useRef(true);
     const relayServersRef = useRef<any[]>([...ICE_SERVERS.iceServers]);
@@ -1330,6 +1331,19 @@ ${capturedLogsRef.current.join('\n')}
 
         dc.onopen = () => {
             logDebug(`✅ DataChannel ${channelIdx} OPEN (Mode: ${modeRef.current})`);
+            
+            // v02.2.27: Late-Joiner Metadata Catch-up
+            // If we are already transferring, this new channel needs the current file info!
+            if (modeRef.current === 'send' && currentTransferRef.current) {
+                logDebug(`--- [SYNC] Catch-up Metadata for Channel-${channelIdx} ---`);
+                try {
+                    dc.send(JSON.stringify({
+                        type: 'metadata',
+                        ...currentTransferRef.current
+                    }));
+                } catch(e) {}
+            }
+
             // v02.0.8: Start transfer as soon as ANY channel is open (resilient to slow index-0)
             const openCount = dataChannelsRef.current.filter(c => c && c.readyState === 'open').length;
             if (openCount >= 1 && modeRef.current === 'send' && !isActive.current) {
@@ -1453,17 +1467,19 @@ ${capturedLogsRef.current.join('\n')}
         broadcastMetadata();
         
         for (let i = 0; i < currentFiles.length; i++) {
-            if (!isActive.current) break; // v02.1.1: Catch disconnection
+            if (!isActive.current) break;
+            const file = currentFiles[i];
+            currentTransferRef.current = { name: file.name, size: file.size, index: i };
             totalSentBytesRef.current = 0;
             setCurrentFileIndex(i);
             
             // v02.0.22 Pipeline: Send Metadata then immediately stream chunks
-            logDebug(`Sender: Sending Pipelined Metadata for ${currentFiles[i].name}`);
+            logDebug(`Sender: Sending Pipelined Metadata for ${file.name}`);
             sendControlMsg({
                 type: 'metadata',
-                name: currentFiles[i].name,
-                size: currentFiles[i].size,
-                fileType: currentFiles[i].type,
+                name: file.name,
+                size: file.size,
+                fileType: file.type,
                 currentIdx: i,
                 totalFiles: currentFiles.length,
                 isParallel: true,
@@ -1928,7 +1944,7 @@ ${capturedLogsRef.current.join('\n')}
                 const buffered = dataChannelsRef.current.reduce(
                     (acc, c) => acc + (c?.readyState === 'open' ? c.bufferedAmount : 0), 0
                 );
-                if (buffered < 1024 * 1024) resolve(); // Flush to last 1MB
+                if (buffered === 0) resolve(); // v02.2.27: Zero-Floor Finality Flush
                 else setTimeout(check, 100);
             };
             check();
@@ -2401,7 +2417,7 @@ Buffer-Bloat Grade: ${d.bufferBloatGrade}
             // Trigger 1: Standard click
             a.click();
             
-            // Trigger 2: window.open fallback for some mobile wrappers
+            // Trigger 2: window.open fallback for some mobile wrappers (v02.1.33)
             if (typeof window !== 'undefined' && /iPhone|iPad|iPod|Android/i.test(navigator.userAgent)) {
                 window.open(url, '_blank');
             }
@@ -2449,7 +2465,7 @@ Buffer-Bloat Grade: ${d.bufferBloatGrade}
                     <div className="flex items-center justify-between mb-4">
                         <div className="flex items-center gap-2">
                             <div className="w-2 h-2 rounded-full bg-indigo-500 animate-ping" />
-                            <span className="text-[10px] font-black text-indigo-400 uppercase tracking-widest">Omega Engine v02.2.26</span>
+                            <span className="text-[10px] font-black text-indigo-400 uppercase tracking-widest">Omega Engine v02.2.27</span>
                         </div>
                         <button onClick={() => setIsVisible(false)} className="text-white/40 hover:text-white transition-colors">
                             <X className="w-4 h-4" />
@@ -2540,7 +2556,7 @@ Buffer-Bloat Grade: ${d.bufferBloatGrade}
                     <p className="text-xs text-indigo-600 font-black tracking-[0.2em] uppercase mb-2 flex items-center justify-center gap-2">
                         <span className={`w-2 h-2 rounded-full ${wsConnected ? 'bg-green-500 animate-pulse' : 'bg-red-500'}`} />
                         {VERSION} 
-                        <span className="ml-2 px-1 py-[1px] bg-indigo-500 text-[8px] rounded-sm text-white animate-pulse">Ω-FINAL-SYNC</span>
+                        <span className="ml-2 px-1 py-[1px] bg-indigo-500 text-[8px] rounded-sm text-white animate-pulse">Ω-RECOVERY-PLUS</span>
                         NITRO PULSE
                     </p>
                     <p className="text-lg text-muted-foreground max-w-2xl mx-auto">
