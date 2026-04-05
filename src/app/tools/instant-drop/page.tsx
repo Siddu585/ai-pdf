@@ -16,9 +16,10 @@ import {
     Check, 
     Copy, 
     ChevronRight, 
-    ArrowRight,
     AlertTriangle,
-    Activity
+    Activity,
+    RefreshCw,
+    RefreshCcw
 } from "lucide-react";
 import JSZip from "jszip";
 import { Button } from "@/components/ui/button";
@@ -32,7 +33,7 @@ import { PaywallModal } from "@/components/layout/PaywallModal";
 // v02.2.23 (Tachyon Omega) - Structural Alignment & Physical Sync
 // v02.2.28 (Tachyon Omega - Piston Core) - Final Stability & UI Fix
 // v02.2.29 (Tachyon Omega - Quasar) - Stabilization Hub
-const VERSION = "v02.2.31 (Tachyon Omega - Signaling Persistence)";
+const VERSION = "v02.2.32 (Tachyon Omega - Neon Sync)";
 function getEngineConfig(engine: 'M2M' | 'HYBRID' | 'NITRO') {
     if (engine === 'M2M') {
         return {
@@ -65,20 +66,9 @@ const isMobileDevice = () => {
     return /Android|webOS|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini|Mobile|Silk/i.test(navigator.userAgent);
 };
 const getBackendUrls = () => {
-    let rawUrl = (process.env.NEXT_PUBLIC_API_URL || "").trim().replace(/\/$/, "");
-    
-    // Sense and Fix recursive Render naming prefix (ai-pdfai-pdf)
-    // This happens when Render's auto-generation stacks names.
-    // If the base URL or the current window has it, we ensure the backend URL also has it.
-    if (rawUrl.includes("ai-pdfai-pdf") || (typeof window !== "undefined" && (window.location.hostname.includes("ai-pdfai-pdf") || window.location.hostname.includes("swap-pdf.com")))) {
-        if (!rawUrl.includes("onrender.com")) {
-            rawUrl = "https://ai-pdfai-pdf-backend.onrender.com";
-        }
-    }
-
-    const http = rawUrl || (typeof window !== "undefined" ? `${window.location.protocol}//${window.location.hostname}:8000` : "http://localhost:8000");
-    const ws = http.replace(/^https:\/\//i, "wss://").replace(/^http:\/\//i, "ws://");
-    
+    // v02.2.32: Fixed Absolute Production Signaling (Resolves 404/Split-Brain)
+    const http = "https://ai-pdf-backend.onrender.com";
+    const ws = "wss://ai-pdf-backend.onrender.com";
     return { http, ws };
 };
 
@@ -1207,6 +1197,14 @@ ${capturedLogsRef.current.join('\n')}
                     }
                 })();
             };
+            
+            // v02.2.32: Manual Pulse Interval (Fallback)
+            const pulse = setInterval(() => {
+                if (ws.readyState === WebSocket.OPEN && statusRef.current === 'waiting') {
+                    ws.send(JSON.stringify({ type: 'sender-ready', isMobile: isMobileDevice() }));
+                }
+            }, 5000);
+            return () => clearInterval(pulse);
         };
 
         connect();
@@ -2755,7 +2753,7 @@ Buffer-Bloat Grade: ${d.bufferBloatGrade}
                                 <>
                                     <h2 className="text-2xl font-bold">Ready to Send</h2>
                                     <p className="text-muted-foreground">Scan the QR code with another device to download.</p>
-
+                                    
                                     <div className="bg-background rounded-2xl p-6 shadow-sm inline-block mx-auto border border-border">
                                         <QRCodeSVG
                                             value={`${typeof window !== 'undefined' ? window.location.origin : ''}/tools/instant-drop?room=${roomId}`}
@@ -2767,8 +2765,19 @@ Buffer-Bloat Grade: ${d.bufferBloatGrade}
                                         />
                                     </div>
 
-                                    <div className="text-3xl font-mono font-bold tracking-[0.5em] text-indigo-600 bg-indigo-50 dark:bg-indigo-950/30 py-4 rounded-xl">
-                                        {roomId}
+                                    <div className="flex flex-col gap-3">
+                                        <div className="text-3xl font-mono font-bold tracking-[0.5em] text-indigo-600 bg-indigo-50 dark:bg-indigo-950/30 py-4 rounded-xl">
+                                            {roomId}
+                                        </div>
+                                        <Button 
+                                            variant="outline" 
+                                            size="sm" 
+                                            className="text-indigo-600 border-indigo-200 hover:bg-indigo-50 gap-2 mx-auto"
+                                            onClick={() => sendControlMsg({ type: 'sender-ready', isMobile: isMobileDevice() })}
+                                        >
+                                            <RefreshCw className="w-4 h-4" />
+                                            Force Discovery Pulse
+                                        </Button>
                                     </div>
                                 </>
                             )}
