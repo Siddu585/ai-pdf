@@ -28,26 +28,16 @@ import { useUsage } from "@/hooks/useUsage";
 import { PaywallModal } from "@/components/layout/PaywallModal";
 
 // v02.2.10.6d (NMI Protocol) - Fix Fatal NACK ReferenceError
-const VERSION = "v02.2.17 (Mobile Nitro) Context-Aware Engine";
+// v02.2.18 (Turbo Jitter Protocol) - Resolve M2M Performance Death Spiral
+const VERSION = "v02.2.18 (Turbo Jitter) Nitro Engine";
 const PIPES = 4; 
 const CHANNELS_PER_PIPE = 8;
 const CHANNELS = 32; 
 const CHUNK_SIZE = 32 * 1024; // 32KB - Velocity Max (Mobile Resilient)
 const HIGH_WATER_MARK_MAX = 32 * 1024 * 1024; // 32MB Jumbo Window for 10 MB/s saturation 
-const PACER_THRESHOLD = 16 * 1024 * 1024; // 16MB Pacer Threshold
+const BASE_PACER_THRESHOLD = 16 * 1024 * 1024; // 16MB Pacer Threshold
 const MAX_IN_FLIGHT = 4096; // 4096 chunks (x32KB = 128MB ceiling)
 const DRAIN_THRESHOLD = 64 * 1024 * 1024; 
-const getAdaptivePipeCount = (rtt: number, engineMode: string = 'NITRO') => {
-    if (engineMode === 'M2M') {
-        if (rtt < 0.200) return 4; // Velocity Jump (5G/Fiber) 
-        if (rtt < 0.500) return 2; // Balanced Nitro
-        return 1; // Reliable Anchor
-    }
-    if (engineMode === 'HYBRID') return 2;
-    if (rtt < 0.400) return 4; 
-    if (rtt < 0.800) return 2; 
-    return 1; 
-};
 
 const isMobileDevice = () => {
     if (typeof window === 'undefined') return false;
@@ -222,8 +212,45 @@ function InstantDropContent() {
     const blockedLoopCount = useRef(0); // v02.1.57: Diagnostic Flow Counter
     const senderChunkCacheRef = useRef<Map<string, Uint8Array>>(new Map()); // v02.1.95: NACK Sliding Window
     const lastScaleRef = useRef<number>(PIPES); // v02.2.00: Adaptive Scale Memory
+    const lastScaleDownTimeRef = useRef<number>(0); // v02.2.18: Scaling Hysteresis (Cool-down)
     const nackQueueRef = useRef<Map<string, {fileIdx: number, chunkIdx: number, ts: number}>>(new Map()); // v02.2.10.8: Deduplicated Map
+    const lastNackResendTimeRef = useRef<Map<string, number>>(new Map()); // v02.2.18: Track resends to ignore stale NACKs
     const startTimeRef = useRef<number | null>(null); // v02.2.10.8: Scaling Anchor
+
+    // v02.2.18: Adaptive Scaling with Hysteresis
+    const getAdaptivePipeCount = (rtt: number, engineMode: string = 'NITRO') => {
+        const now = Date.now();
+        const currentScale = lastScaleRef.current;
+        
+        // v02.1.18: Define next target based on RTT bands
+        let target = 1;
+        if (engineMode === 'M2M') {
+            if (rtt < 0.200) target = 4;
+            else if (rtt < 0.500) target = 2;
+            else target = 1;
+        } else if (engineMode === 'HYBRID') {
+            target = 2;
+        } else {
+            if (rtt < 0.400) target = 4;
+            else if (rtt < 0.800) target = 2;
+            else target = 1;
+        }
+
+        // Hysteresis Logic:
+        // 1. If scaling DOWN, record the time.
+        if (target < currentScale) {
+            lastScaleDownTimeRef.current = now;
+            return target;
+        }
+        // 2. If trying to scale UP, enforce a 10s cool-down since the last scale down.
+        if (target > currentScale) {
+            const coolDown = 10000; // 10 seconds
+            if (now - lastScaleDownTimeRef.current < coolDown) {
+                return currentScale; // Stick to current lower scale
+            }
+        }
+        return target;
+    };
 
     // v02.1.74: Global Pre-flight Readiness Check
     useEffect(() => {
@@ -647,6 +674,8 @@ ${capturedLogsRef.current.join('\n')}
             let lastHoleCheck = 0;
             let isNackLoopStopped = false; // v02.1.97: Quiescence Flag
             let avgRtt = 0.25; // v02.2.17: Adaptive RTT (Default 250ms)
+            let nackHistory = new Map(); // v02.2.18: { key: { count, lastT } }
+            const JITTER_WINDOW = 24; // v02.2.18: Slack for out-of-order parallel chunks
             
             // v02.1.83: Worker Heartbeat Pulse (Keep-Alive)
             setInterval(() => {
@@ -656,28 +685,40 @@ ${capturedLogsRef.current.join('\n')}
                 
                 const now = Date.now();
                 
-                // v02.2.17: Adaptive Velocity Hole Detection (RT-Matched)
-                const interval = Math.max(250, Math.floor(avgRtt * 1250)); // rtt in s to ms * 1.25
+                // v02.2.18: Lazy Hole Detection & Exponential Backoff
+                const interval = Math.max(300, Math.floor(avgRtt * 1500)); 
                 if (now - lastHoleCheck > interval && !isNackLoopStopped) {
                     lastHoleCheck = now;
                     fileBuffers.forEach((buffer, fileIdx) => {
                         if (reassembledFiles.has(fileIdx)) return;
                         const received = receivedChunkIds.get(fileIdx);
                         const expected = expectedTotalChunks.get(fileIdx);
-                        if (received && expected) {
-                            for (let i = 0; i < expected; i++) {
-                                if (!received.has(i)) {
-                                    // Missing chunk found!
-                                    self.postMessage({ type: 'nack', fileIdx, chunkIdx: i });
-                                }
-                            }
-                        } else if (received) {
-                            // Probe: If we have gaps below the current max index, request them.
+                        
+                        if (received) {
                             let maxIdx = -1;
                             received.forEach(idx => { if (idx > maxIdx) maxIdx = idx; });
-                            for (let i = 0; i < maxIdx; i++) {
+                            
+                            const limit = expected ? expected : maxIdx;
+                            for (let i = 0; i < limit; i++) {
                                 if (!received.has(i)) {
-                                    self.postMessage({ type: 'nack', fileIdx, chunkIdx: i });
+                                    // v02.2.18: Slack Window - Only NACK if we've seen chunks far ahead,
+                                    // OR if it's the end of the file and no progress for 2s.
+                                    const isFarBehind = maxIdx > (i + JITTER_WINDOW);
+                                    const isEOFStall = expected && (maxIdx === expected - 1) && (now - lastHoleCheck > 2000);
+                                    
+                                    if (isFarBehind || isEOFStall) {
+                                        const nKey = fileIdx + "-" + i;
+                                        const h = nackHistory.get(nKey) || { count: 0, lastT: 0 };
+                                        
+                                        // Exponential Backoff: RTT * 2^count
+                                        const backoff = Math.min(5000, Math.pow(2, h.count) * (avgRtt * 1000));
+                                        if (now - h.lastT > backoff) {
+                                            h.count++;
+                                            h.lastT = now;
+                                            nackHistory.set(nKey, h);
+                                            self.postMessage({ type: 'nack', fileIdx, chunkIdx: i });
+                                        }
+                                    }
                                 }
                             }
                         }
@@ -1505,6 +1546,18 @@ ${capturedLogsRef.current.join('\n')}
             const speedMBps = currentMBpsRef.current || 0.1;
             const NITRO_THRESHOLD = Math.max(8 * 1024 * 1024, Math.min(64 * 1024 * 1024, speedMBps * 4 * 1024 * 1024)); // 4-second buffer cushion
 
+            // v02.2.18: GPE-SCTP Sync Pulse (Ghost Byte fix)
+            // Periodically sync the in-flight counter with the receiver's actual "cleared" bytes.
+            if (chunkSeqIdx % 100 === 0 && chunkSeqIdx > 0) {
+                const receiverCleared = diagnosticMetricsRef.current.bytesCleared || 0;
+                const estimatedInFlight = totalSentBytesRef.current - receiverCleared;
+                // If there's a massive discrepancy (more than 32MB), we sync to reality.
+                if (Math.abs(gpeInFlightBytesRef.current - estimatedInFlight) > 32 * 1024 * 1024) {
+                    logDebug(`📡 [SYNC] GPE In-Flight Corrected: ${Math.round(gpeInFlightBytesRef.current/1024)}KB -> ${Math.round(estimatedInFlight/1024)}KB`);
+                    gpeInFlightBytesRef.current = Math.max(0, estimatedInFlight);
+                }
+            }
+
             if (isGPEBlocked || openChannels.length === 0 || totalBuffered > NITRO_THRESHOLD) {
                 blockedLoopCount.current++;
                 if (blockedLoopCount.current % 5000 === 0 && totalBuffered > NITRO_THRESHOLD) {
@@ -1600,13 +1653,16 @@ ${capturedLogsRef.current.join('\n')}
 
                 const dc = selectedDC;
                 if (dc && dc.readyState === 'open') {
-                    // v02.2.10.7: NACK Interleaving logic
+                    // v02.2.18: NACK Throttle & Exponential Backoff (Sender Side)
                     if (nackQueueRef.current.size > 0) {
                         const nextNack = nackQueueRef.current.entries().next().value;
                         if (nextNack) {
                             const [key, nack] = nextNack;
-                            // 500ms cool-down to prevent storming the same chunk
-                            if (Date.now() - (nack.ts || 0) > 500) {
+                            const lastResendTime = lastNackResendTimeRef.current.get(key) || 0;
+                            const now = Date.now();
+                            
+                            // 1000ms base backoff between resending the SAME chunk
+                            if (now - lastResendTime > 1000) {
                                 nackQueueRef.current.delete(key);
                                 const cacheKey = `${nack.fileIdx}_${nack.chunkIdx}`;
                                 const cachedPacket = senderChunkCacheRef.current.get(cacheKey);
@@ -1614,9 +1670,8 @@ ${capturedLogsRef.current.join('\n')}
                                     try {
                                         dc.send(cachedPacket as any);
                                         gpeInFlightBytesRef.current += cachedPacket.byteLength;
+                                        lastNackResendTimeRef.current.set(key, now);
                                         if (nack.chunkIdx % 20 === 0) logDebug(`🚀 NACK Resend Sent: File-${nack.fileIdx} Chunk-${nack.chunkIdx}`);
-                                        // Update the NACK timestamp to avoid immediate re-request storm
-                                        nack.ts = Date.now(); 
                                     } catch (e) {}
                                 }
                             }
