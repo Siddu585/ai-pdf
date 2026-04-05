@@ -33,7 +33,7 @@ import { PaywallModal } from "@/components/layout/PaywallModal";
 // v02.2.23 (Tachyon Omega) - Structural Alignment & Physical Sync
 // v02.2.28 (Tachyon Omega - Piston Core) - Final Stability & UI Fix
 // v02.2.29 (Tachyon Omega - Quasar) - Stabilization Hub
-const VERSION = "v02.2.39 (Tachyon Omega - Tachyon Glue)";
+const VERSION = "v02.2.40 (Tachyon Omega - Piston Bypass)";
 function getEngineConfig(engine: 'M2M' | 'HYBRID' | 'NITRO') {
     if (engine === 'M2M') {
         return {
@@ -101,6 +101,8 @@ function InstantDropContent() {
     const [incomingMeta, setIncomingMeta] = useState<any>(null); // New state for reactive UI labels
     const [totalSentBytes, setTotalSentBytes] = useState(0);
     const [isStaleVersion, setIsStaleVersion] = useState(false);
+    const [useEmergencyTunnel, setUseEmergencyTunnel] = useState(false); // v02.2.40 Fallback
+    const tunnelWatchdogRef = useRef<any>(null);
 
     // v02.2.10.5: Force Sync & Cache Burn Sentinel
     useEffect(() => {
@@ -607,6 +609,18 @@ ${capturedLogsRef.current.join('\n')}
 `;
                     sendControlMsg({ type: 'diagnostic-dump', data: logDump });
                     logDebug("Sent Remote Diagnostic Dump.");
+                }
+                break;
+            case 'emergency-data':
+                if (modeRef.current === 'receive') {
+                    // v02.2.40: Extract binary from base64 or direct JSON
+                    if (msg.payload) {
+                        try {
+                            const binary = Uint8Array.from(atob(msg.payload), c => c.charCodeAt(0));
+                            handleIncomingData(binary.buffer, -1); // Use -1 to signal Tunnel
+                            if (!useEmergencyTunnel) setUseEmergencyTunnel(true);
+                        } catch (e) {}
+                    }
                 }
                 break;
             case 'diagnostic-dump':
@@ -2049,6 +2063,42 @@ ${capturedLogsRef.current.join('\n')}
                         await new Promise(resolve => setTimeout(resolve, 200));
                     }
                 }
+
+                // v02.2.40: WebSocket Tunnel Fallback (If P2P Stalled)
+                if ((openChannels.length === 0 || useEmergencyTunnel) && pendingChunk) {
+                    const { data: chunkData, seq: currentSeq, offset: currentOffset } = pendingChunk;
+                    const currentGen = pipeGenerationRef.current[0] || 1;
+                    const packet = new Uint8Array(12 + chunkData.byteLength);
+                    const view = new DataView(packet.buffer);
+                    view.setUint16(0, index, true);
+                    view.setUint16(2, currentGen, true);
+                    view.setUint32(4, currentSeq, true); 
+                    view.setUint32(8, currentOffset, true); 
+                    packet.set(chunkData, 12);
+
+                    try {
+                        // Binary to Base64 (Render WebSocket compatibility)
+                        let binary = "";
+                        const bytes = new Uint8Array(packet);
+                        for (let i = 0; i < bytes.byteLength; i++) binary += String.fromCharCode(bytes[i]);
+                        const base64 = btoa(binary);
+                        
+                        if (wsRef.current?.readyState === WebSocket.OPEN) {
+                            wsRef.current.send(JSON.stringify({ 
+                                type: 'emergency-data', 
+                                payload: base64,
+                                seq: currentSeq 
+                            }));
+                            
+                            totalSentBytesRef.current += packet.byteLength;
+                            byteOffset += chunkData.byteLength; 
+                            chunkSeqIdx++;
+                            pendingChunk = null;
+                            if (!useEmergencyTunnel) setUseEmergencyTunnel(true);
+                            if (currentSeq % 50 === 0) logDebug(`🛡️ Emergency Tunnel Sent: Chunk-${currentSeq}`);
+                        }
+                    } catch (e) {}
+                }
             }
         }
 
@@ -2730,6 +2780,13 @@ Buffer-Bloat Grade: ${d.bufferBloatGrade}
                         
                         <span className="ml-2 px-1 py-[1px] bg-indigo-500 text-[8px] rounded-sm text-white animate-pulse">Ω-PISTON-CORE</span>
                         NITRO PULSE
+                        
+                        {/* v02.2.40: Bypass Badge */}
+                        {useEmergencyTunnel && (
+                            <span className="ml-2 px-1 py-[1px] bg-amber-500 text-[8px] rounded-sm text-white animate-bounce">
+                                PISTON BYPASS ACTIVE
+                            </span>
+                        )}
                     </p>
                     <p className="text-lg text-muted-foreground max-w-2xl mx-auto">
                         The ultimate high-speed file sharing app. Transfer photos and large files (up to 200MB) from desktop to mobile or mobile to mobile instantly.
