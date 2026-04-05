@@ -58,7 +58,8 @@ const DRAIN_THRESHOLD = 64 * 1024 * 1024;
 
 const isMobileDevice = () => {
     if (typeof window === 'undefined') return false;
-    return /Android|webOS|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini/i.test(navigator.userAgent);
+    // v02.2.24: Hardened Regex for Modern Mobile (Inclusive of Jio/Indian browsers)
+    return /Android|webOS|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini|Mobile|Silk/i.test(navigator.userAgent);
 };
 const getBackendUrls = () => {
     let rawUrl = (process.env.NEXT_PUBLIC_API_URL || "").trim().replace(/\/$/, "");
@@ -244,9 +245,9 @@ function InstantDropContent() {
         // v02.1.18: Define next target based on RTT bands
         let target = 1;
         if (engineMode === 'M2M') {
-            if (rtt < 0.200) target = 12; // Tachyon Target
-            else if (rtt < 0.500) target = 8;
-            else target = 4; // Stability Floor (Forbidden from 1-pipe throttle)
+            if (rtt < 0.250) target = 12; // v02.2.24: Raised Tachyon Band (50ms buffer)
+            else if (rtt < 0.600) target = 10;
+            else target = 8; // v02.2.24: Hard Floor (No more 4-pipe drops for M2M)
         } else if (engineMode === 'HYBRID') {
             target = 2;
         } else {
@@ -2409,6 +2410,8 @@ Buffer-Bloat Grade: ${d.bufferBloatGrade}
         const metrics = { ...diagnosticMetricsRef.current };
         const transportColor = metrics.transportType === 'relay' ? 'text-amber-400' : 'text-green-400';
         
+        const isM2MDetected = (isMobileDevice() || engineMode === 'M2M') && metrics.pistonStats.length > 4;
+        
         if (status !== 'transferring' && status !== 'done' && status !== 'done-waiting') return null;
 
         return (
@@ -2420,7 +2423,7 @@ Buffer-Bloat Grade: ${d.bufferBloatGrade}
                     <div className="flex items-center justify-between mb-4">
                         <div className="flex items-center gap-2">
                             <div className="w-2 h-2 rounded-full bg-indigo-500 animate-ping" />
-                            <span className="text-[10px] font-black text-indigo-400 uppercase tracking-widest">Omega Engine v02.2</span>
+                            <span className="text-[10px] font-black text-indigo-400 uppercase tracking-widest">Omega Engine v02.2.24</span>
                         </div>
                         <button onClick={() => setIsVisible(false)} className="text-white/40 hover:text-white transition-colors">
                             <X className="w-4 h-4" />
@@ -2428,7 +2431,7 @@ Buffer-Bloat Grade: ${d.bufferBloatGrade}
                     </div>
 
                     <div className="grid grid-cols-4 gap-2 mb-4">
-                        {metrics.pistonStats.slice(0, (isMobileDevice() && remoteCapabilityRef.current.isMobile) ? 12 : 4).map((p: any, i: number) => {
+                        {metrics.pistonStats.slice(0, (isM2MDetected ? 12 : 4)).map((p: any, i: number) => {
                             // v02.2.22: Only show active pipes for the current engine
                             const pipeIdx = i;
                             const isPistonActive = i < metrics.pistonStats.length;
