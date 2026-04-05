@@ -30,8 +30,8 @@ import { PaywallModal } from "@/components/layout/PaywallModal";
 // v02.2.10.6d (NMI Protocol) - Fix Fatal NACK ReferenceError
 // v02.2.21 (Tachyon Overdrive) - M2M vs L2M Engine Differentiation
 // v02.2.23 (Tachyon Omega) - Structural Alignment & Physical Sync
-// v02.2.25 (Tachyon Alpha Refined) - Serialized Handshake & 4-Pipe Resilience
-const VERSION = "v02.2.25 (Tachyon Alpha Refined)";
+// v02.2.25/26 (Tachyon Omega - Final) - Global Signal Sync & Carrier Fix
+const VERSION = "v02.2.26 (Tachyon Omega - Final)";
 function getEngineConfig(engine: 'M2M' | 'HYBRID' | 'NITRO') {
     if (engine === 'M2M') {
         return {
@@ -153,6 +153,7 @@ function InstantDropContent() {
     const isResumingRef = useRef(false);
     const pipeGenerationRef = useRef<number[]>(new Array(12).fill(0)); // v02.2.23: Fixed Memory Capacity (12-Pipe context)
     const stallWatchdogRef = useRef<any>(null);
+    const resuscitatorTimersRef = useRef<any[]>(new Array(12).fill(null)); // v02.2.26: Per-pipe health watchdog
     const wakeLockRef = useRef<any>(null);
     const gpeInFlightBytesRef = useRef(0); // v02.1.50: GPE Gated In-Flight Tracking
     const gpePullRequestsRef = useRef(0); // v02.1.50: GPE Pull Request Counter
@@ -1083,87 +1084,83 @@ ${capturedLogsRef.current.join('\n')}
                 heartbeatIntervalRef.current = heartbeat;
             };
 
-            ws.onmessage = async (event) => {
-                logDebug("Sender WS Message: " + event.data);
-                try {
-                    const data = JSON.parse(event.data);
-                    if (data.type === 'peer-connected') {
-                        logDebug("Peer joined, waiting for receiver-ready signal...");
-                    } else if (data.type === 'receiver-ready') {
-                        // v02.1.67: Sentinel Handshake Lock
-                        remoteCapabilityRef.current.isMobile = !!data.isMobile; // Capture Peer Capability
-                        // v02.1.68: Added 'connecting' status guard to prevent redundant resets during ICE.
-                        if (isActive.current || isInitializingRef.current || statusRef.current === 'connecting') {
-                            logDebug(`⚠️ Receiver Ready Sig Ignored: status=${statusRef.current} init=${isInitializingRef.current}`);
-                            return;
-                        }
-                        const isM2M = isMobileDevice() && !!data.isMobile;
-                        const activeEngine = isM2M ? 'M2M' : (isMobileDevice() || !!data.isMobile) ? 'HYBRID' : 'NITRO';
-                        const config = getEngineConfig(activeEngine);
-                        logDebug(`Receiver is READY. Initializing ${config.pipes}x Parallel WebRTC Pipes...`);
-                        isInitializingRef.current = true; // Lock the handshake
-                        setStatus('connecting');
-                        resetSessionRefs(); 
-                        
-                        // v02.2.23: Explicit Screen Persistence Handshake (Satisfy Gesture Policy)
-                        requestWakeLock();
-                        
-                        // v02.2.25: [ALPHA-REFINED] Staggered Batch Handshake
-                        // Prevents Carrier NAT 'Signaling Storm' drops for pipes 4-11
-                        const startStaggeredHandshake = async () => {
-                            for (let i = 0; i < config.pipes; i++) {
-                                setupWebRTC(ws, true, i);
-                                // Batch every 4 pipes to let Carrier NAT and Mobile CPU 'breathe'
-                                if ((i + 1) % 4 === 0 && i < config.pipes - 1) {
-                                    logDebug(`--- Handshake Batch Complete. Cooldown 600ms before P-${i+1} ---`);
-                                    await new Promise(resolve => setTimeout(resolve, 600));
-                                } else {
-                                    // 50ms signaling debounce between individual pipes
-                                    await new Promise(resolve => setTimeout(resolve, 50));
-                                }
-                            }
-                        };
-                        startStaggeredHandshake();
-                    } else if (data.type === 'answer') {
-                        const pIdx = data.pipeIdx || 0;
-                        const gen = data.gen || 0;
-                        if (gen !== pipeGenerationRef.current[pIdx]) {
-                            logDebug(`⚠️ Pipe-${pIdx} Stale Answer (Gen ${gen} vs ${pipeGenerationRef.current[pIdx]}). Dropping.`);
-                            return;
-                        }
-                        try {
-                            const peer = peersRef.current[pIdx];
-                            if (!peer || peer.signalingState !== 'have-local-offer') {
-                                logDebug(`⚠️ Pipe-${pIdx} Ignore Answer: State=${peer?.signalingState}`);
+            ws.onmessage = (event) => {
+                const dataStr = event.data;
+                (async () => {
+                    logDebug("Sender WS Message: " + dataStr);
+                    try {
+                        const data = JSON.parse(dataStr);
+                        if (data.type === 'peer-connected') {
+                            logDebug("Peer joined, waiting for receiver-ready signal...");
+                        } else if (data.type === 'receiver-ready') {
+                            // v02.1.67: Sentinel Handshake Lock
+                            remoteCapabilityRef.current.isMobile = !!data.isMobile; // Capture Peer Capability
+                            // v02.1.68: Added 'connecting' status guard to prevent redundant resets during ICE.
+                            if (isActive.current || isInitializingRef.current || statusRef.current === 'connecting') {
+                                logDebug(`⚠️ Receiver Ready Sig Ignored: status=${statusRef.current} init=${isInitializingRef.current}`);
                                 return;
                             }
-                            await peer.setRemoteDescription(new RTCSessionDescription(data.sdp));
-                            remoteDescriptionSetsRef.current[pIdx] = true;
-                            logDebug(`✅ Pipe-${pIdx} Remote Description Set (Gen ${gen}). Flushing ${iceBuffersRef.current[pIdx].length} buffered candidates`);
-                            for (const candidate of iceBuffersRef.current[pIdx]) {
-                                try { await peer.addIceCandidate(new RTCIceCandidate(candidate)); } catch (e) {}
+                            const isM2M = isMobileDevice() && !!data.isMobile;
+                            const activeEngine = isM2M ? 'M2M' : (isMobileDevice() || !!data.isMobile) ? 'HYBRID' : 'NITRO';
+                            const config = getEngineConfig(activeEngine);
+                            logDebug(`Receiver is READY. Initializing ${config.pipes}x Parallel WebRTC Pipes...`);
+                            isInitializingRef.current = true; // Lock the handshake
+                            setStatus('connecting');
+                            resetSessionRefs(); 
+                            
+                            // v02.2.23: Explicit Screen Persistence Handshake (Satisfy Gesture Policy)
+                            requestWakeLock();
+                            
+                            // v02.2.26: [FINAL-SYNC] Refined Synchronous Handshake
+                            // Reverted async handler to prevent mobile event swallow
+                            const startStaggeredHandshake = async () => {
+                                for (let i = 0; i < config.pipes; i++) {
+                                    setupWebRTC(ws, true, i);
+                                    // v02.2.26: Strong Anchor (Wait for P-0 to at least start candidate gathering)
+                                    if (i === 0) await new Promise(resolve => setTimeout(resolve, 300));
+                                    
+                                    // Batching cool-down for carrier NATs
+                                    if ((i + 1) % 4 === 0 && i < config.pipes - 1) {
+                                        logDebug(`--- Batch-Sync [P0-${i}] Complete. Cooling down 600ms ---`);
+                                        await new Promise(resolve => setTimeout(resolve, 600));
+                                    } else {
+                                        await new Promise(resolve => setTimeout(resolve, 50));
+                                    }
+                                }
+                            };
+                            startStaggeredHandshake();
+                        } else if (data.type === 'answer') {
+                            const pIdx = data.type === 'answer' ? (data.pipeIdx || 0) : 0;
+                            const gen = data.gen || 0;
+                            if (gen !== pipeGenerationRef.current[pIdx]) return;
+                            try {
+                                const peer = peersRef.current[pIdx];
+                                if (!peer || peer.signalingState !== 'have-local-offer') return;
+                                await peer.setRemoteDescription(new RTCSessionDescription(data.sdp));
+                                remoteDescriptionSetsRef.current[pIdx] = true;
+                                for (const candidate of iceBuffersRef.current[pIdx]) {
+                                    try { await peer.addIceCandidate(new RTCIceCandidate(candidate)); } catch (e) {}
+                                }
+                                iceBuffersRef.current[pIdx] = [];
+                            } catch (e: any) { logDebug(`❌ Pipe-${pIdx} Answer Error: ${e.message}`); }
+                        } else if (data.type === 'ice-candidate') {
+                            const pIdx = data.pipeIdx || 0;
+                            const gen = data.gen || 0;
+                            if (gen !== pipeGenerationRef.current[pIdx]) return;
+                            if (!remoteDescriptionSetsRef.current[pIdx]) {
+                                iceBuffersRef.current[pIdx].push(data.candidate);
+                            } else {
+                                try { await peersRef.current[pIdx]?.addIceCandidate(new RTCIceCandidate(data.candidate)); } catch (e) {}
                             }
-                            iceBuffersRef.current[pIdx] = [];
-                        } catch (e: any) {
-                            logDebug(`❌ Pipe-${pIdx} Failed to set answer: ${e.message}`);
+                        } else if (data.type === 'flow' && data.status === 'ready') {
+                            isReceiverReadyRef.current = true;
                         }
-                    } else if (data.type === 'ice-candidate') {
-                        const pIdx = data.pipeIdx || 0;
-                        const gen = data.gen || 0;
-                        if (gen !== pipeGenerationRef.current[pIdx]) return;
-                        if (!remoteDescriptionSetsRef.current[pIdx]) {
-                            iceBuffersRef.current[pIdx].push(data.candidate);
-                        } else {
-                            try { await peersRef.current[pIdx]?.addIceCandidate(new RTCIceCandidate(data.candidate)); } catch (e) {}
-                        }
-                    } else if (data.type === 'flow' && data.status === 'ready') {
-                        isReceiverReadyRef.current = true;
+                        
+                        handleControlMessage(data);
+                    } catch (err: any) {
+                        logDebug("❌ Sender WS Msg Error: " + err.message);
                     }
-                    
-                    handleControlMessage(data);
-                } catch (err: any) {
-                    logDebug("❌ Sender WS Msg Error: " + err.message);
-                }
+                })();
             };
         };
 
@@ -1213,16 +1210,15 @@ ${capturedLogsRef.current.join('\n')}
             }
             peersRef.current[pipeIdx] = peer;
 
-            // v02.2.25: [ALPHA-REFINED] High-Precision ICE Resuscitator
-            // Re-pairing candidates every 4s if connection persists in checking/new
-            const resuscitatorTimeout = 4000;
-            const resuscitatorTimer = setTimeout(() => {
+            // v02.2.26: [FINAL-SYNC] ICE Resuscitator Cleanup logic
+            if (resuscitatorTimersRef.current[pipeIdx]) clearTimeout(resuscitatorTimersRef.current[pipeIdx]);
+            resuscitatorTimersRef.current[pipeIdx] = setTimeout(() => {
                 const pc = peersRef.current[pipeIdx];
                 if (pc && (pc.iceConnectionState === 'new' || pc.iceConnectionState === 'checking')) {
                     logDebug(`🚨 Pipe-${pipeIdx} HANG [Carrier Black-Hole] detected. Resuscitating...`);
                     try { pc.restartIce(); } catch (e) {}
                 }
-            }, resuscitatorTimeout);
+            }, 4000);
 
             if (!useFallback && isSender && (pipeIdx >= 0)) {
                 // v02.1.69: Symmetric Escalation Watchdog (Sender-Only)
@@ -1280,6 +1276,15 @@ ${capturedLogsRef.current.join('\n')}
 
             peer.oniceconnectionstatechange = () => {
                 logDebug(`Pipe-${pipeIdx} ICE State: ${peer.iceConnectionState}`);
+                // v02.2.26: STOP the resuscitator if we are connected or finished
+                if (peer.iceConnectionState === 'connected' || peer.iceConnectionState === 'completed') {
+                    if (resuscitatorTimersRef.current[pipeIdx]) {
+                        clearTimeout(resuscitatorTimersRef.current[pipeIdx]);
+                        resuscitatorTimersRef.current[pipeIdx] = null;
+                        logDebug(`✅ Pipe-${pipeIdx} Resuscitator Stand-down.`);
+                    }
+                }
+                
                 if (peer.iceConnectionState === 'disconnected' || peer.iceConnectionState === 'failed') {
                     diagnosticMetricsRef.current.pistonStats[pipeIdx] = { speed: 0, health: 'red' };
                     try { peer.restartIce(); } catch (e) {}
@@ -1575,7 +1580,7 @@ ${capturedLogsRef.current.join('\n')}
         let chunkSeqIdx = 0; 
         isResumingRef.current = false;
 
-        logDebug(`Sender: ${VERSION} ${byteOffset > 0 ? 'RESUMING' : 'Quasar Start (Alpha-Refined)'} for ${file.name} (Size: ${file.size} bytes)`);
+        logDebug(`Sender: ${VERSION} ${byteOffset > 0 ? 'RESUMING' : 'Quasar Start (Omega-Final)'} for ${file.name} (Size: ${file.size} bytes)`);
         
         // v02.1.52 (Patch 25.2): GPE Counter Reset
         gpeInFlightBytesRef.current = 0;
@@ -2444,7 +2449,7 @@ Buffer-Bloat Grade: ${d.bufferBloatGrade}
                     <div className="flex items-center justify-between mb-4">
                         <div className="flex items-center gap-2">
                             <div className="w-2 h-2 rounded-full bg-indigo-500 animate-ping" />
-                            <span className="text-[10px] font-black text-indigo-400 uppercase tracking-widest">Omega Engine v02.2.25</span>
+                            <span className="text-[10px] font-black text-indigo-400 uppercase tracking-widest">Omega Engine v02.2.26</span>
                         </div>
                         <button onClick={() => setIsVisible(false)} className="text-white/40 hover:text-white transition-colors">
                             <X className="w-4 h-4" />
@@ -2535,7 +2540,7 @@ Buffer-Bloat Grade: ${d.bufferBloatGrade}
                     <p className="text-xs text-indigo-600 font-black tracking-[0.2em] uppercase mb-2 flex items-center justify-center gap-2">
                         <span className={`w-2 h-2 rounded-full ${wsConnected ? 'bg-green-500 animate-pulse' : 'bg-red-500'}`} />
                         {VERSION} 
-                        <span className="ml-2 px-1 py-[1px] bg-indigo-500 text-[8px] rounded-sm text-white animate-pulse">Ω-Alpha-Refined</span>
+                        <span className="ml-2 px-1 py-[1px] bg-indigo-500 text-[8px] rounded-sm text-white animate-pulse">Ω-FINAL-SYNC</span>
                         NITRO PULSE
                     </p>
                     <p className="text-lg text-muted-foreground max-w-2xl mx-auto">
