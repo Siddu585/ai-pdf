@@ -33,7 +33,7 @@ import { PaywallModal } from "@/components/layout/PaywallModal";
 // v02.2.23 (Tachyon Omega) - Structural Alignment & Physical Sync
 // v02.2.28 (Tachyon Omega - Piston Core) - Final Stability & UI Fix
 // v02.2.29 (Tachyon Omega - Quasar) - Stabilization Hub
-const VERSION = "v02.2.37 (Tachyon Omega - Multi-Sync)";
+const VERSION = "v02.2.38 (Tachyon Omega - Pulse Wave)";
 function getEngineConfig(engine: 'M2M' | 'HYBRID' | 'NITRO') {
     if (engine === 'M2M') {
         return {
@@ -1124,10 +1124,21 @@ ${capturedLogsRef.current.join('\n')}
                 logDebug("Sender WS Opened. Waiting for peer...");
                 setWsConnected(true); // v02.1.74: Pulse Sync
                 const heartbeat = setInterval(() => {
-                    if (ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify({ type: 'ping' }));
+                    if (ws.readyState === WebSocket.OPEN) {
+                        ws.send(JSON.stringify({ type: 'ping' }));
+                        
+                        // v02.2.38: Aggressive Sender Pulse (2s announcement)
+                        if (statusRef.current === 'waiting') {
+                            ws.send(JSON.stringify({ 
+                                type: 'sender-ready', 
+                                roomId: finalRoomId, 
+                                isMobile: isMobileDevice() 
+                            }));
+                        }
+                    }
                     // v02.2.10.7: Visual Pulse logic - trigger a minor UI update to prevent backgrounding
                     if (statusRef.current === 'transferring') setProgress(p => p);
-                }, 3000); // 3s for higher resilience
+                }, 2000); // 2s for extreme resilience
                 heartbeatIntervalRef.current = heartbeat;
             };
 
@@ -2127,6 +2138,14 @@ ${capturedLogsRef.current.join('\n')}
                         if (statusRef.current === 'connecting') {
                             ws.send(JSON.stringify({ type: 'receiver-ready', isMobile: isMobileDevice() }));
                         }
+                    }
+                    
+                    // v02.2.38: Receiver Auto-Wake (8s stall monitor)
+                    const timeSinceLastMsg = Date.now() - flowPulseLastTsRef.current;
+                    if (statusRef.current === 'connecting' && timeSinceLastMsg > 8000) {
+                        logDebug("🚑 Receiver Stall Detected: Auto-Refreshing signaling...");
+                        ws.send(JSON.stringify({ type: 'receiver-ready', isMobile: isMobileDevice(), urgent: true }));
+                        flowPulseLastTsRef.current = Date.now(); // Reset
                     }
                 }, 5000);
                 heartbeatIntervalRef.current = heartbeat;
