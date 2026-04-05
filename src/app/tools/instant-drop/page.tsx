@@ -30,7 +30,8 @@ import { PaywallModal } from "@/components/layout/PaywallModal";
 // v02.2.10.6d (NMI Protocol) - Fix Fatal NACK ReferenceError
 // v02.2.21 (Tachyon Overdrive) - M2M vs L2M Engine Differentiation
 // v02.2.23 (Tachyon Omega) - Structural Alignment & Physical Sync
-const VERSION = "v02.2.23 (Tachyon Omega)";
+// v02.2.24 (Tachyon Alpha) - Floor-Raise & UA Hardening
+const VERSION = "v02.2.24 (Tachyon Alpha)";
 function getEngineConfig(engine: 'M2M' | 'HYBRID' | 'NITRO') {
     if (engine === 'M2M') {
         return {
@@ -1554,7 +1555,7 @@ ${capturedLogsRef.current.join('\n')}
         let chunkSeqIdx = 0; 
         isResumingRef.current = false;
 
-        logDebug(`Sender: ${VERSION} ${byteOffset > 0 ? 'RESUMING' : 'Quasar Start'} for ${file.name} (Size: ${file.size} bytes)`);
+        logDebug(`Sender: ${VERSION} ${byteOffset > 0 ? 'RESUMING' : 'Quasar Start (Alpha)'} for ${file.name} (Size: ${file.size} bytes)`);
         
         // v02.1.52 (Patch 25.2): GPE Counter Reset
         gpeInFlightBytesRef.current = 0;
