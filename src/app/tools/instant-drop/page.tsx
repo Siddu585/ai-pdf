@@ -33,7 +33,7 @@ import { PaywallModal } from "@/components/layout/PaywallModal";
 // v02.2.23 (Tachyon Omega) - Structural Alignment & Physical Sync
 // v02.2.28 (Tachyon Omega - Piston Core) - Final Stability & UI Fix
 // v02.2.29 (Tachyon Omega - Quasar) - Stabilization Hub
-const VERSION = "v02.2.35 (Tachyon Omega - Room Normalization)";
+const VERSION = "v02.2.36 (Tachyon Omega - Remote RoleSwap)";
 function getEngineConfig(engine: 'M2M' | 'HYBRID' | 'NITRO') {
     if (engine === 'M2M') {
         return {
@@ -446,6 +446,17 @@ function InstantDropContent() {
                 } else if (msg.cmd === 'get-logs') {
                     const logDump = capturedLogsRef.current.join('\n');
                     sendControlMsg({ type: 'diagnostic-dump', data: logDump });
+                } else if (msg.cmd === 'switch-to-sender') {
+                    logDebug("🚀 AI-Requested Role Swap: Switching to SENDER");
+                    const currentRoom = roomRef.current;
+                    disconnectEverything();
+                    setRoomId(currentRoom || "");
+                    roomRef.current = currentRoom;
+                    setMode('send');
+                    // Give state machines time to settle, then trigger stress test
+                    setTimeout(() => {
+                        (window as any).__RUN_STRESS_TEST__(1, 60);
+                    }, 800);
                 } else if (msg.cmd === 'ping') {
                     sendControlMsg({ type: 'pong', ts: Date.now() });
                 }
@@ -2662,6 +2673,18 @@ Buffer-Bloat Grade: ${d.bufferBloatGrade}
                     <p className="text-xs text-indigo-600 font-black tracking-[0.2em] uppercase mb-2 flex items-center justify-center gap-2">
                         <span className={`w-2 h-2 rounded-full ${wsConnected ? 'bg-green-500 animate-pulse' : 'bg-red-500'}`} />
                         {VERSION} 
+                        
+                        {/* v02.2.36: Mode HUD */}
+                        <span className={`ml-2 px-2 py-0.5 rounded-sm text-[8px] font-black uppercase tracking-widest border ${
+                            mode === 'send' 
+                                ? 'bg-emerald-500 text-white border-emerald-400' 
+                                : mode === 'receive' 
+                                    ? 'bg-amber-500 text-white border-amber-400'
+                                    : 'bg-slate-500 text-white border-slate-400'
+                        }`}>
+                            {mode === 'send' ? 'SENDER' : mode === 'receive' ? 'RECEIVER' : 'WAITING'}
+                        </span>
+                        
                         <span className="ml-2 px-1 py-[1px] bg-indigo-500 text-[8px] rounded-sm text-white animate-pulse">Ω-PISTON-CORE</span>
                         NITRO PULSE
                     </p>
