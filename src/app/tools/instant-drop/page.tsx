@@ -31,7 +31,8 @@ import { PaywallModal } from "@/components/layout/PaywallModal";
 // v02.2.21 (Tachyon Overdrive) - M2M vs L2M Engine Differentiation
 // v02.2.23 (Tachyon Omega) - Structural Alignment & Physical Sync
 // v02.2.28 (Tachyon Omega - Piston Core) - Final Stability & UI Fix
-const VERSION = "v02.2.28 (Tachyon Omega - Piston Core)";
+// v02.2.29 (Tachyon Omega - Quasar) - Stabilization Hub
+const VERSION = "v02.2.29 (Tachyon Omega - Quasar)";
 function getEngineConfig(engine: 'M2M' | 'HYBRID' | 'NITRO') {
     if (engine === 'M2M') {
         return {
@@ -56,6 +57,7 @@ const HIGH_WATER_MARK_MAX = 32 * 1024 * 1024; // 32MB Jumbo Window for 10 MB/s s
 const BASE_PACER_THRESHOLD = 16 * 1024 * 1024; // 16MB Pacer Threshold
 const MAX_IN_FLIGHT = 4096; // 4096 chunks (x32KB = 128MB ceiling)
 const DRAIN_THRESHOLD = 64 * 1024 * 1024; 
+const BDP_GPE_GATE = 64 * 1024 * 1024; // v02.2.29: Default 64MB In-Flight Gate
 
 const isMobileDevice = () => {
     if (typeof window === 'undefined') return false;
@@ -161,6 +163,8 @@ function InstantDropContent() {
     const deviceIdRef = useRef(deviceId);
     const currentTransferRef = useRef<{name: string, size: number, index: number} | null>(null); // v02.2.27: Metadata sync
     const isInitializingRef = useRef(false);
+    const lastMetadataRef = useRef<any>(null); // v02.2.29: Immutable Snapshot
+    const flowPulseLastTsRef = useRef<number>(Date.now()); // v02.2.29: Backpressure Monitor
     const isReceiverReadyRef = useRef(true);
     const relayServersRef = useRef<any[]>([...ICE_SERVERS.iceServers]);
     const speedTimerRef = useRef<any>(null);
@@ -197,6 +201,7 @@ function InstantDropContent() {
         pistonStats: Array(12).fill({ speed: 0, health: 'green' }),
         isChaosMode: false
     });
+    const [diagnosticMetrics, setDiagnosticMetrics] = useState(diagnosticMetricsRef.current); // v02.2.29: Corrected Init Order
     const pipeLatenciesRef = useRef<number[]>(new Array(PIPES).fill(0));
     const eventLoopIntervalRef = useRef<any>(null);
     const workerHeartbeatRef = useRef<number>(Date.now()); // v02.2.08: Worker Pulse
@@ -441,6 +446,14 @@ function InstantDropContent() {
         
         // v02.1.39 (Patch 9): Unified Signal Routing
         switch (msg.type) {
+            case 'flow':
+                if (msg.status === 'ready') flowPulseLastTsRef.current = Date.now();
+                break;
+            case 'gpe-pull':
+                if (msg.bytesCleared) {
+                    gpeInFlightBytesRef.current = Math.max(0, gpeInFlightBytesRef.current - msg.bytesCleared);
+                }
+                break;
             case 'metadata':
                 if (modeRef.current === 'receive') {
                     // v02.1.81: Metadata Deduplication (No-OR Guard)
@@ -1245,6 +1258,15 @@ ${capturedLogsRef.current.join('\n')}
                     if (pc && (pc.iceConnectionState === 'new' || pc.iceConnectionState === 'checking')) {
                         logDebug(`⚠️ Pipe-${pipeIdx} Stuck in ${pc.iceConnectionState}. Escalating to Relay Fallback...`);
                         pc.close();
+                        
+                        // v02.2.29: Three-Strikes Pipe Retirement
+                        // If we are already generational (Gen 2+), skip and retire the pipe.
+                        if (pipeGenerationRef.current[pipeIdx] > 2) {
+                            logDebug(`🛡️ Pipe-${pipeIdx} Retired [3-Strikes FAIL]`);
+                            diagnosticMetricsRef.current.pistonStats[pipeIdx] = { speed: 0, health: 'red' };
+                            return;
+                        }
+
                         // v02.2.28: Signaling Storm Debounce
                         // Stagger the relay escalation to prevent crashing the signaling thread or the mobile CPU.
                         const staggeredDelay = (pipeIdx % 4) * 500;
@@ -1300,12 +1322,24 @@ ${capturedLogsRef.current.join('\n')}
 
             peer.oniceconnectionstatechange = () => {
                 logDebug(`Pipe-${pipeIdx} ICE State: ${peer.iceConnectionState}`);
-                // v02.2.26: STOP the resuscitator if we are connected or finished
+                // v02.2.28: STOP the resuscitator if we are connected or finished
                 if (peer.iceConnectionState === 'connected' || peer.iceConnectionState === 'completed') {
                     if (resuscitatorTimersRef.current[pipeIdx]) {
                         clearTimeout(resuscitatorTimersRef.current[pipeIdx]);
                         resuscitatorTimersRef.current[pipeIdx] = null;
                         logDebug(`✅ Pipe-${pipeIdx} Resuscitator Stand-down.`);
+                        
+                        // v02.2.29: Piston-Gated Metadata Catch-up (Async)
+                        // Send metadata ONCE per successful pipe open to minimize noise.
+                        if (isSender && lastMetadataRef.current) {
+                            setTimeout(() => {
+                                const openChannels = Array.from({ length: CHANNELS_PER_PIPE }).map((_, i) => dataChannelsRef.current[(pipeIdx * CHANNELS_PER_PIPE) + i]).filter(dc => dc && dc.readyState === 'open');
+                                if (openChannels[0]) {
+                                    logDebug(`--- [QUASAR] Sync Metadata snapshot for Pipe-${pipeIdx} ---`);
+                                    openChannels[0].send(JSON.stringify(lastMetadataRef.current));
+                                }
+                            }, 50);
+                        }
                     }
                 }
                 
@@ -1496,9 +1530,8 @@ ${capturedLogsRef.current.join('\n')}
             totalSentBytesRef.current = 0;
             setCurrentFileIndex(i);
             
-            // v02.0.22 Pipeline: Send Metadata then immediately stream chunks
-            logDebug(`Sender: Sending Pipelined Metadata for ${file.name}`);
-            sendControlMsg({
+            // v02.2.29: Create Immutable Snapshot for late-joiners
+            const meta = {
                 type: 'metadata',
                 name: file.name,
                 size: file.size,
@@ -1507,7 +1540,12 @@ ${capturedLogsRef.current.join('\n')}
                 totalFiles: currentFiles.length,
                 isParallel: true,
                 parallelChannels: dataChannelsRef.current.length
-            });
+            };
+            lastMetadataRef.current = meta;
+
+            // v02.0.22 Pipeline: Send Metadata then immediately stream chunks
+            logDebug(`Sender: Sending Pipelined Metadata for ${file.name}`);
+            sendControlMsg(meta);
 
             await transferFileP2PParallel(currentFiles[i], i);
             if (!isActive.current && statusRef.current !== 'done' && statusRef.current !== 'done-waiting') {
@@ -1790,6 +1828,31 @@ ${capturedLogsRef.current.join('\n')}
 
                 const dc = selectedDC;
                 if (dc && dc.readyState === 'open') {
+                    // Backpressure Logic (v02.2.29: Flow Pulse Monitoring)
+                    const timeSinceLastPulse = Date.now() - flowPulseLastTsRef.current;
+                    if (timeSinceLastPulse > 2000 && dynamicChunkSizeRef.current > 16384) {
+                        dynamicChunkSizeRef.current = Math.floor(dynamicChunkSizeRef.current / 2);
+                        logDebug(`📡 BACKPRESSURE: No flow pulse for 2s. Throttling MTU to ${Math.round(dynamicChunkSizeRef.current/1024)}KB`);
+                        flowPulseLastTsRef.current = Date.now(); // Reset to avoid constant halving
+                    }
+
+                    const canSend = (gpeInFlightBytesRef.current < BDP_GPE_GATE);
+                    
+                    // v02.2.29: GPE Deadlock Watchdog (Stuck-Gate Buster)
+                    if (!canSend && !gpeBlockedSinceRef.current) gpeBlockedSinceRef.current = Date.now();
+                    if (canSend) gpeBlockedSinceRef.current = null;
+                    
+                    if (gpeBlockedSinceRef.current && (Date.now() - gpeBlockedSinceRef.current > 3000)) {
+                        logDebug("🚨 GPE DEADLOCK: Gate stuck for 3s. Auto-Resetting in-flight counter.");
+                        gpeInFlightBytesRef.current = 0;
+                        gpeBlockedSinceRef.current = null;
+                    }
+
+                    if (!canSend) {
+                        await new Promise(resolve => setTimeout(resolve, 0)); // v02.2.29: Browser-safe yielding
+                        continue;
+                    }
+
                     // v02.2.18: NACK Throttle & Exponential Backoff (Sender Side)
                     if (nackQueueRef.current.size > 0) {
                         const nextNack = nackQueueRef.current.entries().next().value;
@@ -1867,14 +1930,16 @@ ${capturedLogsRef.current.join('\n')}
                         chunksSentSinceScaleRef.current = 0;
                         const rtt = Math.min(...rttBufferRef.current.filter(r => r > 0), 1.0);
                         const speed = currentMBpsRef.current || 0;
-                        const currentLimit = config.mtuLimit;
+                        
+                        // v02.2.29: Mobile MTU Survival Floor (Hard-Cap 32KB to survive carrier buffers)
+                        const currentLimit = isMobileDevice() ? Math.min(32768, config.mtuLimit) : config.mtuLimit;
 
                         if (rtt < 0.200 && speed > 1.0 && dynamicChunkSizeRef.current < currentLimit) {
                             dynamicChunkSizeRef.current = Math.min(currentLimit, dynamicChunkSizeRef.current + 4 * 1024);
                             logDebug(`🚀 TACHYON BOOST: Scaling MTU to ${Math.round(dynamicChunkSizeRef.current/1024)}KB (${isM2M ? 'M2M GOLD' : 'NITRO GOLD'})`);
-                        } else if (rtt > 0.600 && dynamicChunkSizeRef.current > 32 * 1024) {
-                            dynamicChunkSizeRef.current = 32 * 1024;
-                            logDebug(`📉 JITTER BACKOFF: Restoring Survival MTU (32KB)`);
+                        } else if ((rtt > 0.600 || speed < 0.5) && dynamicChunkSizeRef.current > 16384) {
+                            dynamicChunkSizeRef.current = Math.max(16384, dynamicChunkSizeRef.current - 8 * 1024);
+                            logDebug(`📉 JITTER BACKOFF: Restoring Survival MTU (${Math.round(dynamicChunkSizeRef.current/1024)}KB)`);
                         }
                     }
                     
