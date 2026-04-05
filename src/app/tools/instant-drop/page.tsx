@@ -33,7 +33,7 @@ import { PaywallModal } from "@/components/layout/PaywallModal";
 // v02.2.23 (Tachyon Omega) - Structural Alignment & Physical Sync
 // v02.2.28 (Tachyon Omega - Piston Core) - Final Stability & UI Fix
 // v02.2.29 (Tachyon Omega - Quasar) - Stabilization Hub
-const VERSION = "v02.2.38 (Tachyon Omega - Pulse Wave)";
+const VERSION = "v02.2.39 (Tachyon Omega - Tachyon Glue)";
 function getEngineConfig(engine: 'M2M' | 'HYBRID' | 'NITRO') {
     if (engine === 'M2M') {
         return {
@@ -1136,6 +1136,14 @@ ${capturedLogsRef.current.join('\n')}
                             }));
                         }
                     }
+                    
+                    // v02.2.39: Re-trigger offer if stuck in waiting for 10s
+                    const timeSinceStart = Date.now() - (startTimeRef.current || 0);
+                    if (statusRef.current === 'waiting' && timeSinceStart > 10000 && timeSinceStart % 5000 < 2000) {
+                        logDebug("🛰️ Tachyon Glue: Re-broadcasting sender availability...");
+                        ws.send(JSON.stringify({ type: 'sender-ready', roomId: finalRoomId, isMobile: true }));
+                    }
+
                     // v02.2.10.7: Visual Pulse logic - trigger a minor UI update to prevent backgrounding
                     if (statusRef.current === 'transferring') setProgress(p => p);
                 }, 2000); // 2s for extreme resilience
@@ -2714,6 +2722,11 @@ Buffer-Bloat Grade: ${d.bufferBloatGrade}
                         >
                             {mode === 'send' ? 'SENDER' : mode === 'receive' ? 'RECEIVER' : 'WAITING'}
                         </button>
+                        
+                        {/* v02.2.39: Peer Visibility */}
+                        <span className="ml-2 px-1 py-[1px] bg-slate-800 text-[8px] rounded-sm text-slate-400 font-mono">
+                            ROOM: {roomId || '...'}
+                        </span>
                         
                         <span className="ml-2 px-1 py-[1px] bg-indigo-500 text-[8px] rounded-sm text-white animate-pulse">Ω-PISTON-CORE</span>
                         NITRO PULSE
