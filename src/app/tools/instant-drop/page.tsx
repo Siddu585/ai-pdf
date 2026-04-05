@@ -33,7 +33,7 @@ import { PaywallModal } from "@/components/layout/PaywallModal";
 // v02.2.23 (Tachyon Omega) - Structural Alignment & Physical Sync
 // v02.2.28 (Tachyon Omega - Piston Core) - Final Stability & UI Fix
 // v02.2.29 (Tachyon Omega - Quasar) - Stabilization Hub
-const VERSION = "v02.2.32 (Tachyon Omega - Neon Sync)";
+const VERSION = "v02.2.33 (Tachyon Omega - Universal QR)";
 function getEngineConfig(engine: 'M2M' | 'HYBRID' | 'NITRO') {
     if (engine === 'M2M') {
         return {
@@ -2960,9 +2960,34 @@ Buffer-Bloat Grade: ${d.bufferBloatGrade}
                                     </p>
 
                                     {status === 'connecting' && (
-                                        <div className="flex items-center justify-center text-muted-foreground bg-secondary/10 p-4 rounded-xl">
-                                            <Loader2 className="w-5 h-5 animate-spin mr-2" />
-                                            Connecting to sender...
+                                        <div className="flex flex-col items-center gap-6">
+                                            <div className="flex items-center justify-center text-muted-foreground bg-secondary/10 p-4 rounded-xl w-full">
+                                                <Loader2 className="w-5 h-5 animate-spin mr-2" />
+                                                Connecting to sender...
+                                            </div>
+                                            
+                                            {/* v02.2.33: Universal QR for Receiver Onboarding */}
+                                            <div className="bg-background rounded-2xl p-6 shadow-sm inline-block mx-auto border border-border">
+                                                <QRCodeSVG
+                                                    value={`${typeof window !== 'undefined' ? window.location.origin : ''}/tools/instant-drop?room=${roomId}`}
+                                                    size={180}
+                                                    level="H"
+                                                    includeMargin={true}
+                                                />
+                                                <p className="text-[10px] text-muted-foreground mt-4 font-bold uppercase tracking-widest leading-relaxed">
+                                                    Scan to join this room<br/>Room ID: {roomId}
+                                                </p>
+                                            </div>
+                                            
+                                            <Button 
+                                                variant="outline" 
+                                                size="sm" 
+                                                className="text-indigo-600 border-indigo-200 hover:bg-indigo-50 gap-2"
+                                                onClick={() => joinRoom(roomId)}
+                                            >
+                                                <RefreshCcw className="w-4 h-4" />
+                                                Re-join Signaling Room
+                                            </Button>
                                         </div>
                                     )}
 
