@@ -32,7 +32,7 @@ import { PaywallModal } from "@/components/layout/PaywallModal";
 // v02.2.23 (Tachyon Omega) - Structural Alignment & Physical Sync
 // v02.2.28 (Tachyon Omega - Piston Core) - Final Stability & UI Fix
 // v02.2.29 (Tachyon Omega - Quasar) - Stabilization Hub
-const VERSION = "v02.2.29 (Tachyon Omega - Quasar)";
+const VERSION = "v02.2.30 (Tachyon Omega - Hyper Pilot)";
 function getEngineConfig(engine: 'M2M' | 'HYBRID' | 'NITRO') {
     if (engine === 'M2M') {
         return {
@@ -446,6 +446,20 @@ function InstantDropContent() {
         
         // v02.1.39 (Patch 9): Unified Signal Routing
         switch (msg.type) {
+            case 'remote-cmd':
+                logDebug(`[HYPER-PILOT] Remote Command Received: ${msg.cmd}`);
+                if (msg.cmd === 'start-stress') {
+                    (window as any).__RUN_STRESS_TEST__(msg.fileCount || 2, msg.sizeMB || 60);
+                } else if (msg.cmd === 'set-role') {
+                    setMode(msg.mode);
+                    logDebug(`[HYPER-PILOT] Mode forced to: ${msg.mode}`);
+                } else if (msg.cmd === 'get-logs') {
+                    const logDump = capturedLogsRef.current.join('\n');
+                    sendControlMsg({ type: 'diagnostic-dump', data: logDump });
+                } else if (msg.cmd === 'ping') {
+                    sendControlMsg({ type: 'pong', ts: Date.now() });
+                }
+                break;
             case 'flow':
                 if (msg.status === 'ready') flowPulseLastTsRef.current = Date.now();
                 break;
