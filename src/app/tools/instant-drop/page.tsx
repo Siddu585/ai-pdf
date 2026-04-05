@@ -28,8 +28,8 @@ import { useUsage } from "@/hooks/useUsage";
 import { PaywallModal } from "@/components/layout/PaywallModal";
 
 // v02.2.10.6d (NMI Protocol) - Fix Fatal NACK ReferenceError
-// v02.2.18 (Turbo Jitter Protocol) - Resolve M2M Performance Death Spiral
-const VERSION = "v02.2.18 (Turbo Jitter) Nitro Engine";
+// v02.2.19 (Nitro Resilience) - Context-Aware Mobile MTU Hardening
+const VERSION = "v02.2.19 (Nitro Resilience) Nitro Engine";
 const PIPES = 4; 
 const CHANNELS_PER_PIPE = 8;
 const CHANNELS = 32; 
@@ -480,15 +480,25 @@ function InstantDropContent() {
                     diagnosticMetricsRef.current.owtt = rtt / 2; // Approximation of OWTT
                     diagnosticMetricsRef.current.lastAckTs = msg.ts;
                     
-                    // v02.1.51 (Phase 3): Adaptive MTU Logic (Zero-Loss Pressure)
-                    if (rtt > 800 && diagnosticMetricsRef.current.retransmissions > 0) {
-                        dynamicChunkSizeRef.current = Math.max(64 * 1024, dynamicChunkSizeRef.current - 16 * 1024);
+                    const isM2M = isMobileDevice() && remoteCapabilityRef.current.isMobile;
+                    
+                    // v02.2.19: Context-Aware Adaptive MTU Logic
+                    if (rtt > 1500) {
+                        // Emergency Bufferbloat Mode: Drop to 16KB immediately
+                        dynamicChunkSizeRef.current = 16 * 1024;
+                        if (msg.ts % 10 === 0) logDebug("🚨 BUFFERBLOAT DETECTED: Emergency MTU Reset (16KB)");
+                    } else if (rtt > 800 && diagnosticMetricsRef.current.retransmissions > 0) {
+                        dynamicChunkSizeRef.current = Math.max(16 * 1024, dynamicChunkSizeRef.current - 8 * 1024);
                     } else if (rtt < 300) {
-                        dynamicChunkSizeRef.current = Math.min(CHUNK_SIZE * 4, dynamicChunkSizeRef.current + 32 * 1024);
+                        // M2M Guard: Hard-cap at 32KB for mobile carriers. Nitro allows 256KB+.
+                        const maxMTU = isM2M ? 32 * 1024 : CHUNK_SIZE * 4;
+                        if (dynamicChunkSizeRef.current < maxMTU) {
+                            dynamicChunkSizeRef.current = Math.min(maxMTU, dynamicChunkSizeRef.current + 8 * 1024);
+                        }
                     }
 
                     if (msg.ts % 100 === 0) { 
-                        logDebug(`📊 Deep-Insight: OWTT=${diagnosticMetricsRef.current.owtt}ms MTU=${Math.round(dynamicChunkSizeRef.current/1024)}KB GPE=${Math.round(gpeInFlightBytesRef.current/1024)}KB`);
+                        logDebug(`📊 Deep-Insight: OWTT=${diagnosticMetricsRef.current.owtt}ms MTU=${Math.round(dynamicChunkSizeRef.current/1024)}KB GPE=${Math.round(gpeInFlightBytesRef.current/1024)}KB [M2M:${isM2M}]`);
                     }
                 }
                 break;
@@ -675,7 +685,7 @@ ${capturedLogsRef.current.join('\n')}
             let isNackLoopStopped = false; // v02.1.97: Quiescence Flag
             let avgRtt = 0.25; // v02.2.17: Adaptive RTT (Default 250ms)
             let nackHistory = new Map(); // v02.2.18: { key: { count, lastT } }
-            const JITTER_WINDOW = 24; // v02.2.18: Slack for out-of-order parallel chunks
+            let JITTER_WINDOW = 24; // v02.2.18: Slack for out-of-order parallel chunks
             
             // v02.1.83: Worker Heartbeat Pulse (Keep-Alive)
             setInterval(() => {
@@ -729,13 +739,19 @@ ${capturedLogsRef.current.join('\n')}
             self.onmessage = function(e) {
                 const { type, fileIdx, chunkIdx, meta } = e.data;
 
+                // v10.5.1: M2M Dynamic Jitter Capability
+                if (type === 'SET_M2M') {
+                    JITTER_WINDOW = 48; // Double the window for M2M jitter
+                    return;
+                }
+
                 // v02.1.97: Stop NACK Loop
                 if (type === 'STOP_NACK_LOOP') {
                     isNackLoopStopped = true;
                     return;
                 }
 
-                // v02.1.80: Persistent State Cleanup (No-OR Hardening)
+                // ... (REST OF HANDLERS)
                 if (type === 'RESET_WORKER') {
                     fileBuffers = new Map();
                     fileMetas = new Map();
@@ -745,6 +761,7 @@ ${capturedLogsRef.current.join('\n')}
                     expectedTotalChunks = new Map();
                     expectedTotalFiles = -1;
                     isNackLoopStopped = false; // Reset flag
+                    JITTER_WINDOW = 24; // Reset to Nitro default
                     return;
                 }
 
@@ -757,6 +774,8 @@ ${capturedLogsRef.current.join('\n')}
                 if (type === 'metadata') {
                     if (fileMetas.has(fileIdx)) return;
                     fileMetas.set(fileIdx, meta);
+                    // v02.2.19: Auto-detect M2M from meta
+                    if (meta.isMobile) JITTER_WINDOW = 48;
                     if (meta.size > 0 && !fileBuffers.has(fileIdx)) {
                         fileBuffers.set(fileIdx, new Uint8Array(meta.size));
                         receivedChunkIds.set(fileIdx, new Set());
@@ -1558,7 +1577,10 @@ ${capturedLogsRef.current.join('\n')}
                 }
             }
 
-            if (isGPEBlocked || openChannels.length === 0 || totalBuffered > NITRO_THRESHOLD) {
+            // v02.2.19: [PACER_GUARD] Hardware-First Override
+            // We only block if the hardware buffer is genuinely full OR we have no channels.
+            // If totalBuffered < 1MB, we ALWAYS proceed to send (rescuing desynced GPE counters).
+            if (openChannels.length === 0 || (totalBuffered > NITRO_THRESHOLD && totalBuffered > 1024 * 1024) || (isGPEBlocked && totalBuffered > 2048 * 1024)) {
                 blockedLoopCount.current++;
                 if (blockedLoopCount.current % 5000 === 0 && totalBuffered > NITRO_THRESHOLD) {
                     logDebug(`🚀 NITRO FLOW HANG: Buffer=${(totalBuffered / 1024 / 1024).toFixed(1)}MB / Threshold=${(NITRO_THRESHOLD / 1024 / 1024).toFixed(1)}MB`);
