@@ -30,8 +30,8 @@ import { PaywallModal } from "@/components/layout/PaywallModal";
 // v02.2.10.6d (NMI Protocol) - Fix Fatal NACK ReferenceError
 // v02.2.21 (Tachyon Overdrive) - M2M vs L2M Engine Differentiation
 // v02.2.23 (Tachyon Omega) - Structural Alignment & Physical Sync
-// v02.2.25/27 (Tachyon Omega - Recovery Plus) - Metadata Sync & Finality Fix
-const VERSION = "v02.2.27 (Tachyon Omega - Recovery Plus)";
+// v02.2.28 (Tachyon Omega - Piston Core) - Final Stability & UI Fix
+const VERSION = "v02.2.28 (Tachyon Omega - Piston Core)";
 function getEngineConfig(engine: 'M2M' | 'HYBRID' | 'NITRO') {
     if (engine === 'M2M') {
         return {
@@ -132,6 +132,22 @@ function InstantDropContent() {
     const [isCompressing, setIsCompressing] = useState(false);
     const [transferSpeed, setTransferSpeed] = useState<number | null>(null); // MB/s
     const [wsConnected, setWsConnected] = useState(false); // v02.1.72: Signal Pulse
+
+    // v02.2.28: Background Persistence Heartbeat (Android Throttling Fix)
+    // requestAnimationFrame is prioritized by mobile OS even in some background states.
+    // By chaining it with a dummy heartbeat, we keep the JS event loop 'warm' during transfers.
+    useEffect(() => {
+        let frame: number;
+        const pulse = () => {
+            if (statusRef.current === 'transferring') {
+                // Dummy work to keep loop active
+                const _ = Date.now();
+            }
+            frame = requestAnimationFrame(pulse);
+        };
+        frame = requestAnimationFrame(pulse);
+        return () => cancelAnimationFrame(frame);
+    }, []);
 
     const wsRef = useRef<WebSocket | null>(null);
     const capturedLogsRef = useRef<string[]>([]);
@@ -1229,7 +1245,14 @@ ${capturedLogsRef.current.join('\n')}
                     if (pc && (pc.iceConnectionState === 'new' || pc.iceConnectionState === 'checking')) {
                         logDebug(`⚠️ Pipe-${pipeIdx} Stuck in ${pc.iceConnectionState}. Escalating to Relay Fallback...`);
                         pc.close();
-                        setupWebRTC(ws, isSender, pipeIdx, true);
+                        // v02.2.28: Signaling Storm Debounce
+                        // Stagger the relay escalation to prevent crashing the signaling thread or the mobile CPU.
+                        const staggeredDelay = (pipeIdx % 4) * 500;
+                        setTimeout(() => {
+                            if (ws.readyState === WebSocket.OPEN) {
+                                setupWebRTC(ws, isSender, pipeIdx, true);
+                            }
+                        }, staggeredDelay);
                     }
                 }, escalationTimeout);
             }
@@ -1838,13 +1861,12 @@ ${capturedLogsRef.current.join('\n')}
 
                     const { data: chunkData, seq: currentSeq, offset: currentOffset } = pendingChunk;
 
-                    // Scaling Logic
+                    // Scaling Logic (v02.2.28: Isolationist - driven by fastest pipe only)
                     chunksSentSinceScaleRef.current++;
                     if (chunksSentSinceScaleRef.current > 50) {
                         chunksSentSinceScaleRef.current = 0;
-                        const rtt = avgRTTRef.current || 0;
+                        const rtt = Math.min(...rttBufferRef.current.filter(r => r > 0), 1.0);
                         const speed = currentMBpsRef.current || 0;
-                        // v02.2.21: Survival Scaling Cap (Harness-Verified)
                         const currentLimit = config.mtuLimit;
 
                         if (rtt < 0.200 && speed > 1.0 && dynamicChunkSizeRef.current < currentLimit) {
@@ -2452,7 +2474,7 @@ Buffer-Bloat Grade: ${d.bufferBloatGrade}
         const metrics = { ...diagnosticMetricsRef.current };
         const transportColor = metrics.transportType === 'relay' ? 'text-amber-400' : 'text-green-400';
         
-        const isM2MDetected = (isMobileDevice() || engineMode === 'M2M') && metrics.pistonStats.length > 4;
+        const show12Grid = isMobileDevice() || engineMode === 'M2M';
         
         if (status !== 'transferring' && status !== 'done' && status !== 'done-waiting') return null;
 
@@ -2465,7 +2487,7 @@ Buffer-Bloat Grade: ${d.bufferBloatGrade}
                     <div className="flex items-center justify-between mb-4">
                         <div className="flex items-center gap-2">
                             <div className="w-2 h-2 rounded-full bg-indigo-500 animate-ping" />
-                            <span className="text-[10px] font-black text-indigo-400 uppercase tracking-widest">Omega Engine v02.2.27</span>
+                            <span className="text-[10px] font-black text-indigo-400 uppercase tracking-widest">Omega Engine v02.2.28</span>
                         </div>
                         <button onClick={() => setIsVisible(false)} className="text-white/40 hover:text-white transition-colors">
                             <X className="w-4 h-4" />
@@ -2473,12 +2495,9 @@ Buffer-Bloat Grade: ${d.bufferBloatGrade}
                     </div>
 
                     <div className="grid grid-cols-4 gap-2 mb-4">
-                        {metrics.pistonStats.slice(0, (isM2MDetected ? 12 : 4)).map((p: any, i: number) => {
-                            // v02.2.22: Only show active pipes for the current engine
-                            const pipeIdx = i;
-                            const isPistonActive = i < metrics.pistonStats.length;
-                            if (!isPistonActive) return null;
-
+                        {Array.from({ length: (show12Grid ? 12 : 4) }).map((_, i) => {
+                            const p = metrics.pistonStats[i] || { health: 'red', speed: 0 };
+                            // v02.2.28: Force render all slots in Piston Core
                             return (
                                 <div key={i} className="flex flex-col items-center">
                                     <div className={`w-full h-16 rounded-lg border border-white/5 relative overflow-hidden flex flex-wrap gap-[1px] p-1 bg-black/20`}>
@@ -2486,12 +2505,12 @@ Buffer-Bloat Grade: ${d.bufferBloatGrade}
                                         {Array.from({ length: 8 }).map((_: any, subIdx: number) => {
                                             const dcIdx = (i * 8) + subIdx;
                                             const dc = dataChannelsRef.current[dcIdx];
-                                            const isActive = dc && dc.readyState === 'open';
+                                            const isChannelActive = dc && dc.readyState === 'open';
                                             return (
                                                 <div 
                                                     key={subIdx}
                                                     className={`w-[calc(50%-1px)] h-[calc(25%-1px)] rounded-[1px] transition-all duration-300 ${
-                                                        !isActive ? 'bg-white/5' : 
+                                                        !isChannelActive ? 'bg-white/5' : 
                                                         p.health === 'red' ? 'bg-red-500/80 animate-pulse' :
                                                         p.health === 'amber' ? 'bg-amber-500/80 animate-pulse' :
                                                         'bg-green-500/80 shadow-[0_0_5px_rgba(34,197,94,0.5)]'
@@ -2517,16 +2536,16 @@ Buffer-Bloat Grade: ${d.bufferBloatGrade}
                         </div>
                         <div className="flex justify-between items-end">
                             <span className="text-[10px] text-white/60">Symmetry Pulse</span>
-                            <span className={`text-[10px] font-bold ${metrics.workerLag > 50 ? 'text-red-400' : 'text-indigo-400'}`}>{metrics.workerLag}ms</span>
+                            <span className={`text-[10px] font-bold ${metrics.eventLoopLag > 50 ? 'text-red-400' : 'text-indigo-400'}`}>{metrics.eventLoopLag}ms</span>
                         </div>
                         <div className="flex justify-between items-end">
                             <span className="text-[10px] text-white/60">BDP Cushion</span>
-                            <span className="text-[10px] font-bold text-indigo-400">{(diagnosticMetricsRef.current.packetsSent * 64 / 1024).toFixed(0)}KB</span>
+                            <span className="text-[10px] font-bold text-indigo-400">{(metrics.packetsSent * 64 / 1024).toFixed(0)}KB</span>
                         </div>
                         <div className="flex justify-between items-end">
                             <span className="text-[10px] text-white/60">Packet MTU</span>
                             <span className={`text-[10px] font-bold ${dynamicChunkSizeRef.current > 60000 ? 'text-indigo-400' : 'text-emerald-400'}`}>
-                                {Math.round(dynamicChunkSizeRef.current / 1024)}KB (SAFE FLOOR)
+                                {Math.round(dynamicChunkSizeRef.current / 1024)}KB (P-CORE)
                             </span>
                         </div>
                     </div>
@@ -2556,7 +2575,7 @@ Buffer-Bloat Grade: ${d.bufferBloatGrade}
                     <p className="text-xs text-indigo-600 font-black tracking-[0.2em] uppercase mb-2 flex items-center justify-center gap-2">
                         <span className={`w-2 h-2 rounded-full ${wsConnected ? 'bg-green-500 animate-pulse' : 'bg-red-500'}`} />
                         {VERSION} 
-                        <span className="ml-2 px-1 py-[1px] bg-indigo-500 text-[8px] rounded-sm text-white animate-pulse">Ω-RECOVERY-PLUS</span>
+                        <span className="ml-2 px-1 py-[1px] bg-indigo-500 text-[8px] rounded-sm text-white animate-pulse">Ω-PISTON-CORE</span>
                         NITRO PULSE
                     </p>
                     <p className="text-lg text-muted-foreground max-w-2xl mx-auto">
