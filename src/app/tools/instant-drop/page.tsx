@@ -33,7 +33,7 @@ import { PaywallModal } from "@/components/layout/PaywallModal";
 // v02.2.23 (Tachyon Omega) - Structural Alignment & Physical Sync
 // v02.2.28 (Tachyon Omega - Piston Core) - Final Stability & UI Fix
 // v02.2.29 (Tachyon Omega - Quasar) - Stabilization Hub
-const VERSION = "v02.2.33 (Tachyon Omega - Universal QR)";
+const VERSION = "v02.2.34 (Tachyon Omega - Signaling Fix)";
 function getEngineConfig(engine: 'M2M' | 'HYBRID' | 'NITRO') {
     if (engine === 'M2M') {
         return {
@@ -66,9 +66,9 @@ const isMobileDevice = () => {
     return /Android|webOS|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini|Mobile|Silk/i.test(navigator.userAgent);
 };
 const getBackendUrls = () => {
-    // v02.2.32: Fixed Absolute Production Signaling (Resolves 404/Split-Brain)
-    const http = "https://ai-pdf-backend.onrender.com";
-    const ws = "wss://ai-pdf-backend.onrender.com";
+    // v02.2.34: Fixed Absolute Production Signaling (Resolves 404/Split-Brain)
+    const http = "https://ai-pdfai-pdf-backend.onrender.com";
+    const ws = "wss://ai-pdfai-pdf-backend.onrender.com";
     return { http, ws };
 };
 
