@@ -33,7 +33,7 @@ import { PaywallModal } from "@/components/layout/PaywallModal";
 // v02.2.23 (Tachyon Omega) - Structural Alignment & Physical Sync
 // v02.2.28 (Tachyon Omega - Piston Core) - Final Stability & UI Fix
 // v02.2.29 (Tachyon Omega - Quasar) - Stabilization Hub
-const VERSION = "v02.2.34 (Tachyon Omega - Signaling Fix)";
+const VERSION = "v02.2.35 (Tachyon Omega - Room Normalization)";
 function getEngineConfig(engine: 'M2M' | 'HYBRID' | 'NITRO') {
     if (engine === 'M2M') {
         return {
@@ -1075,7 +1075,8 @@ ${capturedLogsRef.current.join('\n')}
         setStatus('waiting');
 
         // v02.2.31: Room Persistence Fix (Prevents desync during remote testing)
-        const finalRoomId = roomRef.current || Math.floor(100000 + Math.random() * 900000).toString();
+        // v02.2.35: Force Uppercase Normalization (Case-Insensitive Signaling)
+        const finalRoomId = (roomRef.current || Math.floor(100000 + Math.random() * 900000).toString()).toUpperCase().trim();
         setRoomId(finalRoomId);
         roomRef.current = finalRoomId;
 
@@ -2081,10 +2082,11 @@ ${capturedLogsRef.current.join('\n')}
         try { await fetch(`${BACKEND_HTTP_URL}/api/health`).catch(() => {}); } catch (e) {}
 
         let attempts = 0;
+        const normalizedRoom = roomName.toUpperCase().trim();
         const connect = () => {
             attempts++;
             logDebug(`Connecting to signaling server (Attempt ${attempts}/3)...`);
-            const ws = new WebSocket(`${BACKEND_WS_URL}/ws/drop/${roomName}/receiver`);
+            const ws = new WebSocket(`${BACKEND_WS_URL}/ws/drop/${normalizedRoom}/receiver`);
             wsRef.current = ws;
             
             ws.onerror = () => logDebug(`Receiver WS Connection Error (Attempt ${attempts})`);
@@ -2106,8 +2108,15 @@ ${capturedLogsRef.current.join('\n')}
                     type: 'receiver-ready', 
                     isMobile: isMobileDevice() // v02.2.17 Capability Exchange
                 }));
+                // v02.2.35: Continuous Discovery Pulse (Receiver-Side)
                 const heartbeat = setInterval(() => {
-                    if (ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify({ type: 'ping' }));
+                    if (ws.readyState === WebSocket.OPEN) {
+                        ws.send(JSON.stringify({ type: 'ping' }));
+                        // Re-announce presence every 5s if still connecting
+                        if (statusRef.current === 'connecting') {
+                            ws.send(JSON.stringify({ type: 'receiver-ready', isMobile: isMobileDevice() }));
+                        }
+                    }
                 }, 5000);
                 heartbeatIntervalRef.current = heartbeat;
             };
