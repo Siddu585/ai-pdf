@@ -33,7 +33,7 @@ import { PaywallModal } from "@/components/layout/PaywallModal";
 // v02.2.23 (Tachyon Omega) - Structural Alignment & Physical Sync
 // v02.2.28 (Tachyon Omega - Piston Core) - Final Stability & UI Fix
 // v02.2.29 (Tachyon Omega - Quasar) - Stabilization Hub
-const VERSION = "v02.2.36 (Tachyon Omega - Remote RoleSwap)";
+const VERSION = "v02.2.37 (Tachyon Omega - Multi-Sync)";
 function getEngineConfig(engine: 'M2M' | 'HYBRID' | 'NITRO') {
     if (engine === 'M2M') {
         return {
@@ -2671,19 +2671,30 @@ Buffer-Bloat Grade: ${d.bufferBloatGrade}
                     </div>
                     <h1 className="text-4xl md:text-5xl font-bold text-foreground mb-4">Turbo Drop</h1>
                     <p className="text-xs text-indigo-600 font-black tracking-[0.2em] uppercase mb-2 flex items-center justify-center gap-2">
-                        <span className={`w-2 h-2 rounded-full ${wsConnected ? 'bg-green-500 animate-pulse' : 'bg-red-500'}`} />
+                        <button 
+                            className={`w-2 h-2 rounded-full ${wsConnected ? 'bg-green-500 animate-pulse' : 'bg-red-500'} cursor-pointer`}
+                            onClick={() => { logDebug("Signaling Pulse Triggered"); sendControlMsg({ type: 'heartbeat', ts: Date.now() }); }}
+                            title="Signal Status - Click to Pulse"
+                        />
                         {VERSION} 
                         
-                        {/* v02.2.36: Mode HUD */}
-                        <span className={`ml-2 px-2 py-0.5 rounded-sm text-[8px] font-black uppercase tracking-widest border ${
-                            mode === 'send' 
-                                ? 'bg-emerald-500 text-white border-emerald-400' 
-                                : mode === 'receive' 
-                                    ? 'bg-amber-500 text-white border-amber-400'
-                                    : 'bg-slate-500 text-white border-slate-400'
-                        }`}>
+                        {/* v02.2.37: Interactive Mode HUD */}
+                        <button 
+                            className={`ml-2 px-2 py-0.5 rounded-sm text-[8px] font-black uppercase tracking-widest border transition-all hover:scale-105 active:scale-95 ${
+                                mode === 'send' 
+                                    ? 'bg-emerald-500 text-white border-emerald-400 hover:bg-emerald-600' 
+                                    : mode === 'receive' 
+                                        ? 'bg-amber-500 text-white border-amber-400 hover:bg-amber-600'
+                                        : 'bg-slate-500 text-white border-slate-400'
+                            }`}
+                            onClick={() => {
+                                logDebug(`HUD Click: Re-joining room ${roomId}`);
+                                if (mode === 'receive') joinRoom(roomId);
+                                else if (mode === 'send') startSending(files);
+                            }}
+                        >
                             {mode === 'send' ? 'SENDER' : mode === 'receive' ? 'RECEIVER' : 'WAITING'}
-                        </span>
+                        </button>
                         
                         <span className="ml-2 px-1 py-[1px] bg-indigo-500 text-[8px] rounded-sm text-white animate-pulse">Ω-PISTON-CORE</span>
                         NITRO PULSE
@@ -2995,7 +3006,26 @@ Buffer-Bloat Grade: ${d.bufferBloatGrade}
                                         <div className="flex flex-col items-center gap-6">
                                             <div className="flex items-center justify-center text-muted-foreground bg-secondary/10 p-4 rounded-xl w-full">
                                                 <Loader2 className="w-5 h-5 animate-spin mr-2" />
-                                                Connecting to sender...
+                                                Searching for peers in Room: {roomId}...
+                                            </div>
+
+                                            {/* v02.2.37: Manual Take Charge Override */}
+                                            <div className="border-2 border-indigo-500/20 bg-indigo-500/5 p-6 rounded-2xl w-full space-y-4">
+                                                <p className="text-xs font-bold text-indigo-600 uppercase tracking-widest">No Sender found?</p>
+                                                <Button 
+                                                    className="w-full bg-indigo-600 hover:bg-indigo-700 text-white font-bold py-6 gap-2 shadow-lg"
+                                                    onClick={() => {
+                                                        logDebug("Manual Override: Becoming SENDER");
+                                                        setMode('send');
+                                                        setStatus('disconnected');
+                                                        setTimeout(() => {
+                                                            (window as any).__RUN_STRESS_TEST__(1, 60);
+                                                        }, 500);
+                                                    }}
+                                                >
+                                                    <Zap className="w-5 h-5" />
+                                                    I am the Sender - Start Now
+                                                </Button>
                                             </div>
                                             
                                             {/* v02.2.33: Universal QR for Receiver Onboarding */}
