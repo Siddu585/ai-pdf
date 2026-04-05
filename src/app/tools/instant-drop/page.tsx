@@ -29,7 +29,8 @@ import { PaywallModal } from "@/components/layout/PaywallModal";
 
 // v02.2.10.6d (NMI Protocol) - Fix Fatal NACK ReferenceError
 // v02.2.21 (Tachyon Overdrive) - M2M vs L2M Engine Differentiation
-const VERSION = "v02.2.21 (Tachyon Overdrive)";
+// v02.2.22 (Tachyon Fix) - Dynamic Jitter Window & GPE Bypass
+const VERSION = "v02.2.22 (Tachyon Fix)";
 function getEngineConfig(engine: 'M2M' | 'HYBRID' | 'NITRO') {
     if (engine === 'M2M') {
         return {
@@ -175,7 +176,7 @@ function InstantDropContent() {
         protocol: "udp" as "udp" | "tcp",
         workerLag: 0,
         bdp: 0,
-        pistonStats: Array(4).fill({ speed: 0, health: 'green' }),
+        pistonStats: Array(12).fill({ speed: 0, health: 'green' }),
         isChaosMode: false
     });
     const pipeLatenciesRef = useRef<number[]>(new Array(PIPES).fill(0));
@@ -241,9 +242,9 @@ function InstantDropContent() {
         // v02.1.18: Define next target based on RTT bands
         let target = 1;
         if (engineMode === 'M2M') {
-            if (rtt < 0.200) target = 4;
-            else if (rtt < 0.500) target = 2;
-            else target = 1;
+            if (rtt < 0.200) target = 12; // Tachyon Target
+            else if (rtt < 0.500) target = 8;
+            else target = 4; // Stability Floor (Forbidden from 1-pipe throttle)
         } else if (engineMode === 'HYBRID') {
             target = 2;
         } else {
@@ -616,6 +617,7 @@ ${capturedLogsRef.current.join('\n')}
                     let rttSum = 0;
                     let rttCount = 0;
                     const newPistonStats = [...diagnosticMetricsRef.current.pistonStats];
+                newPistonStats.length = PIPES; // Force resize for UI symmetry
                     for (let i = 0; i < PIPES; i++) {
                         const peer = peersRef.current[i];
                         if (!peer) continue;
@@ -701,7 +703,7 @@ ${capturedLogsRef.current.join('\n')}
             let isNackLoopStopped = false; // v02.1.97: Quiescence Flag
             let avgRtt = 0.25; // v02.2.17: Adaptive RTT (Default 250ms)
             let nackHistory = new Map(); // v02.2.18: { key: { count, lastT } }
-            let JITTER_WINDOW = 24; // v02.2.18: Slack for out-of-order parallel chunks
+            let JITTER_WINDOW = 64; // v02.2.22: Increased default window for Nitro
             
             // v02.1.83: Worker Heartbeat Pulse (Keep-Alive)
             setInterval(() => {
@@ -757,7 +759,7 @@ ${capturedLogsRef.current.join('\n')}
 
                 // v10.5.1: M2M Dynamic Jitter Capability
                 if (type === 'SET_M2M') {
-                    JITTER_WINDOW = 48; // Double the window for M2M jitter
+                    JITTER_WINDOW = 512; // v02.2.22: High-Jitter Survival Window (16MB Slack)
                     return;
                 }
 
@@ -777,7 +779,7 @@ ${capturedLogsRef.current.join('\n')}
                     expectedTotalChunks = new Map();
                     expectedTotalFiles = -1;
                     isNackLoopStopped = false; // Reset flag
-                    JITTER_WINDOW = 24; // Reset to Nitro default
+                    JITTER_WINDOW = 64; // Reset to Nitro default
                     return;
                 }
 
@@ -791,7 +793,7 @@ ${capturedLogsRef.current.join('\n')}
                     if (fileMetas.has(fileIdx)) return;
                     fileMetas.set(fileIdx, meta);
                     // v02.2.19: Auto-detect M2M from meta
-                    if (meta.isMobile) JITTER_WINDOW = 48;
+                    if (meta.isMobile) JITTER_WINDOW = 512;
                     if (meta.size > 0 && !fileBuffers.has(fileIdx)) {
                         fileBuffers.set(fileIdx, new Uint8Array(meta.size));
                         receivedChunkIds.set(fileIdx, new Set());
@@ -1084,14 +1086,18 @@ ${capturedLogsRef.current.join('\n')}
                             logDebug(`⚠️ Receiver Ready Sig Ignored: status=${statusRef.current} init=${isInitializingRef.current}`);
                             return;
                         }
-                        logDebug("Receiver is READY. Initializing 3x Parallel WebRTC Pipes...");
+                        const isM2M = isMobileDevice() && !!data.isMobile;
+                        const activeEngine = isM2M ? 'M2M' : (isMobileDevice() || !!data.isMobile) ? 'HYBRID' : 'NITRO';
+                        const config = getEngineConfig(activeEngine);
+                        logDebug(`Receiver is READY. Initializing ${config.pipes}x Parallel WebRTC Pipes...`);
                         isInitializingRef.current = true; // Lock the handshake
                         setStatus('connecting');
                         resetSessionRefs(); 
-                        setupWebRTC(ws, true, 0); 
-                        setupWebRTC(ws, true, 1);
-                        setupWebRTC(ws, true, 2);
-                        setupWebRTC(ws, true, 3);
+                        
+                        // v02.2.22: Dynamic Handshake Signaling
+                        for (let i = 0; i < config.pipes; i++) {
+                            setupWebRTC(ws, true, i);
+                        }
                     } else if (data.type === 'answer') {
                         const pIdx = data.pipeIdx || 0;
                         const gen = data.gen || 0;
@@ -1602,10 +1608,13 @@ ${capturedLogsRef.current.join('\n')}
                 }
             }
 
-            // v02.2.19: [PACER_GUARD] Hardware-First Override
-            // We only block if the hardware buffer is genuinely full OR we have no channels.
-            // If totalBuffered < 1MB, we ALWAYS proceed to send (rescuing desynced GPE counters).
-            if (openChannels.length === 0 || (totalBuffered > NITRO_THRESHOLD && totalBuffered > 1024 * 1024) || (isGPEBlocked && totalBuffered > 2048 * 1024)) {
+            // v02.2.19: [PACER_GUARD] Hardware-First Override (Deadlock Buster)
+            // If totalBuffered is extremely low (< 1MB), we NEVER block, even if GPE says 64MB in-flight.
+            // This rescues the engine from desynced counters which previously froze the transfer.
+            const hardwareStalled = totalBuffered > NITRO_THRESHOLD;
+            const gpeStalled = isGPEBlocked && totalBuffered > 2048 * 1024;
+            
+            if (openChannels.length === 0 || hardwareStalled || gpeStalled) {
                 blockedLoopCount.current++;
                 if (blockedLoopCount.current % 5000 === 0 && totalBuffered > NITRO_THRESHOLD) {
                     logDebug(`🚀 NITRO FLOW HANG: Buffer=${(totalBuffered / 1024 / 1024).toFixed(1)}MB / Threshold=${(NITRO_THRESHOLD / 1024 / 1024).toFixed(1)}MB`);
@@ -2404,34 +2413,41 @@ Buffer-Bloat Grade: ${d.bufferBloatGrade}
                     </div>
 
                     <div className="grid grid-cols-4 gap-2 mb-4">
-                        {metrics.pistonStats.map((p: any, i: number) => (
-                            <div key={i} className="flex flex-col items-center">
-                                <div className={`w-full h-16 rounded-lg border border-white/5 relative overflow-hidden flex flex-wrap gap-[1px] p-1 bg-black/20`}>
-                                    {/* 8 Sub-channels per Pipe (Total 32) */}
-                                    {Array.from({ length: 8 }).map((_: any, subIdx: number) => {
-                                        const dcIdx = (i * 8) + subIdx;
-                                        const dc = dataChannelsRef.current[dcIdx];
-                                        const isActive = dc && dc.readyState === 'open';
-                                        return (
-                                            <div 
-                                                key={subIdx}
-                                                className={`w-[calc(50%-1px)] h-[calc(25%-1px)] rounded-[1px] transition-all duration-300 ${
-                                                    !isActive ? 'bg-white/5' : 
-                                                    p.health === 'red' ? 'bg-red-500/80 animate-pulse' :
-                                                    p.health === 'amber' ? 'bg-amber-500/80 animate-pulse' :
-                                                    'bg-green-500/80 shadow-[0_0_5px_rgba(34,197,94,0.5)]'
-                                                }`}
-                                            />
-                                        );
-                                    })}
-                                    {/* Animation Piston Effect */}
-                                    {status === 'transferring' && (
-                                        <div className="absolute inset-0 bg-gradient-to-t from-transparent via-white/5 to-transparent h-4 animate-piston pointer-events-none" />
-                                    )}
+                        {metrics.pistonStats.map((p: any, i: number) => {
+                            // v02.2.22: Only show active pipes for the current engine
+                            const pipeIdx = i;
+                            const isPistonActive = i < metrics.pistonStats.length;
+                            if (!isPistonActive) return null;
+
+                            return (
+                                <div key={i} className="flex flex-col items-center">
+                                    <div className={`w-full h-16 rounded-lg border border-white/5 relative overflow-hidden flex flex-wrap gap-[1px] p-1 bg-black/20`}>
+                                        {/* 8 Sub-channels per Pipe */}
+                                        {Array.from({ length: 8 }).map((_: any, subIdx: number) => {
+                                            const dcIdx = (i * 8) + subIdx;
+                                            const dc = dataChannelsRef.current[dcIdx];
+                                            const isActive = dc && dc.readyState === 'open';
+                                            return (
+                                                <div 
+                                                    key={subIdx}
+                                                    className={`w-[calc(50%-1px)] h-[calc(25%-1px)] rounded-[1px] transition-all duration-300 ${
+                                                        !isActive ? 'bg-white/5' : 
+                                                        p.health === 'red' ? 'bg-red-500/80 animate-pulse' :
+                                                        p.health === 'amber' ? 'bg-amber-500/80 animate-pulse' :
+                                                        'bg-green-500/80 shadow-[0_0_5px_rgba(34,197,94,0.5)]'
+                                                    }`}
+                                                />
+                                            );
+                                        })}
+                                        {/* Animation Piston Effect */}
+                                        {status === 'transferring' && (
+                                            <div className="absolute inset-0 bg-gradient-to-t from-transparent via-white/5 to-transparent h-4 animate-piston pointer-events-none" />
+                                        )}
+                                    </div>
+                                    <span className="text-[8px] font-bold text-white/40 mt-1 uppercase">P-{i}</span>
                                 </div>
-                                <span className="text-[8px] font-bold text-white/40 mt-1 uppercase">P-{i}</span>
-                            </div>
-                        ))}
+                            );
+                        })}
                     </div>
 
                     <div className="space-y-2">
