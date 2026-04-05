@@ -32,7 +32,7 @@ import { PaywallModal } from "@/components/layout/PaywallModal";
 // v02.2.23 (Tachyon Omega) - Structural Alignment & Physical Sync
 // v02.2.28 (Tachyon Omega - Piston Core) - Final Stability & UI Fix
 // v02.2.29 (Tachyon Omega - Quasar) - Stabilization Hub
-const VERSION = "v02.2.30 (Tachyon Omega - Hyper Pilot)";
+const VERSION = "v02.2.31 (Tachyon Omega - Signaling Persistence)";
 function getEngineConfig(engine: 'M2M' | 'HYBRID' | 'NITRO') {
     if (engine === 'M2M') {
         return {
@@ -1084,9 +1084,10 @@ ${capturedLogsRef.current.join('\n')}
         setMode('send');
         setStatus('waiting');
 
-        const newRoomId = Math.floor(100000 + Math.random() * 900000).toString();
-        setRoomId(newRoomId);
-        roomRef.current = newRoomId;
+        // v02.2.31: Room Persistence Fix (Prevents desync during remote testing)
+        const finalRoomId = roomRef.current || Math.floor(100000 + Math.random() * 900000).toString();
+        setRoomId(finalRoomId);
+        roomRef.current = finalRoomId;
 
         // v02.1.33: Lockdown screen to prevent background throttling
         await requestWakeLock();
@@ -1100,7 +1101,7 @@ ${capturedLogsRef.current.join('\n')}
         const connect = () => {
             attempts++;
             logDebug(`Connecting to signaling server (Attempt ${attempts}/3)...`);
-            const ws = new WebSocket(`${BACKEND_WS_URL}/ws/drop/${newRoomId}/sender`);
+            const ws = new WebSocket(`${BACKEND_WS_URL}/ws/drop/${finalRoomId}/sender`);
             wsRef.current = ws;
             
             ws.onerror = () => logDebug(`Sender WS Connection Error (Attempt ${attempts})`);
