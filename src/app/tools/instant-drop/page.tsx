@@ -29,8 +29,8 @@ import { PaywallModal } from "@/components/layout/PaywallModal";
 
 // v02.2.10.6d (NMI Protocol) - Fix Fatal NACK ReferenceError
 // v02.2.21 (Tachyon Overdrive) - M2M vs L2M Engine Differentiation
-// v02.2.22 (Tachyon Fix) - Dynamic Jitter Window & GPE Bypass
-const VERSION = "v02.2.22 (Tachyon Fix)";
+// v02.2.23 (Tachyon Omega) - Structural Alignment & Physical Sync
+const VERSION = "v02.2.23 (Tachyon Omega)";
 function getEngineConfig(engine: 'M2M' | 'HYBRID' | 'NITRO') {
     if (engine === 'M2M') {
         return {
@@ -47,9 +47,9 @@ function getEngineConfig(engine: 'M2M' | 'HYBRID' | 'NITRO') {
         nackBackoff: 1000
     };
 }
-const PIPES = 4; 
+const PIPES = 12; // v02.2.23: Global Buffer Alignment (Full Context)
 const CHANNELS_PER_PIPE = 8;
-const CHANNELS = 32; 
+const CHANNELS = 96; // 12 pipes x 8 channels = 96 logical streams
 const CHUNK_SIZE = 32 * 1024; // 32KB - Velocity Max (Mobile Resilient)
 const HIGH_WATER_MARK_MAX = 32 * 1024 * 1024; // 32MB Jumbo Window for 10 MB/s saturation 
 const BASE_PACER_THRESHOLD = 16 * 1024 * 1024; // 16MB Pacer Threshold
@@ -135,8 +135,6 @@ function InstantDropContent() {
     const capturedLogsRef = useRef<string[]>([]);
     const peersRef = useRef<RTCPeerConnection[]>([]);
     const dataChannelsRef = useRef<RTCDataChannel[]>([]);
-    const remoteDescriptionSetsRef = useRef<boolean[]>(new Array(PIPES).fill(false));
-    const iceBuffersRef = useRef<any[][]>(Array.from({ length: PIPES }, () => []));
     const filesRef = useRef<File[]>([]);
     const modeRef = useRef(mode);
     const statusRef = useRef(status);
@@ -151,7 +149,7 @@ function InstantDropContent() {
     const totalReceivedBytesRef = useRef(0);
     const lastSuccessfulChunkIdxRef = useRef(0);
     const isResumingRef = useRef(false);
-    const pipeGenerationRef = useRef<number[]>(new Array(PIPES).fill(0)); // v02.1.79: Handshake Generation Isolation
+    const pipeGenerationRef = useRef<number[]>(new Array(12).fill(0)); // v02.2.23: Fixed Memory Capacity (12-Pipe context)
     const stallWatchdogRef = useRef<any>(null);
     const wakeLockRef = useRef<any>(null);
     const gpeInFlightBytesRef = useRef(0); // v02.1.50: GPE Gated In-Flight Tracking
@@ -191,7 +189,7 @@ function InstantDropContent() {
     const remoteCapabilityRef = useRef({ isMobile: false }); // v02.2.17 Peer Device Tracking
     const avgRTTRef = useRef<number>(0.1); // v02.1.39 (Patch 24.1): BDP-Snap Average RTT
     const currentMBpsRef = useRef<number>(1.0); // v02.1.39 (Patch 24.1): Current Speed for BDP
-    const channelFileIndex = useRef<number[]>(new Array(CHANNELS).fill(0));
+    const channelFileIndex = useRef<number[]>(new Array(96).fill(0)); // v02.2.23: Full Context Matrix (12 Pipes x 8)
     const fileBuffers = useRef<Map<number, ArrayBuffer[]>>(new Map());
     const expectedTotalChunks = useRef<Map<number, number>>(new Map());
     const receivedChunksCount = useRef<Map<number, number>>(new Map());
@@ -203,6 +201,10 @@ function InstantDropContent() {
     const heartbeatIntervalRef = useRef<any>(null);
     const workerRef = useRef<Worker | null>(null);
     const totalReceivedChunksCountRef = useRef(0); // v02.1.39 (Patch 12): Lightweight Flow Control
+
+    // v02.2.23: Full Context Matrix (12 Pipe Capacity)
+    const remoteDescriptionSetsRef = useRef<boolean[]>(new Array(12).fill(false));
+    const iceBuffersRef = useRef<any[][]>(Array.from({ length: 12 }, () => []));
 
     // v02.2.08: Autonomous Engineering Hooks (Omega)
     useEffect(() => {
@@ -254,6 +256,10 @@ function InstantDropContent() {
         }
 
         // Hysteresis Logic:
+        // Enforce Hard Engine Ceilings (v02.2.23)
+        const ceiling = engineMode === 'M2M' ? 12 : 4;
+        target = Math.min(target, ceiling);
+        
         // 1. If scaling DOWN, record the time.
         if (target < currentScale) {
             lastScaleDownTimeRef.current = now;
@@ -380,7 +386,7 @@ function InstantDropContent() {
         dataChannelsRef.current = [];
         peersRef.current = [];
         if (!isRecovery) {
-            channelFileIndex.current = new Array(CHANNELS).fill(0);
+            channelFileIndex.current = new Array(96).fill(0);
             fileBuffers.current.clear();
             expectedTotalChunks.current.clear();
             receivedChunksCount.current.clear();
@@ -392,6 +398,9 @@ function InstantDropContent() {
             totalReceivedBytesRef.current = 0;
             currentFileReceivedRef.current.clear();
             totalReceivedChunksCountRef.current = 0;
+            
+            // v02.2.23: Reset All Piston HUDs
+            diagnosticMetricsRef.current.pistonStats = Array(12).fill({ speed: 0, health: 'green' });
             
             // v02.1.80: Full Memory Hygiene (No-OR Hardening)
             lastSuccessfulChunkIdxRef.current = 0;
@@ -1094,6 +1103,9 @@ ${capturedLogsRef.current.join('\n')}
                         setStatus('connecting');
                         resetSessionRefs(); 
                         
+                        // v02.2.23: Explicit Screen Persistence Handshake (Satisfy Gesture Policy)
+                        requestWakeLock();
+                        
                         // v02.2.22: Dynamic Handshake Signaling
                         for (let i = 0; i < config.pipes; i++) {
                             setupWebRTC(ws, true, i);
@@ -1401,6 +1413,9 @@ ${capturedLogsRef.current.join('\n')}
         isActive.current = true;
         isInitializingRef.current = false; // v02.1.68: Unlock handshake ONLY once transfer loop starts.
         setStatus('transferring');
+        
+        // v02.2.23: Satisfy mobile browser gesture policy for Wake Lock
+        requestWakeLock();
         
         // v02.2.10.8: NAT Warm-up Pulse (200ms)
         // Ensures the Mumbai relay and client NAT mappings are fully established before the first metadata blast.
@@ -2413,7 +2428,7 @@ Buffer-Bloat Grade: ${d.bufferBloatGrade}
                     </div>
 
                     <div className="grid grid-cols-4 gap-2 mb-4">
-                        {metrics.pistonStats.map((p: any, i: number) => {
+                        {metrics.pistonStats.slice(0, (isMobileDevice() && remoteCapabilityRef.current.isMobile) ? 12 : 4).map((p: any, i: number) => {
                             // v02.2.22: Only show active pipes for the current engine
                             const pipeIdx = i;
                             const isPistonActive = i < metrics.pistonStats.length;
