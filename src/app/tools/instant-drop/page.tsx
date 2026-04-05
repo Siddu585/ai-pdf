@@ -28,8 +28,24 @@ import { useUsage } from "@/hooks/useUsage";
 import { PaywallModal } from "@/components/layout/PaywallModal";
 
 // v02.2.10.6d (NMI Protocol) - Fix Fatal NACK ReferenceError
-// v02.2.19 (Nitro Resilience) - Context-Aware Mobile MTU Hardening
-const VERSION = "v02.2.19 (Nitro Resilience) Nitro Engine";
+// v02.2.21 (Tachyon Overdrive) - M2M vs L2M Engine Differentiation
+const VERSION = "v02.2.21 (Tachyon Overdrive)";
+function getEngineConfig(engine: 'M2M' | 'HYBRID' | 'NITRO') {
+    if (engine === 'M2M') {
+        return {
+            pipes: 12, // Extreme Concurrency for Mobile Carriers
+            pacerThreshold: 32 * 1024 * 1024, // 32MB Deep Buffer for Jitter
+            mtuLimit: 32 * 1024, // Survival MTU (Carrier-Tested)
+            nackBackoff: 500 // Faster re-send recovery
+        };
+    }
+    return {
+        pipes: 4, // Fiber-Optimized Standard
+        pacerThreshold: 16 * 1024 * 1024,
+        mtuLimit: 64 * 1024, // High-Speed L2M MTU
+        nackBackoff: 1000
+    };
+}
 const PIPES = 4; 
 const CHANNELS_PER_PIPE = 8;
 const CHANNELS = 32; 
@@ -1142,12 +1158,18 @@ ${capturedLogsRef.current.join('\n')}
                                     : [...ICE_SERVERS.iceServers];
                                     
             // v02.1.39 (Patch 24.3): Hybrid Anchor Strategy 
-            // Pipe-0: Forced Relay (Guaranteed link for ALL users)
-            // v02.1.71: Force Relay Anchor for Symmetric NAT / Airtel Path Reliability
-            // Pipe-0 is the 'Anchor' link, we force it to TURN to bypass STUN-race issues.
-            // v02.2.04: Adaptive ICE Policy (Force Relay for Anchor on public domains, use All for Localhost dev)
+            // v02.2.21: Engine-Aware Pipe Expansion
+            const isSelfMobile = isMobileDevice();
+            const isM2M = isSelfMobile && remoteCapabilityRef.current.isMobile;
+            const engine = isM2M ? 'M2M' : (isSelfMobile || remoteCapabilityRef.current.isMobile) ? 'HYBRID' : 'NITRO';
+            const config = getEngineConfig(engine);
+            
+            // Allow expansion up to engine limit
+            if (pipeIdx >= config.pipes) return;
+
             const isLocal = typeof window !== 'undefined' && (window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1');
-            let pipePolicy: RTCIceTransportPolicy = (useFallback || (pipeIdx === 0 && !isLocal)) ? 'relay' : 'all';
+            let pipePolicy: RTCIceTransportPolicy = (useFallback || (pipeIdx === 0 && !isLocal && isM2M)) ? 'relay' : 'all';
+            
             const peer = new RTCPeerConnection({ 
                 iceServers: currentRelays,
                 iceTransportPolicy: pipePolicy,
@@ -1538,13 +1560,15 @@ ${capturedLogsRef.current.join('\n')}
             
             const currentRTT = smoothedRTT;
 
-            // v02.2.17: Velocity Max Engine Negotiation
             const isSelfMobile = isMobileDevice();
-            const activeEngine = (isSelfMobile && remoteCapabilityRef.current.isMobile) ? 'M2M' : (isSelfMobile || remoteCapabilityRef.current.isMobile) ? 'HYBRID' : 'NITRO';
-            const currentChunkSize = activeEngine === 'M2M' ? 32 * 1024 : 64 * 1024;
-
-            const isGPEBlocked = gpeInFlightBytesRef.current > (512 * 1024 * 1024); // 512MB GPE Ceiling
-            let targetPipeCount = getAdaptivePipeCount(currentRTT, activeEngine);
+            const isM2M = isSelfMobile && remoteCapabilityRef.current.isMobile;
+            const activeEngine = isM2M ? 'M2M' : (isSelfMobile || remoteCapabilityRef.current.isMobile) ? 'HYBRID' : 'NITRO';
+            const config = getEngineConfig(activeEngine);
+            
+            // v02.2.21: Hyper-Buffer Guard (M2M Optimized)
+            const isGPEBlocked = gpeInFlightBytesRef.current > (isM2M ? 64 * 1024 * 1024 : 512 * 1024 * 1024); 
+            
+            let targetPipeCount = Math.min(config.pipes, getAdaptivePipeCount(currentRTT, activeEngine));
             const targetChannelLimit = targetPipeCount * CHANNELS_PER_PIPE;
 
             if (targetPipeCount !== lastScaleRef.current) {
@@ -1560,10 +1584,11 @@ ${capturedLogsRef.current.join('\n')}
 
             const totalBuffered = dataChannelsRef.current.reduce((acc, dc) => acc + (dc?.bufferedAmount || 0), 0);
             
-            // v02.2.09: Dynamic "Deep" Buffer Tuning
-            // Scale between 8MB (base) and 64MB (high-speed fiber saturation)
+            // v02.2.21: Dynamic "Deep" Buffer Tuning (Tachyon Optimized)
             const speedMBps = currentMBpsRef.current || 0.1;
-            const NITRO_THRESHOLD = Math.max(8 * 1024 * 1024, Math.min(64 * 1024 * 1024, speedMBps * 4 * 1024 * 1024)); // 4-second buffer cushion
+            const NITRO_THRESHOLD = isM2M 
+                ? Math.max(8 * 1024 * 1024, Math.min(config.pacerThreshold, speedMBps * 2 * 1024 * 1024)) // 8-32MB deep buffer 
+                : Math.max(8 * 1024 * 1024, Math.min(64 * 1024 * 1024, speedMBps * 4 * 1024 * 1024));
 
             // v02.2.18: GPE-SCTP Sync Pulse (Ghost Byte fix)
             // Periodically sync the in-flight counter with the receiver's actual "cleared" bytes.
@@ -1682,9 +1707,7 @@ ${capturedLogsRef.current.join('\n')}
                             const [key, nack] = nextNack;
                             const lastResendTime = lastNackResendTimeRef.current.get(key) || 0;
                             const now = Date.now();
-                            
-                            // 1000ms base backoff between resending the SAME chunk
-                            if (now - lastResendTime > 1000) {
+                            if (now - lastResendTime > config.nackBackoff) {
                                 nackQueueRef.current.delete(key);
                                 const cacheKey = `${nack.fileIdx}_${nack.chunkIdx}`;
                                 const cachedPacket = senderChunkCacheRef.current.get(cacheKey);
@@ -1754,10 +1777,15 @@ ${capturedLogsRef.current.join('\n')}
                         chunksSentSinceScaleRef.current = 0;
                         const rtt = avgRTTRef.current || 0;
                         const speed = currentMBpsRef.current || 0;
-                        // v02.2.10.8: Nano-Scaling Velocity Cap (64KB Standard Nitro)
-                        if (rtt < 0.200 && speed > 0.5 && dynamicChunkSizeRef.current < 64 * 1024) {
-                            dynamicChunkSizeRef.current = Math.min(64 * 1024, dynamicChunkSizeRef.current + 4 * 1024);
-                            logDebug(`🚀 VELOCITY UP: Scaling MTU to ${Math.round(dynamicChunkSizeRef.current/1024)}KB (NITRO CAP)`);
+                        // v02.2.21: Survival Scaling Cap (Harness-Verified)
+                        const currentLimit = config.mtuLimit;
+
+                        if (rtt < 0.200 && speed > 1.0 && dynamicChunkSizeRef.current < currentLimit) {
+                            dynamicChunkSizeRef.current = Math.min(currentLimit, dynamicChunkSizeRef.current + 4 * 1024);
+                            logDebug(`🚀 TACHYON BOOST: Scaling MTU to ${Math.round(dynamicChunkSizeRef.current/1024)}KB (${isM2M ? 'M2M GOLD' : 'NITRO GOLD'})`);
+                        } else if (rtt > 0.600 && dynamicChunkSizeRef.current > 32 * 1024) {
+                            dynamicChunkSizeRef.current = 32 * 1024;
+                            logDebug(`📉 JITTER BACKOFF: Restoring Survival MTU (32KB)`);
                         }
                     }
                     
