@@ -33,7 +33,7 @@ import { PaywallModal } from "@/components/layout/PaywallModal";
 // v02.2.23 (Tachyon Omega) - Structural Alignment & Physical Sync
 // v02.2.28 (Tachyon Omega - Piston Core) - Final Stability & UI Fix
 // v02.2.29 (Tachyon Omega - Quasar) - Stabilization Hub
-const VERSION = "v02.2.41 (Tachyon Omega - Omega Sync)";
+const VERSION = "v02.2.42 (Tachyon Omega - Matrix Sync)";
 function getEngineConfig(engine: 'M2M' | 'HYBRID' | 'NITRO') {
     if (engine === 'M2M') {
         return {
@@ -81,7 +81,9 @@ const ICE_SERVERS = {
         { urls: "stun:stun2.l.google.com:19302" },
         { urls: "stun:stun3.l.google.com:19302" },
         { urls: "stun:stun4.l.google.com:19302" },
-        { urls: "stun:stun.cloudflare.com:3478" }
+        { urls: "stun:stun.cloudflare.com:3478" },
+        { urls: "stun:stun.services.mozilla.com" },
+        { urls: "stun:global.stun.twilio.com:3478" }
     ]
 };
 
@@ -102,6 +104,8 @@ function InstantDropContent() {
     const [totalSentBytes, setTotalSentBytes] = useState(0);
     const [isStaleVersion, setIsStaleVersion] = useState(false);
     const [useEmergencyTunnel, setUseEmergencyTunnel] = useState(false); // v02.2.40 Fallback
+    const [signalId] = useState(() => Math.floor(100000 + Math.random() * 900000).toString()); // v02.2.42
+    const signalIdRef = useRef(signalId);
     const tunnelWatchdogRef = useRef<any>(null);
 
     // v02.2.10.5: Force Sync & Cache Burn Sentinel
@@ -627,6 +631,17 @@ ${capturedLogsRef.current.join('\n')}
                 if (modeRef.current === 'send') {
                     logDebug("🚀 Remote REQUEST: Forcing Emergency Tunnel Mode.");
                     setUseEmergencyTunnel(true);
+                }
+                break;
+            case 'direct-link':
+                if (msg.targetId === signalIdRef.current) {
+                    logDebug("🔗 MATRIX LINK: Connection request received.");
+                    if (modeRef.current === 'receive') {
+                        wsRef.current?.send(JSON.stringify({ type: 'receiver-ready', isMobile: isMobileDevice() }));
+                    } else if (modeRef.current === 'send') {
+                        // Start test sequence if linked
+                        (window as any).__RUN_STRESS_TEST__(1, 60);
+                    }
                 }
                 break;
             case 'diagnostic-dump':
@@ -2796,6 +2811,11 @@ Buffer-Bloat Grade: ${d.bufferBloatGrade}
                             ROOM: {roomId || '...'}
                         </span>
                         
+                        {/* v02.2.42: Matrix Sync Signal ID */}
+                        <span className="ml-2 px-1 py-[1px] bg-slate-800 text-[8px] rounded-sm text-indigo-400 font-mono border border-indigo-500/20">
+                            SIGNAL: {signalId}
+                        </span>
+                        
                         <span className="ml-2 px-1 py-[1px] bg-indigo-500 text-[8px] rounded-sm text-white animate-pulse">Ω-PISTON-CORE</span>
                         NITRO PULSE
                         
@@ -3146,6 +3166,35 @@ Buffer-Bloat Grade: ${d.bufferBloatGrade}
                                                 <p className="text-[10px] text-muted-foreground mt-4 font-bold uppercase tracking-widest leading-relaxed">
                                                     Scan to join this room<br/>Room ID: {roomId}
                                                 </p>
+                                            </div>
+                                            
+                                            {/* v02.2.42: Matrix Link Manual Entry */}
+                                            <div className="border border-indigo-500/20 bg-indigo-500/5 p-6 rounded-2xl w-full space-y-4">
+                                                <p className="text-[10px] text-muted-foreground font-bold uppercase tracking-widest leading-relaxed">
+                                                    Can't find sender? Use Matrix Signal ID
+                                                </p>
+                                                <div className="flex gap-2">
+                                                    <input 
+                                                        type="text" 
+                                                        placeholder="Enter Peer Signal ID" 
+                                                        className="flex-1 bg-background border border-border rounded-lg px-3 py-2 text-sm font-mono tracking-widest text-center focus:border-indigo-500 outline-none"
+                                                        id="peerSignalIdInput"
+                                                        maxLength={6}
+                                                    />
+                                                    <Button 
+                                                        size="sm"
+                                                        className="bg-indigo-600 hover:bg-indigo-700 text-white font-bold px-4"
+                                                        onClick={() => {
+                                                            const input = document.getElementById('peerSignalIdInput') as HTMLInputElement;
+                                                            if (input?.value.length === 6) {
+                                                                logDebug(`🔗 MATRIX SYNC: Linking to peer ${input.value}`);
+                                                                sendControlMsg({ type: 'direct-link', targetId: input.value });
+                                                            }
+                                                        }}
+                                                    >
+                                                        Link
+                                                    </Button>
+                                                </div>
                                             </div>
                                             
                                             <Button 
