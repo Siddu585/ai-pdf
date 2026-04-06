@@ -33,7 +33,7 @@ import { PaywallModal } from "@/components/layout/PaywallModal";
 // v02.2.23 (Tachyon Omega) - Structural Alignment & Physical Sync
 // v02.2.28 (Tachyon Omega - Piston Core) - Final Stability & UI Fix
 // v02.2.29 (Tachyon Omega - Quasar) - Stabilization Hub
-const VERSION = "v02.2.42 (Tachyon Omega - Matrix Sync)";
+const VERSION = "v02.2.43 (Tachyon Omega - Sentinel Audit)";
 function getEngineConfig(engine: 'M2M' | 'HYBRID' | 'NITRO') {
     if (engine === 'M2M') {
         return {
@@ -106,6 +106,7 @@ function InstantDropContent() {
     const [useEmergencyTunnel, setUseEmergencyTunnel] = useState(false); // v02.2.40 Fallback
     const [signalId] = useState(() => Math.floor(100000 + Math.random() * 900000).toString()); // v02.2.42
     const signalIdRef = useRef(signalId);
+    const [trialCount, setTrialCount] = useState(0); // v02.2.43
     const tunnelWatchdogRef = useRef<any>(null);
 
     // v02.2.10.5: Force Sync & Cache Burn Sentinel
@@ -356,7 +357,7 @@ function InstantDropContent() {
         const formattedMsg = `[${time}] ${maskedMsg}`;
         console.log(formattedMsg);
         capturedLogsRef.current.push(formattedMsg);
-        if (capturedLogsRef.current.length > 2000) capturedLogsRef.current.shift();
+        if (capturedLogsRef.current.length > 5000) capturedLogsRef.current.shift();
     }
 
     function sendControlMsg(payload: any, priority = false) {
@@ -1651,6 +1652,19 @@ ${capturedLogsRef.current.join('\n')}
         logDebug("Sender: Batch sent. Awaiting receiver verification (Ready ACK)...");
         setStatus('done-waiting'); 
 
+        // v02.2.43: Sentinel Flight Report (Sender)
+        if (typeof window !== 'undefined') {
+            (window as any).__TACHYON_FLIGHT_REPORTS__ = (window as any).__TACHYON_FLIGHT_REPORTS__ || [];
+            (window as any).__TACHYON_FLIGHT_REPORTS__.push({
+                type: 'sender',
+                room: roomId,
+                time: Date.now(),
+                fileCount: currentFiles.length,
+                totalSent: totalSentBytesRef.current,
+                tunnel: useEmergencyTunnel,
+                logs: capturedLogsRef.current.slice(-20)
+            });
+        }
         const waitForAck = () => new Promise<void>((resolve) => {
             const dcHandler = (e: MessageEvent) => {
                 if (e.data instanceof ArrayBuffer && e.data.byteLength >= 8) {
@@ -2333,6 +2347,29 @@ ${capturedLogsRef.current.join('\n')}
                     doneWaitingTimeoutRef.current = setTimeout(() => {
                         if (statusRef.current === 'done-waiting') {
                             setStatus('done');
+                            // v02.2.43: Sentinel Flight Report (Receiver)
+                            if (typeof window !== 'undefined') {
+                                (window as any).__TACHYON_FLIGHT_REPORTS__ = (window as any).__TACHYON_FLIGHT_REPORTS__ || [];
+                                (window as any).__TACHYON_FLIGHT_REPORTS__.push({
+                                    type: 'receiver',
+                                    room: roomId,
+                                    time: Date.now(),
+                                    files: receivedFiles.length,
+                                    tunnel: useEmergencyTunnel,
+                                    logs: capturedLogsRef.current.slice(-20)
+                                });
+                                // v02.2.43: Auto-Navigation Hook for Trial gauntlet
+                                if (roomId.startsWith('0000')) {
+                                    const roomNum = parseInt(roomId);
+                                    if (roomNum > 0 && roomNum < 20) {
+                                        const nextRoom = (roomNum + 1).toString().padStart(6, '0');
+                                        logDebug(`🚀 TRIAL ${roomNum} SUCCESS. Auto-navigating to Room ${nextRoom} in 5s...`);
+                                        setTimeout(() => {
+                                            window.location.href = `${window.location.origin}${window.location.pathname}?room=${nextRoom}&v=sentinel&trial=${roomNum+1}`;
+                                        }, 5000);
+                                    }
+                                }
+                            }
                         }
                     }, 10000); 
                 } else if (chunkIdx === 0xFFFFFFFE) {
@@ -2818,6 +2855,13 @@ Buffer-Bloat Grade: ${d.bufferBloatGrade}
                         
                         <span className="ml-2 px-1 py-[1px] bg-indigo-500 text-[8px] rounded-sm text-white animate-pulse">Ω-PISTON-CORE</span>
                         NITRO PULSE
+                        
+                        {/* v02.2.43: Trial Counter */}
+                        {roomId.startsWith('0000') && (
+                            <span className="ml-2 px-1 py-[1px] bg-emerald-600 text-[8px] rounded-sm text-white border border-emerald-400/30">
+                                TRIAL: {parseInt(roomId)} / 20
+                            </span>
+                        )}
                         
                         {/* v02.2.40: Bypass Badge */}
                         {useEmergencyTunnel && (
