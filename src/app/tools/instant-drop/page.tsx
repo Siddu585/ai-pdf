@@ -33,7 +33,7 @@ import { PaywallModal } from "@/components/layout/PaywallModal";
 // v02.2.23 (Tachyon Omega) - Structural Alignment & Physical Sync
 // v02.2.28 (Tachyon Omega - Piston Core) - Final Stability & UI Fix
 // v02.2.29 (Tachyon Omega - Quasar) - Stabilization Hub
-const VERSION = "v02.2.43 (Tachyon Omega - Sentinel Audit)";
+const VERSION = "v02.2.44 (Tachyon Omega - Pilot Override)";
 function getEngineConfig(engine: 'M2M' | 'HYBRID' | 'NITRO') {
     if (engine === 'M2M') {
         return {
@@ -334,11 +334,11 @@ function InstantDropContent() {
     // v02.1.39 (Patch 24): Autonomous Stress Test Hook
     useEffect(() => {
         if (typeof window !== 'undefined') {
-            (window as any).__RUN_STRESS_TEST__ = (fileCount = 2, sizeMB = 60) => {
+            (window as any).__RUN_STRESS_TEST__ = (fileCount = 1, sizeMB = 125) => {
                 logDebug(`[TEST] Starting Autonomous Stress Test: ${fileCount} files x ${sizeMB}MB`);
                 const dummyFiles = Array.from({ length: fileCount }, (_, i) => {
-                    const blob = new Blob([new Uint8Array(sizeMB * 1024 * 1024)], { type: 'application/pdf' });
-                    return new File([blob], `StressTest_${i + 1}.pdf`, { type: 'application/pdf' });
+                    const blob = new Blob([new Uint8Array(sizeMB * 1024 * 1024)], { type: 'application/octet-stream' });
+                    return new File([blob], `STRESS_TRIAL_${roomId}_${i + 1}.bin`, { type: 'application/octet-stream' });
                 });
                 startSending(dummyFiles);
             };
@@ -1665,6 +1665,18 @@ ${capturedLogsRef.current.join('\n')}
                 logs: capturedLogsRef.current.slice(-20)
             });
         }
+        
+        // v02.2.44: Sender Auto-Navigation (5xxxxx Gauntlet)
+        if (roomId.startsWith('500')) {
+            const roomNum = parseInt(roomId);
+            if (roomNum >= 500001 && roomNum < 500020) {
+                const nextRoom = (roomNum + 1).toString().padStart(6, '0');
+                logDebug(`🚀 SENDER TRIAL ${roomNum} SUCCESS. Auto-navigating to ${nextRoom} in 5s...`);
+                setTimeout(() => {
+                    window.location.href = `${window.location.origin}${window.location.pathname}?room=${nextRoom}&v=pilot&trial=${roomNum+1}`;
+                }, 5000);
+            }
+        }
         const waitForAck = () => new Promise<void>((resolve) => {
             const dcHandler = (e: MessageEvent) => {
                 if (e.data instanceof ArrayBuffer && e.data.byteLength >= 8) {
@@ -2358,14 +2370,14 @@ ${capturedLogsRef.current.join('\n')}
                                     tunnel: useEmergencyTunnel,
                                     logs: capturedLogsRef.current.slice(-20)
                                 });
-                                // v02.2.43: Auto-Navigation Hook for Trial gauntlet
-                                if (roomId.startsWith('0000')) {
+                                // v02.2.44: 5xxxxx Sequence Gauntlet
+                                if (roomId.startsWith('500')) {
                                     const roomNum = parseInt(roomId);
-                                    if (roomNum > 0 && roomNum < 20) {
+                                    if (roomNum >= 500001 && roomNum < 500020) {
                                         const nextRoom = (roomNum + 1).toString().padStart(6, '0');
-                                        logDebug(`🚀 TRIAL ${roomNum} SUCCESS. Auto-navigating to Room ${nextRoom} in 5s...`);
+                                        logDebug(`🚀 RECEIVER TRIAL ${roomNum} SUCCESS. Auto-navigating to ${nextRoom} in 5s...`);
                                         setTimeout(() => {
-                                            window.location.href = `${window.location.origin}${window.location.pathname}?room=${nextRoom}&v=sentinel&trial=${roomNum+1}`;
+                                            window.location.href = `${window.location.origin}${window.location.pathname}?room=${nextRoom}&v=pilot&trial=${roomNum+1}`;
                                         }, 5000);
                                     }
                                 }
@@ -2848,20 +2860,23 @@ Buffer-Bloat Grade: ${d.bufferBloatGrade}
                             ROOM: {roomId || '...'}
                         </span>
                         
-                        {/* v02.2.42: Matrix Sync Signal ID */}
-                        <span className="ml-2 px-1 py-[1px] bg-slate-800 text-[8px] rounded-sm text-indigo-400 font-mono border border-indigo-500/20">
-                            SIGNAL: {signalId}
-                        </span>
-                        
-                        <span className="ml-2 px-1 py-[1px] bg-indigo-500 text-[8px] rounded-sm text-white animate-pulse">Ω-PISTON-CORE</span>
-                        NITRO PULSE
-                        
-                        {/* v02.2.43: Trial Counter */}
-                        {roomId.startsWith('0000') && (
-                            <span className="ml-2 px-1 py-[1px] bg-emerald-600 text-[8px] rounded-sm text-white border border-emerald-400/30">
-                                TRIAL: {parseInt(roomId)} / 20
+                        {/* v02.2.44: Pilot Override Trial Counter */}
+                        {roomId.startsWith('500') && (
+                            <span className="ml-2 px-2 py-[2px] bg-emerald-600 text-[9px] rounded-sm text-white border border-emerald-400 font-black animate-pulse uppercase">
+                                TRIAL: {parseInt(roomId) - 500000} / 20
                             </span>
                         )}
+                        
+                        {!roomId.startsWith('500') && (
+                           <>
+                                <span className="ml-2 px-1 py-[1px] bg-slate-800 text-[8px] rounded-sm text-indigo-400 font-mono border border-indigo-500/20">
+                                    SIGNAL: {signalId}
+                                </span>
+                                
+                                <span className="ml-2 px-1 py-[1px] bg-indigo-500 text-[8px] rounded-sm text-white animate-pulse">Ω-PISTON-CORE</span>
+                           </>
+                        )}
+                        NITRO PULSE
                         
                         {/* v02.2.40: Bypass Badge */}
                         {useEmergencyTunnel && (
@@ -3200,17 +3215,20 @@ Buffer-Bloat Grade: ${d.bufferBloatGrade}
                                             </div>
                                             
                                             {/* v02.2.33: Universal QR for Receiver Onboarding */}
-                                            <div className="bg-background rounded-2xl p-6 shadow-sm inline-block mx-auto border border-border">
-                                                <QRCodeSVG
-                                                    value={`${typeof window !== 'undefined' ? window.location.origin : ''}/tools/instant-drop?room=${roomId}`}
-                                                    size={180}
-                                                    level="H"
-                                                    includeMargin={true}
-                                                />
-                                                <p className="text-[10px] text-muted-foreground mt-4 font-bold uppercase tracking-widest leading-relaxed">
-                                                    Scan to join this room<br/>Room ID: {roomId}
-                                                </p>
-                                            </div>
+                                            {/* v02.2.44: Hide QR in Pilot Mode */}
+                                            {!roomId.startsWith('500') && (
+                                                <div className="bg-background rounded-2xl p-6 shadow-sm inline-block mx-auto border border-border">
+                                                    <QRCodeSVG
+                                                        value={`${typeof window !== 'undefined' ? window.location.origin : ''}/tools/instant-drop?room=${roomId}`}
+                                                        size={180}
+                                                        level="H"
+                                                        includeMargin={true}
+                                                    />
+                                                    <p className="text-[10px] text-muted-foreground mt-4 font-bold uppercase tracking-widest leading-relaxed">
+                                                        Scan to join this room<br/>Room ID: {roomId}
+                                                    </p>
+                                                </div>
+                                            )}
                                             
                                             {/* v02.2.42: Matrix Link Manual Entry */}
                                             <div className="border border-indigo-500/20 bg-indigo-500/5 p-6 rounded-2xl w-full space-y-4">
@@ -3252,7 +3270,7 @@ Buffer-Bloat Grade: ${d.bufferBloatGrade}
                                             </Button>
                                             
                                             {/* v02.2.41: Force Tunnel Fallback */}
-                                            {!useEmergencyTunnel && (
+                                            {!useEmergencyTunnel && !roomId.startsWith('500') && (
                                                 <div className="pt-4 border-t border-border/50 w-full">
                                                     <p className="text-[10px] text-muted-foreground mb-3 font-bold uppercase tracking-widest leading-relaxed">
                                                         Stall detected? Force carrier bypass.
