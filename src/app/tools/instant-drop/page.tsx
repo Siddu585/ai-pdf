@@ -33,7 +33,7 @@ import { PaywallModal } from "@/components/layout/PaywallModal";
 // v02.2.23 (Tachyon Omega) - Structural Alignment & Physical Sync
 // v02.2.28 (Tachyon Omega - Piston Core) - Final Stability & UI Fix
 // v02.2.29 (Tachyon Omega - Quasar) - Stabilization Hub
-const VERSION = "v02.2.44 (Tachyon Omega - Protocol Alpha)";
+const VERSION = "v02.2.44 (Tachyon Omega - M2M Stable)";
 function getEngineConfig(engine: 'M2M' | 'HYBRID' | 'NITRO') {
     if (engine === 'M2M') {
         return {
@@ -91,26 +91,7 @@ function InstantDropContent() {
     const searchParams = useSearchParams();
     const initialRoom = searchParams.get("room");
 
-    const [mode, setModeBase] = useState<'select' | 'send' | 'receive'>(initialRoom ? 'receive' : 'select');
-    const setMode = (newMode: 'select' | 'send' | 'receive') => {
-        setModeBase(newMode);
-        modeRef.current = newMode;
-        if (typeof window !== 'undefined') {
-            localStorage.setItem('tachyon_last_role', newMode);
-        }
-    };
-    
-    // v02.2.44: Role Persistence Restore
-    useEffect(() => {
-        if (typeof window !== 'undefined') {
-            const savedRole = localStorage.getItem('tachyon_last_role');
-            const params = new URLSearchParams(window.location.search);
-            if (savedRole && (params.get('gauntlet') === 'true' || params.get('v') === 'sentinel' || params.get('trial') !== null)) {
-                logDebug(`🔄 Protocol Alpha: Restoring role [${savedRole}]`);
-                setMode(savedRole as any);
-            }
-        }
-    }, [setMode]);
+    const [mode, setMode] = useState<'select' | 'send' | 'receive'>(initialRoom ? 'receive' : 'select');
     const [engineMode, setEngineMode] = useState<'M2M' | 'HYBRID' | 'NITRO'>('NITRO');
     const [roomId, setRoomId] = useState<string>(initialRoom || "");
     const { recordUsage, isPaywallOpen, setIsPaywallOpen, handleAction, deviceId, isPro, email } = useUsage();
@@ -157,9 +138,15 @@ function InstantDropContent() {
     useEffect(() => {
         let frame: number;
         const pulse = () => {
-            if (statusRef.current === 'transferring') {
-                // Dummy work to keep loop active
-                const _ = Date.now();
+            if (statusRef.current === 'transferring' && modeRef.current === 'send') {
+                // v02.2.44: Pacer Heartbeat Pulse (Every 500ms approx)
+                if (Date.now() % 500 < 20) {
+                    const someChannel = dataChannelsRef.current.find(dc => dc && dc.readyState === 'open');
+                    if (someChannel && someChannel.bufferedAmount < someChannel.bufferedAmountLowThreshold) {
+                         // This synthetic tick prevents the 'onbufferedamountlow' blackout on mobile Chrome
+                         window.dispatchEvent(new CustomEvent('pacer-poke'));
+                    }
+                }
             }
             frame = requestAnimationFrame(pulse);
         };
@@ -304,6 +291,8 @@ function InstantDropContent() {
         // 1. If scaling DOWN, record the time.
         if (target < currentScale) {
             lastScaleDownTimeRef.current = now;
+            // v02.2.44: Hard Floor of 2 pipes for M2M to prevent death-spiral
+            if (engineMode === 'M2M') target = Math.max(2, target);
             return target;
         }
         // 2. If trying to scale UP, enforce a 10s cool-down since the last scale down.
@@ -353,8 +342,8 @@ function InstantDropContent() {
     // v02.1.39 (Patch 24): Autonomous Stress Test Hook
     useEffect(() => {
         if (typeof window !== 'undefined') {
-            (window as any).__RUN_STRESS_TEST__ = (fileCount = 1, sizeMB = 125) => {
-                logDebug(`[TEST] Protocol Alpha: Starting 125MB GAUNTLET - ${fileCount} files`);
+            (window as any).__RUN_STRESS_TEST__ = (fileCount = 2, sizeMB = 60) => {
+                logDebug(`[TEST] Starting Autonomous Stress Test: ${fileCount} files x ${sizeMB}MB`);
                 const dummyFiles = Array.from({ length: fileCount }, (_, i) => {
                     const blob = new Blob([new Uint8Array(sizeMB * 1024 * 1024)], { type: 'application/pdf' });
                     return new File([blob], `StressTest_${i + 1}.pdf`, { type: 'application/pdf' });
@@ -504,13 +493,20 @@ function InstantDropContent() {
                     }
                     
                     logDebug(`Receiver: Metadata for ${msg.name} (File ${msg.currentIdx})`);
-                    setIncomingMeta(msg);
-                    if (msg.currentIdx !== undefined) setCurrentFileIndex(msg.currentIdx);
-                    if (msg.totalFiles !== undefined) {
-                        expectedTotalFiles.current = msg.totalFiles;
-                        setTotalFiles(msg.totalFiles);
+                    const safeIdx = Number(msg.currentIdx);
+                    const safeTotal = Number(msg.totalFiles);
+
+                    if (isNaN(safeIdx)) {
+                        logDebug(`⚠️ CRITICAL: Metadata index corrupt (Value: ${msg.currentIdx}). Ignoring...`);
+                        return;
                     }
-                    workerRef.current?.postMessage({ type: 'metadata', fileIdx: msg.currentIdx, meta: msg });
+
+                    setIncomingMeta({ ...msg, currentIdx: safeIdx, totalFiles: safeTotal });
+                    setCurrentFileIndex(safeIdx);
+                    expectedTotalFiles.current = safeTotal;
+                    setTotalFiles(safeTotal);
+                    
+                    workerRef.current?.postMessage({ type: 'metadata', fileIdx: safeIdx, meta: { ...msg, currentIdx: safeIdx, totalFiles: safeTotal } });
                     if (statusRef.current !== 'done') setStatus('transferring');
                 }
                 break;
@@ -662,14 +658,6 @@ ${capturedLogsRef.current.join('\n')}
                         // Start test sequence if linked
                         (window as any).__RUN_STRESS_TEST__(1, 60);
                     }
-                }
-                break;
-            case 'jump-room':
-                if (msg.nextRoom) {
-                    logDebug(`🚀 LINKED JUMP: Moving to Room ${msg.nextRoom} in 5s...`);
-                    setTimeout(() => {
-                        window.location.href = `${window.location.origin}${window.location.pathname}?room=${msg.nextRoom}&v=sentinel&gauntlet=true`;
-                    }, 5000);
                 }
                 break;
             case 'diagnostic-dump':
@@ -859,8 +847,8 @@ ${capturedLogsRef.current.join('\n')}
                                         const h = nackHistory.get(nKey) || { count: 0, lastT: 0 };
                                         
                                         // Exponential Backoff: RTT * 2^count
-                                        const backoff = Math.min(5000, Math.pow(2, h.count) * (avgRtt * 1000));
                                         if (now - h.lastT > backoff) {
+                                            if (h.count > 20) return; // v02.2.44: NACK Ceiling - Don't saturate upstream forever
                                             h.count++;
                                             h.lastT = now;
                                             nackHistory.set(nKey, h);
@@ -1406,7 +1394,7 @@ ${capturedLogsRef.current.join('\n')}
                 peer.ondatachannel = (e) => {
                     const label = e.channel.label;
                     const index = parseInt(label.split('-').pop() || '0');
-                    logDebug(`Receiver: DataChannel ${index} Received on Pipe-${pipeIdx}`);
+                    logDebug(`Receiver: DataChannel ${index} Received on Pipe-${pipeIdx} (Adopted)`);
                     dataChannelsRef.current[index] = e.channel;
                     setupDataChannel(e.channel, index);
                 };
@@ -1646,7 +1634,9 @@ ${capturedLogsRef.current.join('\n')}
                 currentIdx: i,
                 totalFiles: currentFiles.length,
                 isParallel: true,
-                parallelChannels: dataChannelsRef.current.length
+                parallelChannels: dataChannelsRef.current.length,
+                // v02.2.44: Atomic Handshake Checksum
+                checksum: (file.name.length + file.size) % 9999
             };
             lastMetadataRef.current = meta;
 
@@ -1678,18 +1668,19 @@ ${capturedLogsRef.current.join('\n')}
         
         logDebug("Sender: Batch sent. Awaiting receiver verification (Ready ACK)...");
         setStatus('done-waiting'); 
-        
-        // v02.2.44: Protocol Alpha Sync Navigation
-        if (typeof window !== 'undefined' && roomId.length >= 6) {
-            const roomNum = parseInt(roomId);
-            if (!isNaN(roomNum)) {
-                const nextRoom = (roomNum + 1).toString();
-                logDebug(`🚀 GAUNTLET SYNC: Signaling Jump to ${nextRoom}`);
-                sendControlMsg({ type: 'jump-room', nextRoom });
-                setTimeout(() => {
-                    window.location.href = `${window.location.origin}${window.location.pathname}?room=${nextRoom}&v=sentinel&gauntlet=true`;
-                }, 7000); // 7s for Sender (let Receiver jump first)
-            }
+
+        // v02.2.43: Sentinel Flight Report (Sender)
+        if (typeof window !== 'undefined') {
+            (window as any).__TACHYON_FLIGHT_REPORTS__ = (window as any).__TACHYON_FLIGHT_REPORTS__ || [];
+            (window as any).__TACHYON_FLIGHT_REPORTS__.push({
+                type: 'sender',
+                room: roomId,
+                time: Date.now(),
+                fileCount: currentFiles.length,
+                totalSent: totalSentBytesRef.current,
+                tunnel: useEmergencyTunnel,
+                logs: capturedLogsRef.current.slice(-20)
+            });
         }
         const waitForAck = () => new Promise<void>((resolve) => {
             const dcHandler = (e: MessageEvent) => {
@@ -1869,7 +1860,8 @@ ${capturedLogsRef.current.join('\n')}
                                 resolve(null);
                             };
                             dc.addEventListener('bufferedamountlow', handler);
-                            setTimeout(handler, 100); // 100ms Safety Timeout
+                            const m2mSafety = config.pipes > 4 ? 500 : 100; // v02.2.44: Relax timeout for M2M to reduce CPU pressure
+                            setTimeout(handler, m2mSafety); 
                         });
                     }
                 } else {
@@ -2835,7 +2827,6 @@ Buffer-Bloat Grade: ${d.bufferBloatGrade}
     return (
         <div className="min-h-screen bg-background flex flex-col font-sans">
             <Navbar />
-            <NitroDashboard />
 
             <main className="flex-1 container mx-auto px-4 max-w-4xl py-12">
                 <div className="text-center mb-12">
@@ -2844,62 +2835,13 @@ Buffer-Bloat Grade: ${d.bufferBloatGrade}
                     </div>
                     <h1 className="text-4xl md:text-5xl font-bold text-foreground mb-4">Turbo Drop</h1>
                     <p className="text-xs text-indigo-600 font-black tracking-[0.2em] uppercase mb-2 flex items-center justify-center gap-2">
-                        <button 
-                            className={`w-2 h-2 rounded-full ${wsConnected ? 'bg-green-500 animate-pulse' : 'bg-red-500'} cursor-pointer`}
-                            onClick={() => { logDebug("Signaling Pulse Triggered"); sendControlMsg({ type: 'heartbeat', ts: Date.now() }); }}
-                            title="Signal Status - Click to Pulse"
-                        />
+                        {wsConnected && (
+                            <span className="w-2 h-2 rounded-full bg-green-500 animate-pulse" />
+                        )}
                         {VERSION} 
-                        
-                        {/* v02.2.37: Interactive Mode HUD */}
-                        <button 
-                            className={`ml-2 px-2 py-0.5 rounded-sm text-[8px] font-black uppercase tracking-widest border transition-all hover:scale-105 active:scale-95 ${
-                                mode === 'send' 
-                                    ? 'bg-emerald-500 text-white border-emerald-400 hover:bg-emerald-600' 
-                                    : mode === 'receive' 
-                                        ? 'bg-amber-500 text-white border-amber-400 hover:bg-amber-600'
-                                        : 'bg-slate-500 text-white border-slate-400'
-                            }`}
-                            onClick={() => {
-                                logDebug(`HUD Click: Re-joining room ${roomId}`);
-                                if (mode === 'receive') joinRoom(roomId);
-                                else if (mode === 'send') startSending(files);
-                            }}
-                        >
-                            {mode === 'send' ? 'SENDER' : mode === 'receive' ? 'RECEIVER' : 'WAITING'}
-                        </button>
-                        
-                        {/* v02.2.39: Peer Visibility */}
-                        <span className="ml-2 px-1 py-[1px] bg-slate-800 text-[8px] rounded-sm text-slate-400 font-mono">
-                            ROOM: {roomId || '...'}
-                        </span>
-                        
-                        {/* v02.2.42: Matrix Sync Signal ID */}
-                        <span className="ml-2 px-1 py-[1px] bg-slate-800 text-[8px] rounded-sm text-indigo-400 font-mono border border-indigo-500/20">
-                            SIGNAL: {signalId}
-                        </span>
-                        
-                        {/* v02.2.44: Protocol Alpha Gauntlet HUD */}
-                        <span className="ml-2 px-1 py-[1px] bg-red-600 text-[8px] rounded-sm text-white border border-red-400 animate-pulse">
-                            GAUNTLET MODE ACTIVE
-                        </span>
-                        
-                        {/* v02.2.43: Trial Counter */}
-                        {/^\d+$/.test(roomId) && (
-                            <span className="ml-2 px-1 py-[1px] bg-emerald-600 text-[8px] rounded-sm text-white border border-emerald-400/30">
-                                TRIAL: {roomId}
-                            </span>
-                        )}
-                        
-                        {/* v02.2.40: Bypass Badge */}
-                        {useEmergencyTunnel && (
-                            <span className="ml-2 px-1 py-[1px] bg-amber-500 text-[8px] rounded-sm text-white animate-bounce">
-                                PISTON BYPASS ACTIVE
-                            </span>
-                        )}
                     </p>
                     <p className="text-lg text-muted-foreground max-w-2xl mx-auto">
-                        The ultimate high-speed file sharing app. Transfer photos and large files (up to 200MB) from desktop to mobile or mobile to mobile instantly.
+                        Share large files instantly between devices.
                     </p>
                 </div>
 
