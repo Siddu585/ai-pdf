@@ -33,7 +33,10 @@ import { PaywallModal } from "@/components/layout/PaywallModal";
 // v02.2.23 (Tachyon Omega) - Structural Alignment & Physical Sync
 // v02.2.28 (Tachyon Omega - Piston Core) - Final Stability & UI Fix
 // v02.2.29 (Tachyon Omega - Quasar) - Stabilization Hub
-const VERSION = "v02.2.45 (Tachyon Omega - M2M Integrity)";
+// v02.2.46 (Tachyon Omega - Galactic Burst) - 10MB/s Final Form
+// v02.2.47 (Tachyon Omega - Solar Flare) - WebRTC Stability Fix
+const VERSION = "v02.2.47 (Tachyon Omega - Solar Flare)";
+
 function getEngineConfig(engine: 'M2M' | 'HYBRID' | 'NITRO') {
     if (engine === 'M2M') {
         return {
@@ -58,7 +61,7 @@ const HIGH_WATER_MARK_MAX = 32 * 1024 * 1024; // 32MB Jumbo Window for 10 MB/s s
 const BASE_PACER_THRESHOLD = 16 * 1024 * 1024; // 16MB Pacer Threshold
 const MAX_IN_FLIGHT = 4096; // 4096 chunks (x32KB = 128MB ceiling)
 const DRAIN_THRESHOLD = 64 * 1024 * 1024; 
-const BDP_GPE_GATE = 64 * 1024 * 1024; // v02.2.45: Default Nitro Gate (M2M uses 4MB hard-floor)
+const BDP_GPE_GATE = 64 * 1024 * 1024; // v02.2.46: Default Nitro Gate (M2M uses 4MB hard-floor)
 
 const isMobileDevice = () => {
     if (typeof window === 'undefined') return false;
@@ -82,9 +85,9 @@ const ICE_SERVERS = {
         { urls: "stun:stun3.l.google.com:19302" },
         { urls: "stun:stun4.l.google.com:19302" },
         { urls: "stun:stun.cloudflare.com:3478" },
-        { urls: "stun:stun.services.mozilla.com" },
         { urls: "stun:global.stun.twilio.com:3478" }
     ]
+
 };
 
 function InstantDropContent() {
@@ -184,7 +187,7 @@ function InstantDropContent() {
     const dynamicChunkSizeRef = useRef(CHUNK_SIZE); // v02.1.50: Adaptive MTU
     const rttBufferRef = useRef<number[]>([]); // v02.2.10.9: RTT Smoothing Buffer
     const chunksSentSinceScaleRef = useRef(0);
-    const rollbackTriggerRef = useRef<number | null>(null); // v02.2.45: HSFC Rollback Signal
+    const rollbackTriggerRef = useRef<number | null>(null); // v02.2.46: HSFC Rollback Signal
     const gpeBlockedSinceRef = useRef<number | null>(null); // v02.1.56: Deadlock Safety
     const lastProgressTimeRef = useRef<number>(Date.now()); // v02.1.77: Deadlock Buster
     const diagnosticMetricsRef = useRef({
@@ -847,8 +850,10 @@ ${capturedLogsRef.current.join('\n')}
                                         const nKey = fileIdx + "-" + i;
                                         const h = nackHistory.get(nKey) || { count: 0, lastT: 0 };
                                         
-                                        // Exponential Backoff: RTT * 2^count
+                                        // Exponential Backoff: RTT * 2^count (Capped at 8x)
+                                        const backoff = interval * Math.pow(2, Math.min(h.count, 3));
                                         if (now - h.lastT > backoff) {
+
                                             if (h.count > 20) return; // v02.2.44: NACK Ceiling - Don't saturate upstream forever
                                             h.count++;
                                             h.lastT = now;
@@ -1312,6 +1317,10 @@ ${capturedLogsRef.current.join('\n')}
                                     ? relayServersRef.current 
                                     : [...ICE_SERVERS.iceServers];
                                     
+            // v02.2.46: Staggered ICE Ignition (Bypass Carrier STUN Rate-Limiter)
+            const ignitionDelay = isSender ? (pipeIdx * 150) : 0;
+            await new Promise(r => setTimeout(r, ignitionDelay));
+
             // v02.1.39 (Patch 24.3): Hybrid Anchor Strategy 
             // v02.2.21: Engine-Aware Pipe Expansion
             const isSelfMobile = isMobileDevice();
@@ -1344,7 +1353,7 @@ ${capturedLogsRef.current.join('\n')}
                     logDebug(`🚨 Pipe-${pipeIdx} HANG [Carrier Black-Hole] detected. Resuscitating...`);
                     try { 
                         pc.restartIce(); 
-                        // v02.2.45: Trigger HSFC Rollback to prevent buffer wipe data loss
+                        // v02.2.46: Trigger HSFC Rollback to prevent buffer wipe data loss
                         if (modeRef.current === 'send') {
                             const lastCleared = diagnosticMetricsRef.current.bytesCleared || 0;
                             logDebug(`🛡️ HSFC ROLLBACK: Signaling rollback to last known-good byte: ${lastCleared}`);
@@ -1797,7 +1806,7 @@ ${capturedLogsRef.current.join('\n')}
         while (byteOffset < file.size || pendingChunk) {
             if (!isActive.current) return;
 
-            // v02.2.45: HSFC Rollback Execution
+            // v02.2.46: HSFC Rollback Execution
             if (rollbackTriggerRef.current !== null) {
                 const targetOffset = rollbackTriggerRef.current;
                 rollbackTriggerRef.current = null;
@@ -1834,9 +1843,14 @@ ${capturedLogsRef.current.join('\n')}
             const activeEngine = isM2M ? 'M2M' : (isSelfMobile || remoteCapabilityRef.current.isMobile) ? 'HYBRID' : 'NITRO';
             const config = getEngineConfig(activeEngine);
             
-            // v02.2.45: Hard Synchronous Flow Control (HSFC) - 4MB Gate for M2M
-            const isGPEBlocked = gpeInFlightBytesRef.current > (isM2M ? 4 * 1024 * 1024 : 512 * 1024 * 1024); 
+            // v02.2.46: Dynamic Galactic Burst Gate (Galactic-Scale BDP)
+            // BDP = Bitrate * RTT. We scale up to 24MB to ensure 10MB/s at 2s RTT.
+            const dynamicGate = isM2M ? Math.min(24 * 1024 * 1024, Math.max(4 * 1024 * 1024, (smoothedRTT * (10 * 1024 * 1024)) * 1.2)) : 512 * 1024 * 1024;
+            const isGPEBlocked = gpeInFlightBytesRef.current > dynamicGate; 
             
+            if (isGPEBlocked && chunkSeqIdx % 50 === 0) {
+                logDebug(`🛰️ GPE ENFORCEMENT: Burst Pause. In-Flight: ${(gpeInFlightBytesRef.current / 1024 / 1024).toFixed(2)}MB / Limit: ${(dynamicGate / 1024 / 1024).toFixed(2)}MB`);
+            }
             let targetPipeCount = Math.min(config.pipes, getAdaptivePipeCount(currentRTT, activeEngine));
             const targetChannelLimit = targetPipeCount * CHANNELS_PER_PIPE;
 
@@ -1981,7 +1995,7 @@ ${capturedLogsRef.current.join('\n')}
                         flowPulseLastTsRef.current = Date.now(); // Reset to avoid constant halving
                     }
 
-                    // v02.2.45: M2M HSFC Gate Enforcement
+                    // v02.2.46: M2M HSFC Gate Enforcement
                     const currentGate = isM2M ? 4 * 1024 * 1024 : BDP_GPE_GATE;
                     const canSend = (gpeInFlightBytesRef.current < currentGate);
                     
@@ -2494,7 +2508,7 @@ ${capturedLogsRef.current.join('\n')}
                     } else {
                         setProgress(p => Math.min(99, p + 2)); 
                     }
-                    // v02.2.45: M2M Synchronous ACKing (ACK every chunk to prevent gate stalls)
+                    // v02.2.46: M2M Synchronous ACKing (ACK every chunk to prevent gate stalls)
                     const isM2M = remoteCapabilityRef.current.isMobile && isMobileDevice();
                     const pullInterval = isM2M ? 1 : (currentChunksReceived < 5 ? 1 : 2);
                     if (currentChunksReceived % pullInterval === 0) {

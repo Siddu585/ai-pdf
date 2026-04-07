@@ -34,9 +34,15 @@ print = functools.partial(print, flush=True)
 
 app = FastAPI(title="PDF Ninja Intelligent Backend")
 
+@app.get("/")
+async def root_probe():
+    return {"status": "online", "message": "PDF Ninja Intelligent Backend - Ready"}
+
+
 @app.get("/api/health")
 async def health_check():
-    return {"status": "healthy", "version": "v02.1.39", "engine": "PDF Ninja Intelligent Backend"}
+    return {"status": "healthy", "version": "v02.2.47", "engine": "PDF Ninja Intelligent Backend"}
+
 
 # Fully open CORS since this is a public stateless tool
 app.add_middleware(
