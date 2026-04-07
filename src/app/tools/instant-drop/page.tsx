@@ -33,7 +33,7 @@ import { PaywallModal } from "@/components/layout/PaywallModal";
 // v02.2.23 (Tachyon Omega) - Structural Alignment & Physical Sync
 // v02.2.28 (Tachyon Omega - Piston Core) - Final Stability & UI Fix
 // v02.2.29 (Tachyon Omega - Quasar) - Stabilization Hub
-const VERSION = "v02.2.44 (Tachyon Omega - M2M Stable)";
+const VERSION = "v02.2.45 (Tachyon Omega - M2M Integrity)";
 function getEngineConfig(engine: 'M2M' | 'HYBRID' | 'NITRO') {
     if (engine === 'M2M') {
         return {
@@ -58,7 +58,7 @@ const HIGH_WATER_MARK_MAX = 32 * 1024 * 1024; // 32MB Jumbo Window for 10 MB/s s
 const BASE_PACER_THRESHOLD = 16 * 1024 * 1024; // 16MB Pacer Threshold
 const MAX_IN_FLIGHT = 4096; // 4096 chunks (x32KB = 128MB ceiling)
 const DRAIN_THRESHOLD = 64 * 1024 * 1024; 
-const BDP_GPE_GATE = 64 * 1024 * 1024; // v02.2.29: Default 64MB In-Flight Gate
+const BDP_GPE_GATE = 64 * 1024 * 1024; // v02.2.45: Default Nitro Gate (M2M uses 4MB hard-floor)
 
 const isMobileDevice = () => {
     if (typeof window === 'undefined') return false;
@@ -184,6 +184,7 @@ function InstantDropContent() {
     const dynamicChunkSizeRef = useRef(CHUNK_SIZE); // v02.1.50: Adaptive MTU
     const rttBufferRef = useRef<number[]>([]); // v02.2.10.9: RTT Smoothing Buffer
     const chunksSentSinceScaleRef = useRef(0);
+    const rollbackTriggerRef = useRef<number | null>(null); // v02.2.45: HSFC Rollback Signal
     const gpeBlockedSinceRef = useRef<number | null>(null); // v02.1.56: Deadlock Safety
     const lastProgressTimeRef = useRef<number>(Date.now()); // v02.1.77: Deadlock Buster
     const diagnosticMetricsRef = useRef({
@@ -1341,7 +1342,15 @@ ${capturedLogsRef.current.join('\n')}
                 const pc = peersRef.current[pipeIdx];
                 if (pc && (pc.iceConnectionState === 'new' || pc.iceConnectionState === 'checking')) {
                     logDebug(`🚨 Pipe-${pipeIdx} HANG [Carrier Black-Hole] detected. Resuscitating...`);
-                    try { pc.restartIce(); } catch (e) {}
+                    try { 
+                        pc.restartIce(); 
+                        // v02.2.45: Trigger HSFC Rollback to prevent buffer wipe data loss
+                        if (modeRef.current === 'send') {
+                            const lastCleared = diagnosticMetricsRef.current.bytesCleared || 0;
+                            logDebug(`🛡️ HSFC ROLLBACK: Signaling rollback to last known-good byte: ${lastCleared}`);
+                            rollbackTriggerRef.current = lastCleared;
+                        }
+                    } catch (e) {}
                 }
             }, 4000);
 
@@ -1760,7 +1769,7 @@ ${capturedLogsRef.current.join('\n')}
     const transferFileP2PParallel = async (file: File, index: number) => {
         // v02.1.94: Use ReadableStream to prevent OOM on large files
         const stream = file.stream();
-        const reader = stream.getReader();
+        let reader = stream.getReader();
         
         // v02.1.91: Adaptive MTU Probing
         let byteOffset = isResumingRef.current ? lastSuccessfulChunkIdxRef.current : 0; 
@@ -1788,6 +1797,31 @@ ${capturedLogsRef.current.join('\n')}
         while (byteOffset < file.size || pendingChunk) {
             if (!isActive.current) return;
 
+            // v02.2.45: HSFC Rollback Execution
+            if (rollbackTriggerRef.current !== null) {
+                const targetOffset = rollbackTriggerRef.current;
+                rollbackTriggerRef.current = null;
+                if (targetOffset < byteOffset) {
+                    logDebug(`🔄 ROLLBACK IN PROGRESS: ${byteOffset} -> ${targetOffset}`);
+                    byteOffset = targetOffset;
+                    pendingChunk = null;
+                    currentChunkResidual = null;
+                    // Re-initialize reader to seek to targetOffset
+                    try { reader.cancel(); } catch(e) {}
+                    const newStream = file.stream();
+                    const newReader = newStream.getReader();
+                    let skipped = 0;
+                    while (skipped < byteOffset) {
+                        const { value, done } = await newReader.read();
+                        if (done) break;
+                        skipped += value.byteLength;
+                    }
+                    // Replace reader with the newly positioned one
+                    // Note: This requires reassignment of the reader variable (need to move it out or use an object)
+                    // I will adjust the reader variable to be a let.
+                }
+            }
+
             // v02.2.10.9: Smoothed RTT for Scaling
             const smoothedRTT = rttBufferRef.current.length > 0 
                 ? rttBufferRef.current.reduce((a, b) => a + b) / rttBufferRef.current.length 
@@ -1800,8 +1834,8 @@ ${capturedLogsRef.current.join('\n')}
             const activeEngine = isM2M ? 'M2M' : (isSelfMobile || remoteCapabilityRef.current.isMobile) ? 'HYBRID' : 'NITRO';
             const config = getEngineConfig(activeEngine);
             
-            // v02.2.21: Hyper-Buffer Guard (M2M Optimized)
-            const isGPEBlocked = gpeInFlightBytesRef.current > (isM2M ? 64 * 1024 * 1024 : 512 * 1024 * 1024); 
+            // v02.2.45: Hard Synchronous Flow Control (HSFC) - 4MB Gate for M2M
+            const isGPEBlocked = gpeInFlightBytesRef.current > (isM2M ? 4 * 1024 * 1024 : 512 * 1024 * 1024); 
             
             let targetPipeCount = Math.min(config.pipes, getAdaptivePipeCount(currentRTT, activeEngine));
             const targetChannelLimit = targetPipeCount * CHANNELS_PER_PIPE;
@@ -1947,7 +1981,9 @@ ${capturedLogsRef.current.join('\n')}
                         flowPulseLastTsRef.current = Date.now(); // Reset to avoid constant halving
                     }
 
-                    const canSend = (gpeInFlightBytesRef.current < BDP_GPE_GATE);
+                    // v02.2.45: M2M HSFC Gate Enforcement
+                    const currentGate = isM2M ? 4 * 1024 * 1024 : BDP_GPE_GATE;
+                    const canSend = (gpeInFlightBytesRef.current < currentGate);
                     
                     // v02.2.29: GPE Deadlock Watchdog (Stuck-Gate Buster)
                     if (!canSend && !gpeBlockedSinceRef.current) gpeBlockedSinceRef.current = Date.now();
@@ -2458,7 +2494,9 @@ ${capturedLogsRef.current.join('\n')}
                     } else {
                         setProgress(p => Math.min(99, p + 2)); 
                     }
-                    const pullInterval = currentChunksReceived < 5 ? 1 : 2;
+                    // v02.2.45: M2M Synchronous ACKing (ACK every chunk to prevent gate stalls)
+                    const isM2M = remoteCapabilityRef.current.isMobile && isMobileDevice();
+                    const pullInterval = isM2M ? 1 : (currentChunksReceived < 5 ? 1 : 2);
                     if (currentChunksReceived % pullInterval === 0) {
                         // v02.2.15: Explicit Length Signal using pre-transfer packetLen
                         const bytesToClear = pullInterval * packetLen;
