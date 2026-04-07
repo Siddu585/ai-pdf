@@ -41,7 +41,7 @@ async def root_probe():
 
 @app.get("/api/health")
 async def health_check():
-    return {"status": "healthy", "version": "v02.2.48", "engine": "PDF Ninja Intelligent Backend"}
+    return {"status": "healthy", "version": "v02.2.49", "engine": "PDF Ninja Intelligent Backend"}
 
 @app.post("/api/diagnostics/upload")
 async def upload_diagnostics(data: dict):
