@@ -41,7 +41,31 @@ async def root_probe():
 
 @app.get("/api/health")
 async def health_check():
-    return {"status": "healthy", "version": "v02.2.47", "engine": "PDF Ninja Intelligent Backend"}
+    return {"status": "healthy", "version": "v02.2.48", "engine": "PDF Ninja Intelligent Backend"}
+
+@app.post("/api/diagnostics/upload")
+async def upload_diagnostics(data: dict):
+    room_id = data.get("room_id")
+    client_type = data.get("client_type", "unknown")
+    logs = data.get("logs", [])
+    if room_id:
+        if room_id not in manager.diagnostics:
+            manager.diagnostics[room_id] = {}
+        manager.diagnostics[room_id][client_type] = logs
+        print(f"📁 Diagnostics Uploaded for Room: {room_id} | Client: {client_type} ({len(logs)} lines)")
+        return {"status": "success"}
+    return {"status": "error", "message": "Missing room_id"}
+
+
+@app.get("/api/diagnostics/{room_id}")
+async def fetch_diagnostics(room_id: str):
+    # Returns { "send": [...], "receive": [...] } if available
+    room_logs = manager.diagnostics.get(room_id, {})
+    if not room_logs:
+        return {"status": "not_found", "message": "No diagnostics for this room"}
+    return {"status": "success", "logs": room_logs}
+
+
 
 
 # Fully open CORS since this is a public stateless tool
@@ -62,6 +86,10 @@ class ConnectionManager:
     def __init__(self):
         # Maps room_id -> {"sender": WebSocket, "receiver": WebSocket}
         self.rooms: dict[str, dict[str, WebSocket]] = {}
+        # v02.2.48: Forensic Diagnostic Storage (RoomID -> ClientType -> Logs)
+        self.diagnostics: dict[str, dict[str, list[str]]] = {}
+
+
 
     async def connect(self, websocket: WebSocket, room_id: str, client_type: str):
         await websocket.accept()

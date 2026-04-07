@@ -35,7 +35,9 @@ import { PaywallModal } from "@/components/layout/PaywallModal";
 // v02.2.29 (Tachyon Omega - Quasar) - Stabilization Hub
 // v02.2.46 (Tachyon Omega - Galactic Burst) - 10MB/s Final Form
 // v02.2.47 (Tachyon Omega - Solar Flare) - WebRTC Stability Fix
-const VERSION = "v02.2.47 (Tachyon Omega - Solar Flare)";
+// v02.2.48 (Tachyon Omega - Solar Flare) - 10MB/s M2M Persistent Core
+const VERSION = "v02.2.48 (Tachyon Omega - Solar Flare)";
+
 
 function getEngineConfig(engine: 'M2M' | 'HYBRID' | 'NITRO') {
     if (engine === 'M2M') {
@@ -61,7 +63,8 @@ const HIGH_WATER_MARK_MAX = 32 * 1024 * 1024; // 32MB Jumbo Window for 10 MB/s s
 const BASE_PACER_THRESHOLD = 16 * 1024 * 1024; // 16MB Pacer Threshold
 const MAX_IN_FLIGHT = 4096; // 4096 chunks (x32KB = 128MB ceiling)
 const DRAIN_THRESHOLD = 64 * 1024 * 1024; 
-const BDP_GPE_GATE = 64 * 1024 * 1024; // v02.2.46: Default Nitro Gate (M2M uses 4MB hard-floor)
+const BDP_GPE_GATE = 64 * 1024 * 1024; // v02.2.48: Default Nitro (M2M uses 32MB hard-floor for 10MB/s)
+
 
 const isMobileDevice = () => {
     if (typeof window === 'undefined') return false;
@@ -276,16 +279,18 @@ function InstantDropContent() {
         // v02.1.18: Define next target based on RTT bands
         let target = 1;
         if (engineMode === 'M2M') {
-            if (rtt < 0.250) target = 12; // v02.2.24: Raised Tachyon Band (50ms buffer)
-            else if (rtt < 0.600) target = 10;
-            else target = 8; // v02.2.24: Hard Floor (No more 4-pipe drops for M2M)
+            if (rtt < 0.350) target = 12; // v02.2.48: Augmented Tachyon Bands
+            else if (rtt < 0.800) target = 10;
+            else target = 8; // Persistent Concurrency for 10MB/s Target
         } else if (engineMode === 'HYBRID') {
-            target = 2;
+            if (rtt < 0.600) target = 6; // v02.2.48: Hybrid Overdrive
+            else target = 4;
         } else {
             if (rtt < 0.400) target = 4;
-            else if (rtt < 0.800) target = 2;
+            else if (rtt < 1.000) target = 2; // Looser throttling
             else target = 1;
         }
+
 
         // Hysteresis Logic:
         // Enforce Hard Engine Ceilings (v02.2.23)
@@ -372,6 +377,40 @@ function InstantDropContent() {
         if (capturedLogsRef.current.length > 5000) capturedLogsRef.current.shift();
     }
 
+    async function uploadDiagnostics() {
+        if (!roomId) return;
+        logDebug(`[DIAGNOSTICS] Uploading Logs for Room: ${roomId} as ${mode}...`);
+        try {
+            const res = await fetch(`${BACKEND_HTTP_URL}/api/diagnostics/upload`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    room_id: roomId,
+                    client_type: mode, // v02.2.48: Forensic Alignment
+                    logs: capturedLogsRef.current,
+                    version: VERSION
+                })
+            });
+            if (res.ok) {
+                logDebug(`✅ [DIAGNOSTICS] Upload Successful (${mode}). Forensic ID: ${roomId}`);
+            } else {
+                logDebug(`❌ [DIAGNOSTICS] Upload Failed (Status: ${res.status})`);
+            }
+        } catch (e: any) {
+            logDebug(`❌ [DIAGNOSTICS] Upload Error: ${e.message}`);
+        }
+    }
+
+    const reportIssue = () => {
+        logDebug("🚨 [FORENSIC] Initiating Dual-Peer Sync Diagnostic Upload...");
+        uploadDiagnostics(); // Local Upload
+        sendControlMsg({ type: 'request-diagnostics' }); // Remote Trigger
+        alert("Diagnostics uploaded! Developer notified.");
+    };
+
+
+
+
     function sendControlMsg(payload: any, priority = false) {
         const msgStr = JSON.stringify(payload);
         
@@ -444,11 +483,9 @@ function InstantDropContent() {
             setTransferSpeed(null);
             setTotalFiles(0);
             setIncomingMeta(null);
-            
-            // v02.1.80: Worker Memory Hygiene (Anti-Leak)
-            workerRef.current?.postMessage({ type: 'RESET_WORKER' });
         }
     };
+
 
     function handleControlMessage(msg: any) {
         if (!msg || !msg.type) return;
@@ -539,7 +576,18 @@ function InstantDropContent() {
                     workerRef.current?.postMessage({ type: 'chunk', fileIdx: 0, chunkIdx: 0xFFFFFFFD, payloadCount: msg.totalFiles });
                 }
                 break;
+            case 'request-diagnostics':
+                logDebug("Remote: Diagnostic Upload Triggered by Peer.");
+                uploadDiagnostics();
+                break;
+            case 'diagnostic-dump':
+                logDebug("Remote: Diagnostics Received from Peer.");
+                // Store in session storage or alert
+                console.log("PEER DIAGNOSTICS:", msg.data);
+                break;
+
             case 'force-verify':
+
                 if (modeRef.current === 'receive') {
                     logDebug("Receiver: Force-Verify signal received.");
                     workerRef.current?.postMessage({ type: 'force-all-done' });
@@ -866,7 +914,8 @@ ${capturedLogsRef.current.join('\n')}
                         }
                     });
                 }
-            }, 1000);
+            }, 200); // v02.2.48: High-Frequency Forensic Hole Detection (was 1000ms)
+
 
             self.onmessage = function(e) {
                 const { type, fileIdx, chunkIdx, meta } = e.data;
@@ -1843,9 +1892,9 @@ ${capturedLogsRef.current.join('\n')}
             const activeEngine = isM2M ? 'M2M' : (isSelfMobile || remoteCapabilityRef.current.isMobile) ? 'HYBRID' : 'NITRO';
             const config = getEngineConfig(activeEngine);
             
-            // v02.2.46: Dynamic Galactic Burst Gate (Galactic-Scale BDP)
-            // BDP = Bitrate * RTT. We scale up to 24MB to ensure 10MB/s at 2s RTT.
-            const dynamicGate = isM2M ? Math.min(24 * 1024 * 1024, Math.max(4 * 1024 * 1024, (smoothedRTT * (10 * 1024 * 1024)) * 1.2)) : 512 * 1024 * 1024;
+            // v02.2.48: Solar Flare Augmented Gate (16MB floor / 64MB cap)
+            const dynamicGate = isM2M ? Math.min(64 * 1024 * 1024, Math.max(16 * 1024 * 1024, (smoothedRTT * (10 * 1024 * 1024)) * 1.5)) : 512 * 1024 * 1024;
+
             const isGPEBlocked = gpeInFlightBytesRef.current > dynamicGate; 
             
             if (isGPEBlocked && chunkSeqIdx % 50 === 0) {
@@ -3380,12 +3429,19 @@ Buffer-Bloat Grade: ${d.bufferBloatGrade}
                     {/* Debug Logs Section */}
                     <div className="mt-8 pt-8 border-t flex flex-col items-center gap-4">
                         <p className="text-xs text-muted-foreground max-w-sm">
-                            Running slow? Download diagnostics and send to developer for Superfast optimization analysis.
+                            Running slow or encountered an error? Report it to the developer instantly.
                         </p>
-                        <Button variant="outline" size="sm" onClick={downloadDiagnostics} className="text-indigo-600 border-indigo-200 hover:bg-indigo-50">
-                            📊 Download Meta Diagnostics
-                        </Button>
+                        <div className="flex gap-2">
+                            <Button variant="outline" size="sm" onClick={downloadDiagnostics} className="text-indigo-600 border-indigo-200 hover:bg-indigo-50">
+                                📊 Download Meta Diagnostics
+                            </Button>
+                            <Button size="sm" onClick={reportIssue} className="bg-indigo-600 hover:bg-indigo-700 text-white font-bold gap-2">
+                                <Activity className="w-4 h-4" />
+                                Report Issue (One-Click)
+                            </Button>
+                        </div>
                     </div>
+
 
                 </div>
             </main >
