@@ -11,6 +11,7 @@ import asyncio
 
 from app.pdf_agent import run_iterative_pdf_compression, organize_pdf, extract_pdf_thumbnails, images_to_pdf, split_pdf, pdf_to_word, office_to_pdf, unlock_pdf, repair_pdf
 from app.ocr_agent import extract_text_from_image
+from app.ocr_pdf_agent import process_ocr_pdf, extract_edited_pdf
 from app.chat_agent import chat_with_pdf
 from app.image_agent import run_iterative_image_compression
 import hashlib
@@ -670,6 +671,55 @@ async def repair_pdf_endpoint(
             output_path, 
             media_type="application/pdf", 
             filename=file.filename.replace(".pdf", "") + "_repaired.pdf"
+        )
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/api/ocr-pdf")
+async def ocr_pdf_scan(
+    request: Request,
+    file: UploadFile = File(...),
+    deviceId: str = Form("")
+):
+    key = tracker.get_key(request, deviceId)
+    allowed, count = tracker.check_and_record(key, deviceId)
+    if not allowed:
+        raise HTTPException(status_code=402, detail="Daily limit reached. Upgrade to Pro for unlimited use!")
+    try:
+        ext = os.path.splitext(file.filename)[1] or ".pdf"
+        with tempfile.NamedTemporaryFile(delete=False, suffix=ext) as tmp:
+            shutil.copyfileobj(file.file, tmp)
+            tmp_path = tmp.name
+
+        results = await run_in_threadpool(process_ocr_pdf, tmp_path)
+        return {"filename": file.filename, "ocr_data": results}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/api/ocr-pdf/export")
+async def ocr_pdf_export(
+    request: Request,
+    file: UploadFile = File(...),
+    edits: str = Form(...),
+    deviceId: str = Form("")
+):
+    key = tracker.get_key(request, deviceId)
+    allowed, count = tracker.check_and_record(key, deviceId)
+    if not allowed:
+        raise HTTPException(status_code=402, detail="Daily limit reached. Upgrade to Pro for unlimited use!")
+    try:
+        ext = os.path.splitext(file.filename)[1] or ".pdf"
+        with tempfile.NamedTemporaryFile(delete=False, suffix=ext) as tmp:
+            shutil.copyfileobj(file.file, tmp)
+            tmp_path = tmp.name
+
+        edits_data = json.loads(edits)
+        output_path = await run_in_threadpool(extract_edited_pdf, tmp_path, edits_data)
+        
+        return FileResponse(
+            output_path, 
+            media_type="application/pdf", 
+            filename=file.filename.replace(".pdf", "") + "_edited.pdf"
         )
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
