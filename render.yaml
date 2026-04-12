@@ -1,0 +1,9 @@
+services:
+  - type: web
+    name: trueedit-backend
+    runtime: docker
+    dockerContext: backend
+    dockerfilePath: backend/Dockerfile
+    envVars:
+      - key: GROQ_API_KEY
+        sync: false
