@@ -701,6 +701,7 @@ async def ocr_pdf_export(
     request: Request,
     file: UploadFile = File(...),
     edits: str = Form(...),
+    ocrData: str = Form("{}"),
     deviceId: str = Form("")
 ):
     key = tracker.get_key(request, deviceId)
@@ -714,7 +715,8 @@ async def ocr_pdf_export(
             tmp_path = tmp.name
 
         edits_data = json.loads(edits)
-        output_path = await run_in_threadpool(extract_edited_pdf, tmp_path, edits_data)
+        full_ocr_data = json.loads(ocrData)
+        output_path = await run_in_threadpool(extract_edited_pdf, tmp_path, edits_data, full_ocr_data)
         
         return FileResponse(
             output_path, 
