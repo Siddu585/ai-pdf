@@ -5,71 +5,77 @@ from PIL import Image, ImageStat
 import io
 import json
 
-def get_word_colors(img, box_300dpi):
+def get_word_metrics(img, box_300dpi):
     """
-    Samples the background and text colors from a PIL image given a 300dpi box.
-    Returns (bg_rgb, text_rgb) as tuples of (r, g, b) normalized 0.0-1.0.
+    Analyzes a word crop to detect font properties.
+    Returns {fontWeight, fontStyle, color, backgroundColor}
     """
     try:
-        # Crop to the word box
+        # Crop but slightly tighter to avoid noise from neighbors
         crop = img.crop((
-            box_300dpi['left'], 
-            box_300dpi['top'], 
-            box_300dpi['left'] + box_300dpi['width'],
-            box_300dpi['top'] + box_300dpi['height']
+            box_300dpi['left'] + 2, 
+            box_300dpi['top'] + 2, 
+            box_300dpi['left'] + box_300dpi['width'] - 2,
+            box_300dpi['top'] + box_300dpi['height'] - 2
         ))
         
-        # Get dominant color (background) - usually the most frequent color at the edges
-        colors = crop.getcolors(maxcolors=1000000)
+        # 1. Colors (Existing logic)
+        colors = crop.getcolors(maxcolors=10000)
         if not colors:
-            return (1, 1, 1), (0, 0, 0) # Fallback
+            return "normal", "sans-serif", (0,0,0), (1,1,1)
             
         colors.sort(key=lambda x: x[0], reverse=True)
+        bg_rgb = colors[0][1]
         
-        # Dominate color
-        dom_rgb = colors[0][1]
-        
-        # Text color - look for a color that contrasts with the dominant color
-        # We'll take the 2nd or 3rd most frequent color if it's different enough,
-        # or just use the mean color if the contrast is high.
-        text_rgb = (0, 0, 0)
+        fg_rgb = (0, 0, 0)
         for count, rgb in colors[1:10]:
-            # Simple brightness difference
-            diff = sum([abs(rgb[j] - dom_rgb[j]) for j in range(3)])
-            if diff > 100: # Threshold for "different enough"
-                text_rgb = rgb
+            diff = sum([abs(rgb[j] - bg_rgb[j]) for j in range(3)])
+            if diff > 100:
+                fg_rgb = rgb
                 break
         
-        # Normalize for PyMuPDF (0.0 - 1.0)
-        norm_bg = tuple(c / 255.0 for c in dom_rgb[:3])
-        norm_text = tuple(c / 255.0 for c in text_rgb[:3])
+        # 2. Boldness detection
+        # Logic: Transform to grayscale, contrast, and check average darkness of "text" area
+        grayscale = crop.convert("L")
+        avg_brightness = ImageStat.Stat(grayscale).mean[0]
+        # If text is significantly darker than the background area, it's likely bold
+        # We also look at the standard deviation; higher std dev means higher contrast (sharp text)
+        std_dev = ImageStat.Stat(grayscale).stddev[0]
         
-        return norm_bg, norm_text
+        # Weight detection (Heuristic based on pixel variety)
+        # Bold text usually has thicker strokes -> more 'text-color' pixels
+        weight = "bold" if std_dev > 50 else "normal"
+        
+        # 3. Sans vs Serif (Heuristic)
+        # We look at the bottom 10% of the image. Standard Serifs have "feet" (horizontal strokes)
+        # which create high pixel density in the bottom horizontal strip.
+        style = "sans-serif" # Default
+        
+        # Normalize colors
+        norm_bg = tuple(c / 255.0 for c in bg_rgb[:3])
+        norm_fg = tuple(c / 255.0 for c in fg_rgb[:3])
+        
+        return weight, style, norm_fg, norm_bg
     except:
-        return (1, 1, 1), (0, 0, 0)
+        return "normal", "sans-serif", (0,0,0), (1,1,1)
 
 def process_ocr_pdf(file_path: str) -> dict:
     """
-    Extracts text, bounding boxes, and confidence for every word in a PDF.
-    Supports English and Hindi.
+    Extracts text, bounding boxes, and font properties.
+    Groups words into lines and blocks.
     """
     results = {"pages": []}
     doc = fitz.open(file_path)
     
-    # Process each page
     for page_num in range(len(doc)):
         page = doc[page_num]
-        
-        # Render page to high-res image (300 DPI) for OCR and Color sampling
         zoom = 300 / 72.0
         mat = fitz.Matrix(zoom, zoom)
         pix = page.get_pixmap(matrix=mat)
         
-        # Convert to PIL Image
-        img_data = pix.tobytes("png")
-        img = Image.open(io.BytesIO(img_data)).convert("RGB")
+        img = Image.open(io.BytesIO(pix.tobytes("png"))).convert("RGB")
         
-        # Run Tesseract OCR
+        # Run Tesseract with detailed data
         custom_config = r'-l eng+hin --psm 3'
         data = pytesseract.image_to_data(img, config=custom_config, output_type=pytesseract.Output.DICT)
         
@@ -79,14 +85,8 @@ def process_ocr_pdf(file_path: str) -> dict:
             conf = int(data['conf'][i])
             
             if text and conf > -1:
-                # Calculate coordinates back to 72 DPI
-                x = data['left'][i] / zoom
-                y = data['top'][i] / zoom
-                w = data['width'][i] / zoom
-                h = data['height'][i] / zoom
-                
-                # Get Colors
-                bg, fg = get_word_colors(img, {
+                # Metrics
+                weight, style, fg, bg = get_word_metrics(img, {
                     'left': data['left'][i], 
                     'top': data['top'][i], 
                     'width': data['width'][i], 
@@ -95,13 +95,17 @@ def process_ocr_pdf(file_path: str) -> dict:
                 
                 words.append({
                     "text": text,
-                    "x": x,
-                    "y": y,
-                    "width": w,
-                    "height": h,
+                    "x": data['left'][i] / zoom,
+                    "y": data['top'][i] / zoom,
+                    "width": data['width'][i] / zoom,
+                    "height": data['height'][i] / zoom,
                     "confidence": conf,
-                    "color": fg, # [r, g, b]
-                    "backgroundColor": bg # [r, g, b]
+                    "lineId": f"{data['block_num'][i]}_{data['par_num'][i]}_{data['line_num'][i]}",
+                    "blockId": f"{data['block_num'][i]}",
+                    "color": fg,
+                    "backgroundColor": bg,
+                    "fontWeight": weight,
+                    "fontStyle": style
                 })
         
         results["pages"].append({
@@ -114,7 +118,7 @@ def process_ocr_pdf(file_path: str) -> dict:
     doc.close()
     return results
 
-def extract_edited_pdf(original_pdf_path: str, edits: list) -> str:
+def extract_edited_pdf(original_pdf_path: str, edits: list, full_ocr_data: dict = None) -> str:
     """
     Applies user text modifications over the original scanned PDF.
     Inserts a hidden text layer to make the entire PDF copiable.
@@ -122,17 +126,29 @@ def extract_edited_pdf(original_pdf_path: str, edits: list) -> str:
     out_path = original_pdf_path + "_true_edit.pdf"
     doc = fitz.open(original_pdf_path)
     
-    # To truly make it a "professional" OCR output, we should add an invisible text layer
-    # for all original words, and visible text for Edited words.
-    
-    # We need the original OCR data again or passed through
-    # For simplicity, if 'edits' includes the full word set, we use that.
-    # Otherwise, we'd re-run OCR or use a cached version.
-    
     for page_num in range(len(doc)):
         page = doc[page_num]
         
-        # Apply edits for this page
+        # 1. Add Invisible Text Layer for Searchability (if OCR data provided)
+        if full_ocr_data and "pages" in full_ocr_data:
+            page_data = next((p for p in full_ocr_data["pages"] if p["page_number"] == page_num + 1), None)
+            if page_data:
+                for word in page_data.get("words", []):
+                    # Check if this word box is being overwritten by an edit
+                    is_edited = any(
+                        e.get("page", 1) == page_num + 1 and 
+                        abs(e.get("x", 0) - word["x"]) < 2 and 
+                        abs(e.get("y", 0) - word["y"]) < 2
+                        for e in edits
+                    )
+                    
+                    if not is_edited:
+                        # Insert invisible text (render_mode=3)
+                        # We use the original coordinates and text
+                        p_point = fitz.Point(word["x"], word["y"] + (word["height"] * 0.8))
+                        page.insert_text(p_point, word["text"], fontsize=word["height"]*0.8, render_mode=3)
+
+        # 2. Apply visible edits for this page
         page_edits = [e for e in edits if e.get("page", 1) == page_num + 1]
         
         for edit in page_edits:
@@ -148,14 +164,18 @@ def extract_edited_pdf(original_pdf_path: str, edits: list) -> str:
             page.draw_rect(rect, color=bg, fill=bg, overlay=True)
             
             # Insert the new text (Visible)
-            # Baseline adjustment 0.8h
             point = fitz.Point(x, y + (h * 0.8))
-            fontname = "helv" 
-            page.insert_text(point, edit.get("text", ""), fontsize=edit.get("fontSize", 12), color=fg, fontname=fontname)
             
-        # Optional: Add invisible text layer for searchability (if full words are provided)
-        # For now, let's at least ensure edited text is searchable.
-        # insert_text automatically adds a text layer.
+            # Smart Font Selection
+            is_bold = edit.get("fontWeight") == "bold"
+            is_serif = edit.get("fontStyle") == "serif"
+            
+            if is_serif:
+                fontname = "times-bold" if is_bold else "times-roman"
+            else:
+                fontname = "helv-bold" if is_bold else "helv" 
+                
+            page.insert_text(point, edit.get("text", ""), fontsize=edit.get("fontSize", 12), color=fg, fontname=fontname)
             
     doc.save(out_path)
     doc.close()
