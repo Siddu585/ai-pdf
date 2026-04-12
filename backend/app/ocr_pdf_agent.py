@@ -4,6 +4,8 @@ import pytesseract
 from PIL import Image, ImageStat
 import io
 import json
+import gc
+import numpy as np
 
 def get_word_metrics(img, box_300dpi):
     """
@@ -11,7 +13,6 @@ def get_word_metrics(img, box_300dpi):
     Returns {fontWeight, fontStyle, color, backgroundColor}
     """
     try:
-        # Crop but slightly tighter to avoid noise from neighbors
         crop = img.crop((
             box_300dpi['left'] + 2, 
             box_300dpi['top'] + 2, 
@@ -19,7 +20,7 @@ def get_word_metrics(img, box_300dpi):
             box_300dpi['top'] + box_300dpi['height'] - 2
         ))
         
-        # 1. Colors (Existing logic)
+        # 1. Colors (S.C.O.T Color Logic)
         colors = crop.getcolors(maxcolors=10000)
         if not colors:
             return "normal", "sans-serif", (0,0,0), (1,1,1)
@@ -28,31 +29,48 @@ def get_word_metrics(img, box_300dpi):
         bg_rgb = colors[0][1]
         
         fg_rgb = (0, 0, 0)
-        for count, rgb in colors[1:10]:
+        contrast_colors = []
+        for count, rgb in colors[1:]:
             diff = sum([abs(rgb[j] - bg_rgb[j]) for j in range(3)])
             if diff > 100:
-                fg_rgb = rgb
-                break
-        
+                contrast_colors.append((count, rgb))
+                
+        if contrast_colors:
+            # Sort by absolute geometric darkness to avoid blurry edge bleed greys
+            contrast_colors.sort(key=lambda item: sum(item[1]))
+            fg_rgb = contrast_colors[0][1]
+            
         # 2. Boldness detection
-        # Logic: Transform to grayscale and check pixel variety
         grayscale = crop.convert("L")
         std_dev = ImageStat.Stat(grayscale).stddev[0]
-        
-        # New Boldness threshold (Tuned for dark documents like the user's)
-        # 35-40 is usually the sweet spot for sensing bold text on dark backgrounds
         weight = "bold" if std_dev > 38 else "normal"
         
-        # 3. Sans vs Serif (Heuristic) - Improved for Sans-heavy docs
+        # 3. B (Blurriness) Detection - S.C.O.T Stage 5
+        # We use a Laplcian-like variance detection to see how 'soft' the original edges are
+        pixels = np.array(grayscale).astype(float)
+        # Simple finite difference approximation of Laplacian variance
+        laplacian = pixels[:-2, 1:-1] + pixels[2:, 1:-1] + pixels[1:-1, :-2] + pixels[1:-1, 2:] - 4*pixels[1:-1, 1:-1]
+        blur_val = laplacian.var()
+        # Clean up numpy array immediately
+        del pixels
+        del laplacian
+        
+        # Scale: 0 (extremely blurry) to 1.0 (digital sharp)
+        # Scanned text usually falls between 50 and 500. Digital is > 1000.
+        sharpness = min(1.0, max(0.1, blur_val / 800.0))
+        
         style = "sans-serif"
         
-        # Normalize colors
         norm_bg = tuple(c / 255.0 for c in bg_rgb[:3])
         norm_fg = tuple(c / 255.0 for c in fg_rgb[:3])
         
-        return weight, style, norm_fg, norm_bg
-    except:
-        return "normal", "sans-serif", (0,0,0), (1,1,1)
+        # Close the crop
+        crop.close()
+        
+        return weight, style, norm_fg, norm_bg, sharpness
+    except Exception as e:
+        print(f"Metrics Error: {e}")
+        return "normal", "sans-serif", (0,0,0), (1,1,1), 1.0
 
 def process_ocr_pdf(file_path: str) -> dict:
     """
@@ -64,11 +82,19 @@ def process_ocr_pdf(file_path: str) -> dict:
     
     for page_num in range(len(doc)):
         page = doc[page_num]
-        zoom = 300 / 72.0
+        
+        # MEMORY OPTIMIZATION: Adaptive DPI (144 instead of 300)
+        # Reduces pixel count by ~4x, keeping RAM under Render limits
+        zoom = 2.0 
         mat = fitz.Matrix(zoom, zoom)
         pix = page.get_pixmap(matrix=mat)
         
-        img = Image.open(io.BytesIO(pix.tobytes("png"))).convert("RGB")
+        # Process image
+        raw_bytes = pix.tobytes("png")
+        img = Image.open(io.BytesIO(raw_bytes)).convert("RGB")
+        
+        # Clear large pixmap immediately
+        del pix
         
         # Run Tesseract with detailed data
         custom_config = r'-l eng+hin --psm 3'
@@ -81,7 +107,7 @@ def process_ocr_pdf(file_path: str) -> dict:
             
             if text and conf > -1:
                 # Metrics
-                weight, style, fg, bg = get_word_metrics(img, {
+                weight, style, fg, bg, sharpness = get_word_metrics(img, {
                     'left': data['left'][i], 
                     'top': data['top'][i], 
                     'width': data['width'][i], 
@@ -100,9 +126,41 @@ def process_ocr_pdf(file_path: str) -> dict:
                     "color": fg,
                     "backgroundColor": bg,
                     "fontWeight": weight,
-                    "fontStyle": style
+                    "fontStyle": style,
+                    "sharpness": sharpness
                 })
+        import math
+        from collections import defaultdict
         
+        # Calculate mathematically precise Orientation Vectors (Angles) per line
+        lines_dict = defaultdict(list)
+        for w in words:
+            lines_dict[w['lineId']].append(w)
+            
+        for lid, lwords in lines_dict.items():
+            if len(lwords) > 1:
+                lwords = sorted(lwords, key=lambda x: x["x"])
+                first_w, last_w = lwords[0], lwords[-1]
+                # Measure slope between the center points of the first and last word bounding boxes
+                dx = (last_w["x"] + last_w["width"]/2) - (first_w["x"] + first_w["width"]/2)
+                dy = (last_w["y"] + last_w["height"]/2) - (first_w["y"] + first_w["height"]/2)
+                
+                # Math angle in degrees
+                angle = math.degrees(math.atan2(dy, dx))
+                # Hardware scanners rarely skew > 30 degrees unless it's an art piece
+                if abs(angle) > 30:
+                    angle = 0.0
+            else:
+                angle = 0.0
+                
+            for w in lwords:
+                w["angle"] = angle
+
+        # MEMORY CLEANUP
+        img.close()
+        del img
+        gc.collect()
+
         results["pages"].append({
             "page_number": page_num + 1,
             "width": page.rect.width,
@@ -154,23 +212,70 @@ def extract_edited_pdf(original_pdf_path: str, edits: list, full_ocr_data: dict 
             bg = edit.get("backgroundColor", [1, 1, 1])
             fg = edit.get("color", [0, 0, 0])
             
-            rect = fitz.Rect(x, y, x + w, y + h)
-            # Patch the background
-            page.draw_rect(rect, color=bg, fill=bg, overlay=True)
-            
-            # Insert the new text (Visible)
-            point = fitz.Point(x, y + (h * 0.8))
-            
-            # Smart Font Selection
+            # S.C.O.T Type Logic
             is_bold = edit.get("fontWeight") == "bold"
             is_serif = edit.get("fontStyle") == "serif"
+            fontname = "times-bold" if (is_serif and is_bold) else ("times-roman" if is_serif else ("helv-bold" if is_bold else "helv"))
             
-            if is_serif:
-                fontname = "times-bold" if is_bold else "times-roman"
+            # S.C.O.T Typographical Calculus (Size & Baseline Parity)
+            orig_text = edit.get("originalText", "")
+            has_ascender = any(c in "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789bdfhklit|/\\()[]{}<>" for c in orig_text)
+            has_descender = any(c in "gjpqy_,;Q()" for c in orig_text)
+            
+            if has_ascender and has_descender:
+                sf, bo = 0.95, 0.72
+            elif has_ascender:
+                sf, bo = 0.72, 0.72
+            elif has_descender:
+                sf, bo = 0.72, 0.52
             else:
-                fontname = "helv-bold" if is_bold else "helv" 
+                sf, bo = 0.52, 0.52
                 
-            page.insert_text(point, edit.get("text", ""), fontsize=edit.get("fontSize", 12), color=fg, fontname=fontname)
+            if not orig_text:
+                sf, bo = 0.72, 0.72
+                
+            true_point_size = h / sf
+            baseline_y = y + (true_point_size * bo)
+            
+            # Baseline Anchor Point
+            point = fitz.Point(x, baseline_y)
+            
+            # Calculate dynamic background patch scaling
+            new_text = edit.get("text", "")
+            try:
+                # Need to use standard PyMuPDF text length calculations
+                new_text_width = fitz.get_text_length(new_text, fontname=fontname, fontsize=true_point_size)
+            except:
+                new_text_width = w
+                
+            patch_w = max(w, new_text_width)
+            # Expand the patch box around the full EM-square to protect long new descenders/ascenders
+            rect = fitz.Rect(x, baseline_y - (true_point_size * 0.75), x + patch_w, baseline_y + (true_point_size * 0.25))
+            
+            # Patch the background
+            page.draw_rect(rect, color=bg, fill=bg, overlay=True)
+
+            # Orientation Vector Logic (S.C.O.T Matrix Override)
+            import math
+            angle_deg = edit.get("angle", 0.0)
+            rad = math.radians(angle_deg)
+            dir_vec = (math.cos(rad), math.sin(rad))
+            
+            # B (Blurriness): DUAL-LAYER GHOST RENDERING (S.C.O.T Gold V2)
+            # To simulate scan-blur and 'Ink Bloom', we draw the text in multiple jittered layers
+            sharpness = edit.get("sharpness", 1.0)
+            
+            # Layer A: 'Optical Glow' (Subtle bloom around the edges)
+            bloom_color = [min(1.0, c + 0.1) for c in fg] # Slightly lighter for the bloom
+            page.insert_text(fitz.Point(x - 0.05, baseline_y - 0.05), new_text, fontsize=true_point_size, color=bloom_color, fontname=fontname, dir=dir_vec, opacity=0.15)
+            page.insert_text(fitz.Point(x + 0.05, baseline_y + 0.05), new_text, fontsize=true_point_size, color=bloom_color, fontname=fontname, dir=dir_vec, opacity=0.15)
+                
+            # Layer B: 'Ink Saturation' (Simulates non-uniform ink spread on paper grain)
+            # High-fidelity patches need a lower opacity (0.94) to appear 'printed' vs 'digital overlay'
+            page.insert_text(point, new_text, fontsize=true_point_size, color=fg, fontname=fontname, dir=dir_vec, opacity=0.94)
+            
+            # Layer C: 'Detail Sharpening' (Center anchor to maintain legibility)
+            page.insert_text(point, new_text, fontsize=true_point_size, color=fg, fontname=fontname, dir=dir_vec, opacity=0.4, render_mode=0)
             
     doc.save(out_path)
     doc.close()
