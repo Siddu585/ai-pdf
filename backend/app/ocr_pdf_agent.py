@@ -23,7 +23,7 @@ def get_word_metrics(img, box_300dpi):
         # 1. Colors (S.C.O.T Color Logic)
         colors = crop.getcolors(maxcolors=10000)
         if not colors:
-            return "normal", "sans-serif", (0,0,0), (1,1,1)
+            return "normal", "sans-serif", (0,0,0), (1,1,1), 1.0
             
         colors.sort(key=lambda x: x[0], reverse=True)
         bg_rgb = colors[0][1]
