@@ -36,7 +36,7 @@ import { PaywallModal } from "@/components/layout/PaywallModal";
 // v02.2.46 (Tachyon Omega - Galactic Burst) - 10MB/s Final Form
 // v02.2.47 (Tachyon Omega - Solar Flare) - WebRTC Stability Fix
 // v02.2.48 (Tachyon Omega - Solar Flare) - 10MB/s M2M Persistent Core
-const VERSION = "v02.2.48 (Tachyon Omega - Solar Flare)";
+const VERSION = "v02.2.55 (Tachyon Omega - Solar Flare)";
 
 
 function getEngineConfig(engine: 'M2M' | 'HYBRID' | 'NITRO') {
