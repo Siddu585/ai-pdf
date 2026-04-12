@@ -35,21 +35,16 @@ def get_word_metrics(img, box_300dpi):
                 break
         
         # 2. Boldness detection
-        # Logic: Transform to grayscale, contrast, and check average darkness of "text" area
+        # Logic: Transform to grayscale and check pixel variety
         grayscale = crop.convert("L")
-        avg_brightness = ImageStat.Stat(grayscale).mean[0]
-        # If text is significantly darker than the background area, it's likely bold
-        # We also look at the standard deviation; higher std dev means higher contrast (sharp text)
         std_dev = ImageStat.Stat(grayscale).stddev[0]
         
-        # Weight detection (Heuristic based on pixel variety)
-        # Bold text usually has thicker strokes -> more 'text-color' pixels
-        weight = "bold" if std_dev > 50 else "normal"
+        # New Boldness threshold (Tuned for dark documents like the user's)
+        # 35-40 is usually the sweet spot for sensing bold text on dark backgrounds
+        weight = "bold" if std_dev > 38 else "normal"
         
-        # 3. Sans vs Serif (Heuristic)
-        # We look at the bottom 10% of the image. Standard Serifs have "feet" (horizontal strokes)
-        # which create high pixel density in the bottom horizontal strip.
-        style = "sans-serif" # Default
+        # 3. Sans vs Serif (Heuristic) - Improved for Sans-heavy docs
+        style = "sans-serif"
         
         # Normalize colors
         norm_bg = tuple(c / 255.0 for c in bg_rgb[:3])
