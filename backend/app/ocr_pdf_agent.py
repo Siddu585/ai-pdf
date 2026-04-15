@@ -1,4 +1,5 @@
 import os
+import random
 import fitz  # PyMuPDF
 import pytesseract
 from PIL import Image, ImageStat
@@ -275,41 +276,52 @@ def extract_edited_pdf(original_pdf_path: str, edits: list, full_ocr_data: dict 
             rad = math.radians(angle_deg)
             dir_vec = (math.cos(rad), math.sin(rad))
             
-            # B (Blurriness): DUAL-LAYER GHOST RENDERING (S.C.O.T Forensic Tier v4)
-            # To simulate scan-blur and 'Ink Bloom', we draw the text in multiple jittered layers
+            # --- B.S.C.O.T FORENSIC ELITE (v6) RENDERING ENGINE ---
+            
+            # v6 Feature: ERASER LOGIC
+            if edit.get("isEraser", False) or not edit.get("text", ""):
+                # Fill the area with the background color to erase
+                bg_color = edit.get("backgroundColor", (1, 1, 1))
+                page.draw_rect(fitz.Rect(x, y, x + edit['width'], y + edit['height']),
+                               color=bg_color, fill=bg_color, width=0)
+                continue
+
+            # v6 Feature: 100% FIDELITY ALPHA JITTER (v6.1 Variable)
+            # We inject micro-noise into the transparency to simulate 'Paper Grain Interaction'
+            # At grain=0, this is DISABLED, restoring 'Perfect Digital Ink' quality.
+            base_opacity = edit.get("opacity", 0.94)
+            grain_val = edit.get("grain", 0.0) # DEFAULT: 0.0 (Perfect Digital)
+            jitter_intensity = 0.08 * grain_val 
+            
             blur_radius = edit.get("blur", 0.6)
             weight_boost = edit.get("weight", 0.08)
-            intensity = edit.get("opacity", 0.94)
             
-            # Sub-pixel Baseline Jitter: Adds organic misalignment (+/- 0.02pt)
-            import random
+            # Sub-pixel Baseline Jitter
             jitter_y = (random.random() - 0.5) * 0.04
             point_j = fitz.Point(x, baseline_y + jitter_y)
             
-            # Layer A: 'Optical Glow' (Subtle bloom around the edges, distance tied to blur_radius)
+            # Layer A: 'Optical Glow' (Subtle bloom around the edges)
             bloom_color = [min(1.0, c + 0.08) for c in fg] 
             offset = max(0.02, blur_radius * 0.08)
-            page.insert_text(fitz.Point(x - offset, baseline_y - offset), new_text, fontsize=true_point_size, color=bloom_color, fontname=fontname, dir=dir_vec, fill_opacity=0.12)
-            page.insert_text(fitz.Point(x + offset, baseline_y + offset), new_text, fontsize=true_point_size, color=bloom_color, fontname=fontname, dir=dir_vec, fill_opacity=0.12)
+            glow_alpha = 0.12 * (1.0 - (random.random() * jitter_intensity))
+            page.insert_text(fitz.Point(x - offset, baseline_y - offset), new_text, fontsize=true_point_size, color=bloom_color, fontname=fontname, dir=dir_vec, fill_opacity=glow_alpha)
+            page.insert_text(fitz.Point(x + offset, baseline_y + offset), new_text, fontsize=true_point_size, color=bloom_color, fontname=fontname, dir=dir_vec, fill_opacity=glow_alpha)
                 
-            # Layer B: 'Ink Saturation' (Simulates non-uniform ink spread on paper grain)
-            # Use render_mode=2 (Fill then Stroke) to simulate 'Stroke Expansion' (ink spread)
-            # We add a hairline stroke (weight_boost) in the same color to 'bulk up' the font
-            # Stroke expansion is critical for 1:1 matching of scanned character density
+            # Layer B: 'Grain-Injected Ink' (The Core Patch)
+            ink_alpha = base_opacity * (1.0 - (random.random() * jitter_intensity))
+            
             page.insert_text(point_j, new_text, 
                              fontsize=true_point_size, 
                              color=fg, 
                              fontname=fontname, 
                              dir=dir_vec, 
-                             fill_opacity=intensity * 0.96, # Base saturation
-                             stroke_opacity=intensity * 0.96,
-                             render_mode=2) # 2 = fill then stroke
-            # Set stroke width if supported, otherwise draw text again slightly offset
-            # In fitz, render_mode 2 uses the current stroke width. Default is usually good, 
-            # but for v4 we use multiple passes to build weight.
+                             fill_opacity=ink_alpha, 
+                             stroke_opacity=ink_alpha,
+                             render_mode=2) 
             
-            # Layer C: 'Detail Sharpening' (Center anchor to maintain legibility)
-            page.insert_text(point_j, new_text, fontsize=true_point_size, color=fg, fontname=fontname, dir=dir_vec, fill_opacity=0.35 * intensity, render_mode=0)
+            # Layer C: 'Detail Anchor' (High-Fidelity Sharpness Boost v6.1)
+            # We use the full base_opacity here to ensure the text remains 'Perfect'
+            page.insert_text(point_j, new_text, fontsize=true_point_size, color=fg, fontname=fontname, dir=dir_vec, fill_opacity=base_opacity, render_mode=0)
             
     doc.save(out_path)
     doc.close()
