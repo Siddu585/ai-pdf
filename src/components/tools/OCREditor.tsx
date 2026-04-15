@@ -48,10 +48,13 @@ export function OCREditor({ file, ocrData, onExport }: OCREditorProps) {
     const [edits, setEdits] = useState<any[]>([]);
     const [history, setHistory] = useState<any[][]>([]); 
     
-    // In edit mode we target single words
     const [selectedBox, setSelectedBox] = useState<{ id: string; word: WordBox; originalText: string } | null>(null);
     const [editValue, setEditValue] = useState("");
     const [isExporting, setIsExporting] = useState(false);
+    
+    // NEW TOOLS v6
+    const [activeTool, setActiveTool] = useState<"patch" | "erase" | "text">("patch");
+    const [popoverSide, setPopoverSide] = useState<"top" | "bottom">("top");
 
     const canvasRef = useRef<HTMLCanvasElement>(null);
     const editorRef = useRef<HTMLDivElement>(null);
@@ -176,13 +179,43 @@ export function OCREditor({ file, ocrData, onExport }: OCREditorProps) {
         return lineArray.sort((a, b) => a.y - b.y);
     }, [currentPageData, currentPage, edits]);
 
-    // Box Clicks (Used strictly for EDIT MODE)
+    // Box Clicks (v6 Smart Detection)
     const handleBoxClick = (word: WordBox, idx: number, e: React.MouseEvent) => {
         if (mode !== "edit") return;
         e.stopPropagation();
+        
+        // EREASER LOGIC
+        if (activeTool === "erase") {
+            const id = `${currentPage}-${idx}`;
+            setHistory(prev => [...prev, edits]);
+            setEdits(prev => [
+                ...prev.filter(ed => ed.id !== id),
+                {
+                    id,
+                    page: currentPage,
+                    originalText: word.text,
+                    text: "", // Erasing = Empty text
+                    x: word.x,
+                    y: word.y,
+                    width: word.width,
+                    height: word.height,
+                    backgroundColor: word.backgroundColor,
+                    isEraser: true
+                }
+            ]);
+            return;
+        }
+
         const id = `${currentPage}-${idx}`;
         const existingEdit = edits.find((ed) => ed.id === id);
+        
+        // Smart Positioning Detect
+        const yPos = word.y * renderScale;
+        setPopoverSide(yPos < 200 ? "bottom" : "top");
+
         setSelectedBox({ id, word, originalText: word.text });
+        
+        // STATE RESET: Always initialize with word's own autonomous defaults or existing edit
         setEditValue(existingEdit ? existingEdit.text : word.text);
     };
 
@@ -213,6 +246,7 @@ export function OCREditor({ file, ocrData, onExport }: OCREditorProps) {
                             blur: (selectedBox.word as any).blur || 0.6,
                             weight: (selectedBox.word as any).weight || 0.08,
                             opacity: (selectedBox.word as any).opacity || 0.94,
+                            grain: (selectedBox.word as any).grain || 0.0,
                         },
                     ];
                 }
@@ -234,6 +268,50 @@ export function OCREditor({ file, ocrData, onExport }: OCREditorProps) {
     const getRgb = (arr?: number[]) => {
         if (!arr) return "transparent";
         return `rgb(${Math.round(arr[0] * 255)}, ${Math.round(arr[1] * 255)}, ${Math.round(arr[2] * 255)})`;
+    };
+
+    const handleCanvasClick = (e: React.MouseEvent) => {
+        if (mode !== "edit" || activeTool !== "text") return;
+        
+        const rect = e.currentTarget.getBoundingClientRect();
+        const x = (e.clientX - rect.left) / renderScale;
+        const y = (e.clientY - rect.top) / renderScale;
+        
+        const id = `new-${Date.now()}`;
+        const newWord: WordBox = {
+            text: "Type here...",
+            x,
+            y,
+            width: 80,
+            height: 20,
+            confidence: 100,
+            color: [0, 0, 0],
+            backgroundColor: [1, 1, 1]
+        };
+
+        setHistory(prev => [...prev, edits]);
+        setEdits(prev => [
+            ...prev,
+            {
+                id,
+                page: currentPage,
+                originalText: "",
+                text: "New Text",
+                x,
+                y,
+                width: 80,
+                height: 20,
+                fontSize: 14,
+                color: [0, 0, 0],
+                backgroundColor: [1, 1, 1],
+                isNew: true
+            }
+        ]);
+        
+        // Auto-select the new box
+        setSelectedBox({ id, word: newWord, originalText: "" });
+        setEditValue("New Text");
+        setPopoverSide(y * renderScale < 200 ? "bottom" : "top");
     };
 
     return (
@@ -264,9 +342,35 @@ export function OCREditor({ file, ocrData, onExport }: OCREditorProps) {
                             onClick={() => setMode("edit")}
                             className={`px-4 py-1.5 text-xs font-black uppercase tracking-widest rounded-md transition-all ${mode === 'edit' ? 'bg-indigo-600 text-white shadow-lg' : 'text-slate-500 hover:text-slate-300'}`}
                         >
-                            Patch Editor
+                            Elite Toolbox
                         </button>
                     </div>
+
+                    {mode === "edit" && (
+                        <div className="flex items-center space-x-1 bg-slate-950 rounded-lg p-1 border border-slate-800 ml-4 animate-in zoom-in-95">
+                            <button 
+                                onClick={() => setActiveTool("patch")}
+                                className={`px-3 py-1.5 rounded-md transition-all group ${activeTool === 'patch' ? 'bg-indigo-600 text-white' : 'text-slate-500 hover:bg-slate-800'}`}
+                                title="Patch Existing Text"
+                            >
+                                <Edit3 className="w-4 h-4" />
+                            </button>
+                            <button 
+                                onClick={() => setActiveTool("erase")}
+                                className={`px-3 py-1.5 rounded-md transition-all group ${activeTool === 'erase' ? 'bg-red-600 text-white' : 'text-slate-500 hover:bg-slate-800'}`}
+                                title="Eraser Tool"
+                            >
+                                <Square className="w-4 h-4" />
+                            </button>
+                            <button 
+                                onClick={() => setActiveTool("text")}
+                                className={`px-3 py-1.5 rounded-md transition-all group ${activeTool === 'text' ? 'bg-green-600 text-white' : 'text-slate-500 hover:bg-slate-800'}`}
+                                title="Add New Text"
+                            >
+                                <Type className="w-4 h-4" />
+                            </button>
+                        </div>
+                    )}
 
                     <div className="h-6 w-px bg-slate-700" />
 
@@ -327,7 +431,7 @@ export function OCREditor({ file, ocrData, onExport }: OCREditorProps) {
             <div 
                 ref={editorRef}
                 className="flex-1 overflow-auto bg-slate-950 p-12 flex justify-center relative custom-scrollbar scroll-smooth"
-                onClick={() => setSelectedBox(null)}
+                onClick={handleCanvasClick}
             >
                 <div 
                     className={`relative shadow-[0_40px_80px_rgba(0,0,0,0.7)] ring-1 ring-white/10 ${mode === 'select' ? 'cursor-text' : 'cursor-default'}`} 
@@ -428,9 +532,12 @@ export function OCREditor({ file, ocrData, onExport }: OCREditorProps) {
                                         </span>
                                     )}
 
-                                    {/* Precision Popover per Word */}
+                                    {/* Precision Popover v6 (Smart Positioning) */}
                                     {isSelected && (
-                                        <div className="absolute -top-16 left-0 bg-slate-900 shadow-2xl border border-slate-700 p-2 rounded-xl flex items-center space-x-3 z-[100] animate-in slide-in-from-bottom-2 zoom-in-95 pointer-events-auto" onClick={e => e.stopPropagation()}>
+                                        <div 
+                                            className={`absolute ${popoverSide === 'top' ? '-top-28' : 'top-full mt-4'} left-0 bg-slate-900 shadow-[0_30px_60px_-15px_rgba(0,0,0,0.8)] border border-slate-700 p-2 rounded-xl flex items-center space-x-3 z-[100] animate-in slide-in-from-${popoverSide === 'top' ? 'bottom' : 'top'}-4 zoom-in-95 pointer-events-auto shadow-indigo-500/10`} 
+                                            onClick={e => e.stopPropagation()}
+                                        >
                                             <div className="flex flex-col px-2 py-0.5 border-r border-slate-700">
                                                 <span className="text-[10px] font-black text-slate-500 uppercase tracking-tighter">Word</span>
                                             </div>
@@ -480,6 +587,18 @@ export function OCREditor({ file, ocrData, onExport }: OCREditorProps) {
                                                             className="w-full accent-green-500 h-1 bg-slate-800 rounded-lg appearance-none cursor-pointer"
                                                         />
                                                     </div>
+                                                    <div className="flex flex-col">
+                                                        <label className="text-[9px] text-slate-500 uppercase font-black mb-1">Grain (G)</label>
+                                                        <input 
+                                                            type="range" min="0" max="1" step="0.05" 
+                                                            value={(hasEdit as any)?.grain ?? 0.0}
+                                                            onChange={(e) => {
+                                                                const val = parseFloat(e.target.value);
+                                                                setEdits(prev => prev.map(ed => ed.id === id ? {...ed, grain: val} : ed));
+                                                            }}
+                                                            className="w-full accent-amber-500 h-1 bg-slate-800 rounded-lg appearance-none cursor-pointer"
+                                                        />
+                                                    </div>
                                                 </div>
                                             </div>
                                             <Button size="sm" className="bg-indigo-600 hover:bg-indigo-500 h-10 px-5 font-black rounded-lg shadow-lg" onClick={saveEdit}>
@@ -490,6 +609,42 @@ export function OCREditor({ file, ocrData, onExport }: OCREditorProps) {
                                 </div>
                             );
                         })}
+
+                        {/* MODE 2b: RENDER ADDITIVE TEXT (v6 Cursor Tool) */}
+                        {mode === "edit" && edits.filter(e => e.page === currentPage && e.isNew).map((e) => (
+                            <div
+                                key={e.id}
+                                onClick={(event) => {
+                                    event.stopPropagation();
+                                    const yPos = e.y * renderScale;
+                                    setPopoverSide(yPos < 200 ? "bottom" : "top");
+                                    setSelectedBox({ id: e.id, word: e, originalText: "" });
+                                    setEditValue(e.text);
+                                }}
+                                className={`absolute cursor-pointer border border-dashed border-green-500/30 ${selectedBox?.id === e.id ? "ring-2 ring-green-500 bg-green-500/10 z-50 rounded" : "z-10"}`}
+                                style={{
+                                    left: e.x * renderScale,
+                                    top: e.y * renderScale,
+                                    width: e.width * renderScale,
+                                    height: (e.height || 20) * renderScale,
+                                    display: 'flex',
+                                    alignItems: 'baseline'
+                                }}
+                            >
+                                <span 
+                                    className="whitespace-nowrap px-0.5"
+                                    style={{
+                                        color: getRgb(e.color),
+                                        fontSize: `${(e.fontSize || 14) * renderScale}px`,
+                                        opacity: (e as any).opacity ?? 0.96,
+                                        filter: `blur(${(e as any).blur ?? 0.6}px)`,
+                                        fontFamily: e.fontStyle === "serif" ? "serif" : "sans-serif",
+                                    }}
+                                >
+                                    {e.text}
+                                </span>
+                            </div>
+                        ))}
                     </div>
                 </div>
             </div>
