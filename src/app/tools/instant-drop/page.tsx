@@ -36,7 +36,7 @@ import { PaywallModal } from "@/components/layout/PaywallModal";
 // v02.2.46 (Tachyon Omega - Galactic Burst) - 10MB/s Final Form
 // v02.2.47 (Tachyon Omega - Solar Flare) - WebRTC Stability Fix
 // v02.2.48 (Tachyon Omega - Solar Flare) - 10MB/s M2M Persistent Core
-const VERSION = "v02.2.58 (Tachyon Omega - Stable Path)";
+const VERSION = "v02.2.59 (Tachyon Omega - Vanguard)";
 
 
 function getEngineConfig(engine: 'M2M' | 'HYBRID' | 'NITRO') {
@@ -44,7 +44,7 @@ function getEngineConfig(engine: 'M2M' | 'HYBRID' | 'NITRO') {
         return {
             pipes: 12, // Extreme Concurrency for Mobile Carriers
             pacerThreshold: 32 * 1024 * 1024, // 32MB Deep Buffer for Jitter
-            mtuLimit: 32 * 1024, // Survival MTU (Carrier-Tested)
+            mtuLimit: 64 * 1024, // v02.2.59: Restore adaptive probe ceiling
             nackBackoff: 500 // Faster re-send recovery
         };
     }
@@ -58,7 +58,7 @@ function getEngineConfig(engine: 'M2M' | 'HYBRID' | 'NITRO') {
 const PIPES = 12; // v02.2.23: Global Buffer Alignment (Full Context)
 const CHANNELS_PER_PIPE = 8;
 const CHANNELS = 96; // 12 pipes x 8 channels = 96 logical streams
-const CHUNK_SIZE = 32 * 1024; // 32KB - Velocity Max (Mobile Resilient)
+const CHUNK_SIZE = 16384; // v02.2.59: Soft-Floor for initial handshake (16KB)
 const HIGH_WATER_MARK_MAX = 32 * 1024 * 1024; // 32MB Jumbo Window for 10 MB/s saturation 
 const BASE_PACER_THRESHOLD = 16 * 1024 * 1024; // 16MB Pacer Threshold
 const MAX_IN_FLIGHT = 4096; // 4096 chunks (x32KB = 128MB ceiling)
@@ -96,7 +96,20 @@ function InstantDropContent() {
     const searchParams = useSearchParams();
     const initialRoom = searchParams.get("room");
 
+    const isPipeReadyForMigration = (pipeIdx: number) => {
+        const stats = diagnosticMetricsRef.current.pistonStats[pipeIdx];
+        const pc = peersRef.current[pipeIdx];
+        const connectedAt = pipeConnectedAtRef.current[pipeIdx] || 0;
+        
+        return (
+            pc && (pc.connectionState === 'connected' || pc.iceConnectionState === 'connected') &&
+            stats && stats.speed >= 0 && // At least some metrics flowing
+            Date.now() - connectedAt > 200 // 2 RTT grace period (approx)
+        );
+    };
+
     const [mode, setMode] = useState<'select' | 'send' | 'receive'>(initialRoom ? 'receive' : 'select');
+
     const [engineMode, setEngineMode] = useState<'M2M' | 'HYBRID' | 'NITRO'>('NITRO');
     const [roomId, setRoomId] = useState<string>(initialRoom || "");
     const { recordUsage, isPaywallOpen, setIsPaywallOpen, handleAction, deviceId, isPro, email } = useUsage();
@@ -166,6 +179,9 @@ function InstantDropContent() {
     const filesRef = useRef<File[]>([]);
     const modeRef = useRef(mode);
     const statusRef = useRef(status);
+    const lastNackDrainTsRef = useRef<number | null>(null);
+    const pipeConnectedAtRef = useRef<number[]>([]);
+    const migrationQueueRef = useRef<{channelIdx: number, targetPipeIdx: number}[]>([]);
     const isProRef = useRef(isPro);
     const emailRef = useRef(email);
     const deviceIdRef = useRef(deviceId);
@@ -1489,7 +1505,8 @@ ${capturedLogsRef.current.join('\n')}
                     if (resuscitatorTimersRef.current[pipeIdx]) {
                         clearTimeout(resuscitatorTimersRef.current[pipeIdx]);
                         resuscitatorTimersRef.current[pipeIdx] = null;
-                        logDebug(`✅ Pipe-${pipeIdx} Resuscitator Stand-down.`);
+                        pipeConnectedAtRef.current[pipeIdx] = Date.now();
+                        logDebug(`✅ Pipe-${pipeIdx} Resuscitator Stand-down. [Connected: ${new Date().toLocaleTimeString()}]`);
                         
                         // v02.2.29: Piston-Gated Metadata Catch-up (Async)
                         // Send metadata ONCE per successful pipe open to minimize noise.
@@ -1772,6 +1789,13 @@ ${capturedLogsRef.current.join('\n')}
 
             // Post-Transmission NACK Drainer
             const nackInterval = setInterval(() => {
+                const activePipeCount = Object.values(diagnosticMetricsRef.current.pistonStats).filter(s => s.health === 'green').length;
+                const dynamicNackDelay = activePipeCount >= 8 ? 5 : activePipeCount >= 4 ? 20 : 50;
+                
+                // Adaptive NACK Draining (v02.2.59: Vanguard Path)
+                if (Date.now() - (lastNackDrainTsRef.current || 0) < dynamicNackDelay) return;
+                lastNackDrainTsRef.current = Date.now();
+
                 if (nackQueueRef.current.size > 0 && isActive.current) {
                     const openChannels = dataChannelsRef.current.filter(dc => dc && dc.readyState === 'open');
                     if (openChannels.length === 0) return;
@@ -1991,17 +2015,16 @@ ${capturedLogsRef.current.join('\n')}
                     const dc = openChannels[testIdx];
                     if (!dc || dc.readyState !== 'open') continue;
 
-                    // v02.2.08.1: Omega-Infinite Load Balancing
                     const pipeIdx = Math.floor(testIdx / CHANNELS_PER_PIPE);
-                    // v02.2.58: Stable-Path Micro-Pacer (Decoupled Migration)
-                    const health = diagnosticMetricsRef.current.pistonStats[pipeIdx]?.health || 'green';
                     
-                    // Add micro-delay to amber/red pipes instead of global blocking
+                    // v02.2.59: [VANGUARD] Guarded Migration (Fix A)
+                    if (isM2M && !isPipeReadyForMigration(pipeIdx)) continue;
+
+                    const health = diagnosticMetricsRef.current.pistonStats[pipeIdx]?.health || 'green';
                     if (health !== 'green') {
                         await new Promise(r => setTimeout(r, health === 'red' ? 2 : 1));
                     }
 
-                    // v02.2.16: SCTP Saturation Tuning - 16MB is the reliable ceiling for libwebrtc buffers.
                     const rttMs = (smoothedRTT || 0.1) * 1000;
                     const saturationThreshold = Math.min(16 * 1024 * 1024, Math.max(4 * 1024 * 1024, (rttMs / 50) * 4 * 1024 * 1024));
                     
@@ -2048,7 +2071,14 @@ ${capturedLogsRef.current.join('\n')}
                     // v02.2.46: M2M HSFC Gate Enforcement
                     // v02.2.56: M2M Zenith Gate (32MB Floor for 10MB/s Saturation)
                     // v02.2.58: [STABLE PATH] Restore 4x BDP Multiplier
-                    const currentGate = isM2M ? Math.max(32 * 1024 * 1024, (smoothedRTT * (10 * 1024 * 1024)) * 4) : BDP_GPE_GATE;
+                    // v02.2.59: [VANGUARD] Adaptive BDP Gating (Fix B)
+                    const activePipeCount = Object.values(diagnosticMetricsRef.current.pistonStats).filter(s => s.health === 'green').length;
+                    const safeActiveCount = Math.max(1, activePipeCount);
+                    const perPipeBDP = (smoothedRTT || 0.1) * (10 * 1024 * 1024 / safeActiveCount); // Based on 10MB/s target
+                    const currentGate = isM2M 
+                        ? Math.max(8 * 1024 * 1024, perPipeBDP * 6) // 6x per-pipe BDP, min 8MB
+                        : BDP_GPE_GATE;
+
                     const canSend = (gpeInFlightBytesRef.current < currentGate);
                     
                     // v02.2.29: GPE Deadlock Watchdog (Stuck-Gate Buster)
