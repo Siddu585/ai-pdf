@@ -51,9 +51,13 @@ export function OCREditor({ file, ocrData, onExport }: OCREditorProps) {
     const [selectedBox, setSelectedBox] = useState<{ id: string; word: WordBox; originalText: string } | null>(null);
     const [editValue, setEditValue] = useState("");
     const [isExporting, setIsExporting] = useState(false);
+    const [zoom, setZoom] = useState(1.5);
     
-    // NEW TOOLS v6
-    const [activeTool, setActiveTool] = useState<"patch" | "erase" | "text">("patch");
+    // Snagit v7 DRAG STATE
+    const [isDragging, setIsDragging] = useState(false);
+    const [dragOffset, setDragOffset] = useState({ x: 0, y: 0 });
+
+    const [activeTool, setActiveTool] = useState<"patch" | "erase" | "text" | "move">("move");
     const [popoverSide, setPopoverSide] = useState<"top" | "bottom">("top");
 
     const canvasRef = useRef<HTMLCanvasElement>(null);
@@ -219,38 +223,86 @@ export function OCREditor({ file, ocrData, onExport }: OCREditorProps) {
         setEditValue(existingEdit ? existingEdit.text : word.text);
     };
 
+    // Snagit v7 DRAG LOGIC
+    const handleDragStart = (e: React.MouseEvent, id: string, word: WordBox) => {
+        if (activeTool !== "move") return;
+        e.stopPropagation();
+        
+        const rect = e.currentTarget.getBoundingClientRect();
+        setDragOffset({
+            x: e.clientX - rect.left,
+            y: e.clientY - rect.top
+        });
+        setIsDragging(true);
+        setSelectedBox({ id, word, originalText: word.text });
+        setEditValue(edits.find(ed => ed.id === id)?.text || word.text);
+    };
+
+    const handleMouseMove = (e: React.MouseEvent) => {
+        if (!isDragging || !selectedBox || !editorRef.current) return;
+        
+        const rect = editorRef.current.querySelector(".document-canvas")?.getBoundingClientRect();
+        if (!rect) return;
+
+        const scaleFactor = zoom / 1.5;
+        const x = (e.clientX - rect.left - dragOffset.x) / (renderScale * scaleFactor);
+        const y = (e.clientY - rect.top - dragOffset.y) / (renderScale * scaleFactor);
+
+        setEdits(prev => {
+            const existing = prev.filter(ed => ed.id !== selectedBox.id);
+            const currentEdit = prev.find(ed => ed.id === selectedBox.id) || {
+                id: selectedBox.id,
+                page: currentPage,
+                originalText: selectedBox.originalText,
+                text: selectedBox.originalText,
+                width: selectedBox.word.width,
+                height: selectedBox.word.height,
+                color: selectedBox.word.color,
+                backgroundColor: selectedBox.word.backgroundColor,
+                fontWeight: (selectedBox.word as any).fontWeight,
+                fontStyle: (selectedBox.word as any).fontStyle,
+                blur: 0.6,
+                weight: 0.08,
+                opacity: 0.94,
+                grain: 0.0
+            };
+
+            return [...existing, { ...currentEdit, x, y }];
+        });
+    };
+
     const saveEdit = () => {
         if (selectedBox) {
             setHistory(prev => [...prev, edits]);
-            
-            setEdits((prev) => {
-                const existing = prev.filter((e) => e.id !== selectedBox.id);
-                if (editValue !== selectedBox.originalText) {
-                    return [
-                        ...existing,
-                        {
-                            id: selectedBox.id,
-                            page: currentPage,
-                            originalText: selectedBox.originalText,
-                            text: editValue,
-                            x: selectedBox.word.x,
-                            y: selectedBox.word.y,
-                            width: selectedBox.word.width,
-                            height: selectedBox.word.height,
-                            fontSize: (selectedBox.word.height * 0.8),
-                            color: selectedBox.word.color,
-                            backgroundColor: selectedBox.word.backgroundColor,
-                            fontWeight: (selectedBox.word as any).fontWeight,
-                            fontStyle: (selectedBox.word as any).fontStyle,
-                            angle: (selectedBox.word as any).angle || 0,
-                            blur: (selectedBox.word as any).blur || 0.6,
-                            weight: (selectedBox.word as any).weight || 0.08,
-                            opacity: (selectedBox.word as any).opacity || 0.94,
-                            grain: (selectedBox.word as any).grain || 0.0,
-                        },
-                    ];
+            setEdits(prev => {
+                const existing = prev.filter(e => e.id !== selectedBox.id);
+                const current = prev.find(e => e.id === selectedBox.id);
+                
+                // If text hasn't changed and it's not a new/moved object, don't store duplicate
+                if (current && editValue === selectedBox.originalText && current.x === selectedBox.word.x && current.y === selectedBox.word.y) {
+                    return existing;
                 }
-                return existing;
+
+                return [...existing, {
+                    ...(current || {
+                        id: selectedBox.id,
+                        page: currentPage,
+                        originalText: selectedBox.originalText,
+                        x: selectedBox.word.x,
+                        y: selectedBox.word.y,
+                        width: selectedBox.word.width,
+                        height: selectedBox.word.height,
+                        color: selectedBox.word.color,
+                        backgroundColor: selectedBox.word.backgroundColor,
+                        fontWeight: (selectedBox.word as any).fontWeight,
+                        fontStyle: (selectedBox.word as any).fontStyle,
+                        blur: 0.6,
+                        weight: 0.08,
+                        opacity: 0.94,
+                        grain: 0.0
+                    }),
+                    text: editValue
+                }];
             });
             setSelectedBox(null);
         }
@@ -270,12 +322,17 @@ export function OCREditor({ file, ocrData, onExport }: OCREditorProps) {
         return `rgb(${Math.round(arr[0] * 255)}, ${Math.round(arr[1] * 255)}, ${Math.round(arr[2] * 255)})`;
     };
 
+    const handleMouseUp = () => {
+        setIsDragging(false);
+    };
+
     const handleCanvasClick = (e: React.MouseEvent) => {
-        if (mode !== "edit" || activeTool !== "text") return;
+        if (activeTool !== "text") return;
         
         const rect = e.currentTarget.getBoundingClientRect();
-        const x = (e.clientX - rect.left) / renderScale;
-        const y = (e.clientY - rect.top) / renderScale;
+        const scaleFactor = zoom / 1.5;
+        const x = (e.clientX - rect.left) / (renderScale * scaleFactor);
+        const y = (e.clientY - rect.top) / (renderScale * scaleFactor);
         
         const id = `new-${Date.now()}`;
         const newWord: WordBox = {
@@ -308,363 +365,312 @@ export function OCREditor({ file, ocrData, onExport }: OCREditorProps) {
             }
         ]);
         
-        // Auto-select the new box
         setSelectedBox({ id, word: newWord, originalText: "" });
         setEditValue("New Text");
-        setPopoverSide(y * renderScale < 200 ? "bottom" : "top");
     };
 
     return (
-        <div className={`fixed inset-0 z-[100] bg-slate-950 flex flex-col font-sans animate-in fade-in duration-300 ${mode === 'select' ? 'select-text' : 'select-none'}`}>
-            {/* Pro Toolbar */}
-            <div className="flex items-center justify-between px-6 py-3 bg-slate-900 border-b border-slate-800 shadow-xl z-10">
+        <div 
+            className={`fixed inset-0 z-[100] bg-slate-950 flex flex-col font-sans select-none overflow-hidden`}
+            onMouseMove={handleMouseMove}
+            onMouseUp={handleMouseUp}
+        >
+            {/* Top Navigation Bar */}
+            <header className="h-14 bg-slate-900 border-b border-white/5 flex items-center justify-between px-6 z-50 shadow-2xl">
+                <div className="flex items-center space-x-3">
+                    <div className="w-8 h-8 bg-indigo-600 rounded-lg flex items-center justify-center shadow-lg shadow-indigo-500/20">
+                        <ShieldCheck className="w-5 h-5 text-white" />
+                    </div>
+                    <div>
+                        <h1 className="text-sm font-black text-white uppercase tracking-widest leading-none">TrueEdit Pro</h1>
+                        <span className="text-[9px] text-slate-500 font-bold uppercase tracking-tighter">Forensic Canvas v7.0</span>
+                    </div>
+                </div>
+
                 <div className="flex items-center space-x-6">
-                    <div className="flex items-center">
-                        <div className="bg-pink-600 p-1.5 rounded-lg mr-3 shadow-lg shadow-pink-900/20">
-                            <Edit3 className="w-5 h-5 text-white" />
-                        </div>
-                        <h3 className="font-bold text-slate-100 tracking-tight">
-                            TrueEdit <span className="text-pink-500">Pro</span>
-                        </h3>
-                    </div>
-                    
-                    <div className="h-6 w-px bg-slate-700" />
-                    
-                    {/* Mode Toggle Mechanism */}
-                    <div className="flex items-center bg-slate-950 rounded-lg p-1 border border-slate-800 shadow-inner">
-                        <button 
-                            onClick={() => setMode("select")}
-                            className={`px-4 py-1.5 text-xs font-black uppercase tracking-widest rounded-md transition-all ${mode === 'select' ? 'bg-pink-600 text-white shadow-lg' : 'text-slate-500 hover:text-slate-300'}`}
-                        >
-                            Select Area
-                        </button>
-                        <button 
-                            onClick={() => setMode("edit")}
-                            className={`px-4 py-1.5 text-xs font-black uppercase tracking-widest rounded-md transition-all ${mode === 'edit' ? 'bg-indigo-600 text-white shadow-lg' : 'text-slate-500 hover:text-slate-300'}`}
-                        >
-                            Elite Toolbox
-                        </button>
+                    <div className="flex items-center space-x-2 bg-slate-950 rounded-lg p-1 border border-slate-800">
+                        <Button variant="ghost" size="sm" onClick={() => setCurrentPage(p => Math.max(1, p - 1))} disabled={currentPage === 1} className="h-8 w-8 p-0 text-slate-400 hover:text-white">
+                            <ChevronLeft className="w-4 h-4" />
+                        </Button>
+                        <span className="text-[10px] font-black text-slate-300 min-w-[40px] text-center uppercase tracking-widest">
+                            Page {currentPage} / {pdfDoc?.numPages || "?"}
+                        </span>
+                        <Button variant="ghost" size="sm" onClick={() => setCurrentPage(p => Math.min(pdfDoc?.numPages || 1, p + 1))} disabled={currentPage === pdfDoc?.numPages} className="h-8 w-8 p-0 text-slate-400 hover:text-white">
+                            <ChevronRight className="w-4 h-4" />
+                        </Button>
                     </div>
 
-                    {mode === "edit" && (
-                        <div className="flex items-center space-x-1 bg-slate-950 rounded-lg p-1 border border-slate-800 ml-4 animate-in zoom-in-95">
-                            <button 
-                                onClick={() => setActiveTool("patch")}
-                                className={`px-3 py-1.5 rounded-md transition-all group ${activeTool === 'patch' ? 'bg-indigo-600 text-white' : 'text-slate-500 hover:bg-slate-800'}`}
-                                title="Patch Existing Text"
-                            >
-                                <Edit3 className="w-4 h-4" />
-                            </button>
-                            <button 
-                                onClick={() => setActiveTool("erase")}
-                                className={`px-3 py-1.5 rounded-md transition-all group ${activeTool === 'erase' ? 'bg-red-600 text-white' : 'text-slate-500 hover:bg-slate-800'}`}
-                                title="Eraser Tool"
-                            >
-                                <Square className="w-4 h-4" />
-                            </button>
-                            <button 
-                                onClick={() => setActiveTool("text")}
-                                className={`px-3 py-1.5 rounded-md transition-all group ${activeTool === 'text' ? 'bg-green-600 text-white' : 'text-slate-500 hover:bg-slate-800'}`}
-                                title="Add New Text"
-                            >
-                                <Type className="w-4 h-4" />
-                            </button>
-                        </div>
-                    )}
-
-                    <div className="h-6 w-px bg-slate-700" />
-
-                    {pdfDoc && pdfDoc.numPages > 1 && (
-                        <div className="flex items-center space-x-3 bg-slate-800 p-1 rounded-lg">
-                            <Button 
-                                variant="ghost" 
-                                size="sm" 
-                                className="text-slate-300 hover:text-white hover:bg-slate-700 h-8"
-                                disabled={currentPage <= 1} 
-                                onClick={() => setCurrentPage((p) => p - 1)}
-                            >
-                                <ChevronLeft className="w-4 h-4" />
-                            </Button>
-                            <span className="text-sm font-semibold text-slate-300 px-2 min-w-[80px] text-center">
-                                {currentPage} / {pdfDoc.numPages}
-                            </span>
-                            <Button 
-                                variant="ghost" 
-                                size="sm" 
-                                className="text-slate-300 hover:text-white hover:bg-slate-700 h-8"
-                                disabled={currentPage >= pdfDoc.numPages} 
-                                onClick={() => setCurrentPage((p) => p + 1)}
-                            >
-                                <ChevronRight className="w-4 h-4" />
-                            </Button>
-                        </div>
-                    )}
-
-                    <Button 
-                        variant="outline" 
-                        size="sm" 
-                        className="bg-slate-800 border-slate-700 text-slate-300 hover:text-white h-9 px-4 hidden lg:flex"
-                        onClick={handleUndo}
-                        disabled={history.length === 0}
-                    >
-                        <RotateCcw className="w-4 h-4 mr-2" /> Undo
-                    </Button>
+                    <div className="flex items-center space-x-2">
+                        <Button variant="ghost" size="sm" onClick={handleUndo} disabled={history.length === 0} className="text-slate-400 hover:text-white text-[10px] font-black uppercase tracking-widest">
+                            <RotateCcw className="w-3.5 h-3.5 mr-2" /> Undo
+                        </Button>
+                        <Button onClick={handleExport} disabled={isExporting} className="bg-indigo-600 hover:bg-indigo-500 text-white text-[10px] font-black uppercase tracking-widest px-6 h-9 rounded-lg shadow-lg shadow-indigo-600/20">
+                            {isExporting ? <Loader2 className="w-4 h-4 animate-spin mr-2" /> : <Download className="w-4 h-4 mr-2" />}
+                            Export Forensic Bundle
+                        </Button>
+                    </div>
                 </div>
+            </header>
 
-                <div className="flex items-center space-x-4">
-                    <div className="hidden md:flex flex-col items-end mr-2 text-right">
-                        <span className="text-[10px] text-slate-500 uppercase font-black tracking-widest">Workspace Cache</span>
-                        <span className="text-xs font-bold text-pink-500 uppercase">{edits.length} modifications active</span>
+            <div className="flex-1 flex overflow-hidden">
+                {/* Left Tool Palette (Snagit-Style) */}
+                <aside className="w-16 bg-slate-900 border-r border-white/5 flex flex-col items-center py-6 space-y-4 z-40">
+                    <div className="flex flex-col space-y-1 bg-slate-950 p-1 rounded-xl border border-slate-800 shadow-inner">
+                        <Button 
+                            variant="ghost" 
+                            size="icon" 
+                            onClick={() => setActiveTool("move")}
+                            className={`w-10 h-10 rounded-lg transition-all ${activeTool === 'move' ? 'bg-indigo-600 text-white shadow-lg shadow-indigo-600/40' : 'text-slate-500 hover:text-slate-300'}`}
+                        >
+                            <MousePointer2 className="w-5 h-5" />
+                        </Button>
+                        <Button 
+                            variant="ghost" 
+                            size="icon" 
+                            onClick={() => setActiveTool("patch")}
+                            className={`w-10 h-10 rounded-lg transition-all ${activeTool === 'patch' ? 'bg-indigo-600 text-white shadow-lg shadow-indigo-600/40' : 'text-slate-500 hover:text-slate-300'}`}
+                        >
+                            <Edit3 className="w-5 h-5" />
+                        </Button>
+                        <Button 
+                            variant="ghost" 
+                            size="icon" 
+                            onClick={() => setActiveTool("erase")}
+                            className={`w-10 h-10 rounded-lg transition-all ${activeTool === 'erase' ? 'bg-red-600 text-white shadow-lg shadow-red-600/40' : 'text-slate-500 hover:text-slate-300'}`}
+                        >
+                            <Square className="w-5 h-5" />
+                        </Button>
+                        <Button 
+                            variant="ghost" 
+                            size="icon" 
+                            onClick={() => setActiveTool("text")}
+                            className={`w-10 h-10 rounded-lg transition-all ${activeTool === 'text' ? 'bg-green-600 text-white shadow-lg shadow-green-600/40' : 'text-slate-500 hover:text-slate-300'}`}
+                        >
+                            <Type className="w-5 h-5" />
+                        </Button>
                     </div>
-                    <Button 
-                        onClick={handleExport} 
-                        disabled={isExporting} 
-                        className="bg-pink-600 hover:bg-pink-500 text-white font-black px-6 shadow-xl shadow-pink-900/40 border-t border-pink-400/20"
-                    >
-                        {isExporting ? <Loader2 className="w-4 h-4 mr-2 animate-spin" /> : <Download className="w-4 h-4 mr-2" />}
-                        Export High-Fidelity PDF
-                    </Button>
-                </div>
-            </div>
 
-            {/* UNIFIED INTERACTIVE LAYER */}
-            <div 
-                ref={editorRef}
-                className="flex-1 overflow-auto bg-slate-950 p-12 flex justify-center relative custom-scrollbar scroll-smooth"
-                onClick={handleCanvasClick}
-            >
-                <div 
-                    className={`relative shadow-[0_40px_80px_rgba(0,0,0,0.7)] ring-1 ring-white/10 ${mode === 'select' ? 'cursor-text' : 'cursor-default'}`} 
-                    style={{ transformOrigin: 'top center' }}
+                    <div className="mt-auto flex flex-col items-center pb-2">
+                        <span className="text-[10px] font-black text-slate-700 uppercase vertical-text">Tools</span>
+                    </div>
+                </aside>
+
+                {/* Central Canvas Workspace */}
+                <main 
+                    ref={editorRef}
+                    className="flex-1 bg-slate-950 overflow-auto flex justify-center p-20 relative custom-scrollbar scroll-smooth"
+                    onClick={(e) => {
+                        if (activeTool === 'text') handleCanvasClick(e);
+                    }}
                 >
-                    {/* PDF Canvas */}
-                    <canvas ref={canvasRef} className="block bg-white" />
+                    <div className="relative document-canvas shadow-[0_40px_80px_rgba(0,0,0,0.7)] ring-1 ring-white/10" style={{ transform: `scale(${zoom / 1.5})`, transformOrigin: 'top center' }}>
+                        {/* PDF Canvas */}
+                        <canvas ref={canvasRef} className="block bg-white" />
 
-                    {/* DUAL MODE ENGINE: Overlay conditional logic based on selected mode */}
-                    <div className={`absolute inset-0 z-20 ${mode === 'select' ? 'pointer-events-auto' : 'pointer-events-none'}`}>
-                        {/* MODE 1: SELECT. Transparent lines native formatting. */}
-                        {mode === "select" && lineGroups.map((line) => (
-                            <div
-                                key={line.id}
-                                className="absolute bg-transparent text-transparent selection:bg-blue-500/40 selection:text-transparent select-text cursor-text"
-                                style={{
-                                    left: line.x * renderScale,
-                                    top: line.y * renderScale,
-                                    width: line.width * renderScale,
-                                    height: line.height * renderScale,
-                                    display: 'flex',
-                                    alignItems: 'center',
-                                    overflow: 'visible',
-                                    transform: `rotate(${(line as any).angle || 0}deg)`,
-                                    transformOrigin: 'left center'
-                                }}
-                            >
-                                <span 
-                                    className="whitespace-nowrap select-text"
-                                    style={{
-                                        fontSize: `${(line.height * renderScale) * 0.8}px`,
-                                        lineHeight: 1
-                                    }}
-                                >
-                                    {line.text}
-                                </span>
-                            </div>
-                        ))}
+                        <div className={`absolute inset-0 z-20 pointer-events-auto`}>
+                            {/* Draggable Words / Patches */}
+                            {ocrData.pages.find(p => p.page_number === currentPage)?.words.map((word, i) => {
+                                const id = `word-${currentPage}-${i}`;
+                                const hasEdit = edits.find((e) => e.id === id);
+                                const isSelected = selectedBox?.id === id;
+                                const bgColor = hasEdit?.backgroundColor || word.backgroundColor;
+                                
+                                return (
+                                    <div
+                                        key={id}
+                                        onMouseDown={(e) => handleDragStart(e, id, word)}
+                                        onClick={(e) => {
+                                            e.stopPropagation();
+                                            setSelectedBox({ id, word, originalText: word.text });
+                                            setEditValue(hasEdit?.text || word.text);
+                                        }}
+                                        className={`absolute pointer-events-auto transition-shadow duration-200 
+                                            ${isSelected ? "ring-2 ring-indigo-500 shadow-[0_0_20px_rgba(79,70,229,0.4)] z-50 rounded" : "z-10 hover:ring-1 hover:ring-white/20"}
+                                            ${activeTool === 'move' ? 'cursor-grab active:cursor-grabbing' : 'cursor-pointer'}
+                                        `}
+                                        style={{
+                                            left: (hasEdit?.x ?? word.x) * renderScale,
+                                            top: (hasEdit?.y ?? word.y) * renderScale,
+                                            width: (hasEdit?.width ?? word.width) * renderScale,
+                                            height: (hasEdit?.height ?? word.height) * renderScale,
+                                            backgroundColor: activeTool === "erase" || hasEdit?.isEraser ? getRgb(bgColor) : "transparent",
+                                            display: 'flex',
+                                            alignItems: 'baseline'
+                                        }}
+                                    >
+                                        {hasEdit && !hasEdit.isEraser && (
+                                            <span 
+                                                className="whitespace-nowrap px-0.5 pointer-events-none"
+                                                style={{
+                                                    color: getRgb(hasEdit.color !== undefined ? hasEdit.color : word.color),
+                                                    fontSize: `${(hasEdit.height * 0.8 || word.height * 0.8) * renderScale}px`,
+                                                    fontWeight: hasEdit.fontWeight || (word as any).fontWeight,
+                                                    fontFamily: hasEdit.fontStyle === "serif" ? "serif" : "sans-serif",
+                                                    opacity: hasEdit.opacity ?? 0.94,
+                                                    filter: `blur(${hasEdit.blur ?? 0.6}px)`,
+                                                    transform: `scaleX(${(hasEdit.weight ?? 0.08) * 10 + 1})`
+                                                }}
+                                            >
+                                                {hasEdit.text}
+                                            </span>
+                                        )}
+                                    </div>
+                                );
+                            })}
 
-                        {/* MODE 2: EDIT. Singular words, opaque rendered patches, click interactions. */}
-                        {mode === "edit" && currentPageData?.words.map((word, idx) => {
-                            const id = `${currentPage}-${idx}`;
-                            const hasEdit = edits.find((e) => e.id === id);
-                            const isSelected = selectedBox?.id === id;
-
-                            const bgColor = hasEdit ? getRgb(word.backgroundColor) : 'transparent';
-                            const fgColor = hasEdit ? getRgb(word.color) : 'transparent';
-                            const displayText = hasEdit ? hasEdit.text : word.text;
-
-                            // S.C.O.T Size Parity Logic (Math synchronized with Backend)
-                            const origText = word.text;
-                            const hasAscender = /[A-Z0-9bdfhklit\|\/\\\(\)\[\]\{\}\<\>]/g.test(origText);
-                            const hasDescender = /[gjpqy_,;Q\(\)]/g.test(origText);
-                            
-                            let scaleFactor = 0.52;
-                            if (hasAscender && hasDescender) scaleFactor = 0.95;
-                            else if (hasAscender || hasDescender) scaleFactor = 0.72;
-                            
-                            if (!origText) scaleFactor = 0.72;
-                            
-                            const truePointSize = word.height / scaleFactor;
-
-                            return (
+                            {/* Additive Text Layers */}
+                            {edits.filter(e => e.page === currentPage && e.isNew).map((e) => (
                                 <div
-                                    key={`edit-${id}`}
-                                    onClick={(e) => handleBoxClick(word, idx, e)}
-                                    className={`absolute cursor-pointer pointer-events-auto transition-colors ${
-                                        isSelected ? "ring-2 ring-indigo-500 bg-indigo-500/20 z-50 rounded" : "hover:bg-indigo-500/20 z-10"
-                                    }`}
+                                    key={e.id}
+                                    onMouseDown={(ev) => handleDragStart(ev, e.id, e as any)}
+                                    onClick={(event) => {
+                                        event.stopPropagation();
+                                        setSelectedBox({ id: e.id, word: e, originalText: "" });
+                                        setEditValue(e.text);
+                                    }}
+                                    className={`absolute pointer-events-auto border border-dashed border-green-500/30 ${selectedBox?.id === e.id ? "ring-2 ring-green-500 bg-green-500/10 z-50 rounded" : "z-10"}`}
                                     style={{
-                                        left: word.x * renderScale,
-                                        top: word.y * renderScale,
-                                        width: word.width * renderScale,
-                                        height: word.height * renderScale,
-                                        backgroundColor: bgColor,
+                                        left: e.x * renderScale,
+                                        top: e.y * renderScale,
+                                        width: e.width * renderScale,
+                                        height: (e.height || 20) * renderScale,
                                         display: 'flex',
                                         alignItems: 'baseline',
-                                        transform: `rotate(${(word as any).angle || 0}deg)`,
-                                        transformOrigin: 'left center'
+                                        cursor: activeTool === 'move' ? 'grab' : 'pointer'
                                     }}
                                 >
-                                    {hasEdit && (
-                                        <span 
-                                            className="whitespace-nowrap px-0.5"
-                                            style={{
-                                                color: fgColor,
-                                                fontSize: `${truePointSize * renderScale}px`,
-                                                lineHeight: `${word.height * renderScale}px`,
-                                                fontWeight: (word as any).fontWeight === "bold" ? 600 : 500,
-                                                fontFamily: (word as any).fontStyle === "serif" ? "serif" : "sans-serif",
-                                                opacity: (hasEdit as any)?.opacity ?? 0.96,
-                                                filter: `blur(${(hasEdit as any)?.blur ?? 0.6}px) contrast(1.1)`,
-                                                WebkitFontSmoothing: 'antialiased',
-                                                textShadow: (hasEdit as any)?.weight ? `0 0 ${(hasEdit as any).weight}px ${fgColor}` : 'none'
-                                            }}
-                                        >
-                                            {displayText}
-                                        </span>
-                                    )}
-
-                                    {/* Precision Popover v6 (Smart Positioning) */}
-                                    {isSelected && (
-                                        <div 
-                                            className={`absolute ${popoverSide === 'top' ? '-top-28' : 'top-full mt-4'} left-0 bg-slate-900 shadow-[0_30px_60px_-15px_rgba(0,0,0,0.8)] border border-slate-700 p-2 rounded-xl flex items-center space-x-3 z-[100] animate-in slide-in-from-${popoverSide === 'top' ? 'bottom' : 'top'}-4 zoom-in-95 pointer-events-auto shadow-indigo-500/10`} 
-                                            onClick={e => e.stopPropagation()}
-                                        >
-                                            <div className="flex flex-col px-2 py-0.5 border-r border-slate-700">
-                                                <span className="text-[10px] font-black text-slate-500 uppercase tracking-tighter">Word</span>
-                                            </div>
-                                            <div className="flex flex-col space-y-2">
-                                                <input
-                                                    autoFocus
-                                                    value={editValue}
-                                                    onChange={(e) => setEditValue(e.target.value)}
-                                                    onKeyDown={(e) => e.key === "Enter" && saveEdit()}
-                                                    className="bg-slate-800 border border-slate-700 rounded-lg px-4 py-2 text-sm text-white w-64 focus:ring-2 focus:ring-indigo-500 outline-none font-bold"
-                                                />
-                                                {/* Forensic Lab Sliders */}
-                                                <div className="grid grid-cols-3 gap-3 pt-2 border-t border-slate-800/50">
-                                                    <div className="flex flex-col">
-                                                        <label className="text-[9px] text-slate-500 uppercase font-black mb-1">Softness (B)</label>
-                                                        <input 
-                                                            type="range" min="0" max="3" step="0.1" 
-                                                            value={(hasEdit as any)?.blur ?? 0.6}
-                                                            onChange={(e) => {
-                                                                const val = parseFloat(e.target.value);
-                                                                setEdits(prev => prev.map(ed => ed.id === id ? {...ed, blur: val} : ed));
-                                                            }}
-                                                            className="w-full accent-pink-500 h-1 bg-slate-800 rounded-lg appearance-none cursor-pointer"
-                                                        />
-                                                    </div>
-                                                    <div className="flex flex-col">
-                                                        <label className="text-[9px] text-slate-500 uppercase font-black mb-1">Weight (S)</label>
-                                                        <input 
-                                                            type="range" min="-0.5" max="1" step="0.05" 
-                                                            value={(hasEdit as any)?.weight ?? 0.08}
-                                                            onChange={(e) => {
-                                                                const val = parseFloat(e.target.value);
-                                                                setEdits(prev => prev.map(ed => ed.id === id ? {...ed, weight: val} : ed));
-                                                            }}
-                                                            className="w-full accent-indigo-500 h-1 bg-slate-800 rounded-lg appearance-none cursor-pointer"
-                                                        />
-                                                    </div>
-                                                    <div className="flex flex-col">
-                                                        <label className="text-[9px] text-slate-500 uppercase font-black mb-1">Inking (C)</label>
-                                                        <input 
-                                                            type="range" min="0.5" max="1" step="0.01" 
-                                                            value={(hasEdit as any)?.opacity ?? 0.94}
-                                                            onChange={(e) => {
-                                                                const val = parseFloat(e.target.value);
-                                                                setEdits(prev => prev.map(ed => ed.id === id ? {...ed, opacity: val} : ed));
-                                                            }}
-                                                            className="w-full accent-green-500 h-1 bg-slate-800 rounded-lg appearance-none cursor-pointer"
-                                                        />
-                                                    </div>
-                                                    <div className="flex flex-col">
-                                                        <label className="text-[9px] text-slate-500 uppercase font-black mb-1">Grain (G)</label>
-                                                        <input 
-                                                            type="range" min="0" max="1" step="0.05" 
-                                                            value={(hasEdit as any)?.grain ?? 0.0}
-                                                            onChange={(e) => {
-                                                                const val = parseFloat(e.target.value);
-                                                                setEdits(prev => prev.map(ed => ed.id === id ? {...ed, grain: val} : ed));
-                                                            }}
-                                                            className="w-full accent-amber-500 h-1 bg-slate-800 rounded-lg appearance-none cursor-pointer"
-                                                        />
-                                                    </div>
-                                                </div>
-                                            </div>
-                                            <Button size="sm" className="bg-indigo-600 hover:bg-indigo-500 h-10 px-5 font-black rounded-lg shadow-lg" onClick={saveEdit}>
-                                                Apply
-                                            </Button>
-                                        </div>
-                                    )}
+                                    <span 
+                                        className="whitespace-nowrap px-0.5"
+                                        style={{
+                                            color: getRgb(e.color),
+                                            fontSize: `${(e.fontSize || 14) * renderScale}px`,
+                                            opacity: (e as any).opacity ?? 0.96,
+                                            filter: `blur(${(e as any).blur ?? 0.6}px)`,
+                                            fontFamily: e.fontStyle === "serif" ? "serif" : "sans-serif",
+                                        }}
+                                    >
+                                        {e.text}
+                                    </span>
                                 </div>
-                            );
-                        })}
+                            ))}
+                        </div>
+                    </div>
+                </main>
 
-                        {/* MODE 2b: RENDER ADDITIVE TEXT (v6 Cursor Tool) */}
-                        {mode === "edit" && edits.filter(e => e.page === currentPage && e.isNew).map((e) => (
-                            <div
-                                key={e.id}
-                                onClick={(event) => {
-                                    event.stopPropagation();
-                                    const yPos = e.y * renderScale;
-                                    setPopoverSide(yPos < 200 ? "bottom" : "top");
-                                    setSelectedBox({ id: e.id, word: e, originalText: "" });
-                                    setEditValue(e.text);
-                                }}
-                                className={`absolute cursor-pointer border border-dashed border-green-500/30 ${selectedBox?.id === e.id ? "ring-2 ring-green-500 bg-green-500/10 z-50 rounded" : "z-10"}`}
-                                style={{
-                                    left: e.x * renderScale,
-                                    top: e.y * renderScale,
-                                    width: e.width * renderScale,
-                                    height: (e.height || 20) * renderScale,
-                                    display: 'flex',
-                                    alignItems: 'baseline'
-                                }}
-                            >
-                                <span 
-                                    className="whitespace-nowrap px-0.5"
-                                    style={{
-                                        color: getRgb(e.color),
-                                        fontSize: `${(e.fontSize || 14) * renderScale}px`,
-                                        opacity: (e as any).opacity ?? 0.96,
-                                        filter: `blur(${(e as any).blur ?? 0.6}px)`,
-                                        fontFamily: e.fontStyle === "serif" ? "serif" : "sans-serif",
-                                    }}
-                                >
-                                    {e.text}
-                                </span>
+                {/* Right Property Inspector (Snagit-Style) */}
+                <aside className="w-72 bg-slate-900 border-l border-white/5 flex flex-col z-40">
+                    <div className="h-12 border-b border-white/5 flex items-center px-4 justify-between bg-slate-950">
+                        <span className="text-[10px] font-black text-slate-300 uppercase tracking-widest flex items-center">
+                            <ShieldCheck className="w-3.5 h-3.5 mr-2 text-indigo-500" /> Property Inspector
+                        </span>
+                    </div>
+
+                    <div className="flex-1 overflow-y-auto p-5 space-y-8 custom-scrollbar">
+                        {selectedBox ? (
+                            <div className="space-y-8 animate-in slide-in-from-right-4 duration-300">
+                                {/* TEXT EDITOR */}
+                                <div className="space-y-3">
+                                    <label className="text-[10px] font-black text-slate-500 uppercase tracking-widest">Forensic Content</label>
+                                    <textarea 
+                                        value={editValue}
+                                        onChange={(e) => setEditValue(e.target.value)}
+                                        className="w-full bg-slate-950 border border-white/5 rounded-xl p-4 text-white text-sm font-medium focus:ring-2 focus:ring-indigo-500 outline-none transition-all min-h-[80px]"
+                                        placeholder="Type new forensic text..."
+                                    />
+                                    <Button onClick={saveEdit} className="w-full bg-indigo-600 hover:bg-indigo-500 text-white font-black uppercase text-[10px] tracking-widest h-10 shadow-lg rounded-lg">
+                                        Apply Transformation
+                                    </Button>
+                                </div>
+
+                                <div className="h-px bg-white/5 w-full" />
+
+                                {/* B.S.C.O.T FORENSIC LAB */}
+                                <div className="space-y-6">
+                                    <h4 className="text-[10px] font-black text-slate-400 uppercase tracking-[0.2em]">Forensic Lab (v7)</h4>
+                                    
+                                    {[
+                                        { label: "Softness (B)", key: "blur", min: 0, max: 2, step: 0.1, color: "accent-blue-500" },
+                                        { label: "Weight (S)", key: "weight", min: 0, max: 0.5, step: 0.01, color: "accent-pink-500" },
+                                        { label: "Inking (C)", key: "opacity", min: 0.5, max: 1, step: 0.01, color: "accent-green-500" },
+                                        { label: "Grain (G)", key: "grain", min: 0, max: 1, step: 0.05, color: "accent-amber-500" }
+                                    ].map((s) => (
+                                        <div key={s.key} className="space-y-2">
+                                            <div className="flex justify-between text-[9px] font-black text-slate-500">
+                                                <span className="uppercase tracking-widest">{s.label}</span>
+                                                <span className="text-indigo-400 font-mono tracking-tighter">
+                                                    {((edits.find(e => e.id === selectedBox.id)?.[s.key] ?? (selectedBox.word as any)[s.key]) || (s.key === 'blur' ? 0.6 : s.key === 'weight' ? 0.08 : s.key === 'opacity' ? 0.94 : 0)).toFixed(2)}
+                                                </span>
+                                            </div>
+                                            <input 
+                                                type="range" min={s.min} max={s.max} step={s.step} 
+                                                value={(edits.find(e => e.id === selectedBox.id)?.[s.key] ?? (selectedBox.word as any)[s.key]) || (s.key === 'blur' ? 0.6 : s.key === 'weight' ? 0.08 : s.key === 'opacity' ? 0.94 : 0)}
+                                                onChange={(e) => {
+                                                    const val = parseFloat(e.target.value);
+                                                    setEdits(prev => {
+                                                        const existing = prev.filter(ed => ed.id !== selectedBox.id);
+                                                        const current = prev.find(ed => ed.id === selectedBox.id) || {
+                                                            id: selectedBox.id,
+                                                            page: currentPage,
+                                                            originalText: selectedBox.originalText,
+                                                            x: selectedBox.word.x,
+                                                            y: selectedBox.word.y,
+                                                            width: selectedBox.word.width,
+                                                            height: selectedBox.word.height,
+                                                            text: selectedBox.originalText,
+                                                            color: selectedBox.word.color,
+                                                            backgroundColor: selectedBox.word.backgroundColor,
+                                                            blur: 0.6, weight: 0.08, opacity: 0.94, grain: 0.0
+                                                        };
+                                                        return [...existing, { ...current, [s.key]: val }];
+                                                    });
+                                                }}
+                                                className={`w-full ${s.color} h-1 bg-slate-800 rounded-lg appearance-none cursor-pointer`}
+                                            />
+                                        </div>
+                                    ))}
+                                </div>
                             </div>
-                        ))}
+                        ) : (
+                            <div className="h-full flex flex-col items-center justify-center text-center space-y-4 opacity-30">
+                                <div className="w-16 h-16 bg-slate-800 rounded-2xl flex items-center justify-center">
+                                    <MousePointer2 className="w-8 h-8 text-slate-600" />
+                                </div>
+                                <div className="space-y-1">
+                                    <p className="text-xs font-black text-slate-400 uppercase tracking-widest">No Selection</p>
+                                    <p className="text-[10px] text-slate-600 font-bold px-6">Select a word or fragment to reveal forensic properties.</p>
+                                </div>
+                            </div>
+                        )}
                     </div>
-                </div>
+
+                    <div className="p-4 bg-slate-950 border-t border-white/5 space-y-3">
+                         <div className="flex items-center justify-between">
+                             <span className="text-[9px] font-black text-slate-600 uppercase tracking-widest">Canvas Zoom</span>
+                             <span className="text-indigo-500 text-[10px] font-black">{Math.round(zoom * 66)}%</span>
+                         </div>
+                         <input 
+                            type="range" min="1" max="3" step="0.1" 
+                            value={zoom}
+                            onChange={(e) => setZoom(parseFloat(e.target.value))}
+                            className="w-full accent-indigo-600 h-1 bg-slate-800 rounded-lg appearance-none cursor-pointer"
+                        />
+                    </div>
+                </aside>
             </div>
-            
-            <div className="bg-slate-900/80 backdrop-blur-md border-t border-slate-800 px-6 py-3 flex items-center justify-between text-[10px] font-black text-slate-500 uppercase tracking-widest">
-                {mode === "select" ? (
-                    <div className="flex items-center space-x-8">
-                        <span className="flex items-center"><Square className="w-3.5 h-3.5 mr-2 text-blue-500" /> Free Drag to Select & Copy Text</span>
-                        <span className="flex items-center"><Type className="w-3.5 h-3.5 mr-2 text-slate-400" /> UI Layers Unlocked</span>
-                    </div>
-                ) : (
-                   <div className="flex items-center space-x-8">
-                        <span className="flex items-center"><MousePointer2 className="w-3.5 h-3.5 mr-2 text-indigo-500" /> Click any single word to patch it</span>
-                        <span className="flex items-center"><RotateCcw className="w-3.5 h-3.5 mr-2 text-slate-400" /> Localized Font Retention Active</span>
-                    </div>
-                )}
-                <div className="flex items-center text-slate-400">
-                    <ShieldCheck className="w-4 h-4 mr-2 text-green-500" /> AES-256 Engine Running
+
+            {/* Status Footer */}
+            <footer className="h-10 bg-slate-900 border-t border-white/5 flex items-center justify-between px-6 text-[9px] font-black text-slate-500 uppercase tracking-[0.2em] relative z-50">
+                <div className="flex items-center space-x-6">
+                    <span className="flex items-center text-indigo-400">
+                        <div className="w-2 h-2 bg-indigo-500 rounded-full mr-2 animate-pulse" />
+                        Live Forensic Overlay
+                    </span>
+                    <span>Modifications: {edits.length} recorded</span>
                 </div>
-            </div>
+                <div className="flex items-center opacity-40">
+                    <ShieldCheck className="w-3 h-3 mr-2" /> 256-bit Vector Security
+                </div>
+            </footer>
         </div>
     );
 }

@@ -36,7 +36,7 @@ import { PaywallModal } from "@/components/layout/PaywallModal";
 // v02.2.46 (Tachyon Omega - Galactic Burst) - 10MB/s Final Form
 // v02.2.47 (Tachyon Omega - Solar Flare) - WebRTC Stability Fix
 // v02.2.48 (Tachyon Omega - Solar Flare) - 10MB/s M2M Persistent Core
-const VERSION = "v02.2.55 (Tachyon Omega - Solar Flare)";
+const VERSION = "v02.2.56 (Tachyon Omega - Zenith)";
 
 
 function getEngineConfig(engine: 'M2M' | 'HYBRID' | 'NITRO') {
@@ -87,8 +87,7 @@ const ICE_SERVERS = {
         { urls: "stun:stun2.l.google.com:19302" },
         { urls: "stun:stun3.l.google.com:19302" },
         { urls: "stun:stun4.l.google.com:19302" },
-        { urls: "stun:stun.cloudflare.com:3478" },
-        { urls: "stun:global.stun.twilio.com:3478" }
+        { urls: "stun:stun.cloudflare.com:3478" }
     ]
 
 };
@@ -1291,19 +1290,21 @@ ${capturedLogsRef.current.join('\n')}
                                     // v02.2.26: Strong Anchor (Wait for P-0 to at least start candidate gathering)
                                     if (i === 0) await new Promise(resolve => setTimeout(resolve, 300));
                                     
-                                    // Batching cool-down for carrier NATs
+                                    // Batching cool-down (Accelerated for M2M stability)
                                     if ((i + 1) % 4 === 0 && i < config.pipes - 1) {
-                                        logDebug(`--- Batch-Sync [P0-${i}] Complete. Cooling down 600ms ---`);
-                                        await new Promise(resolve => setTimeout(resolve, 600));
+                                        const cooldown = isM2M ? 50 : 600;
+                                        logDebug(`--- Batch-Sync [P0-${i}] Complete. Cooling down ${cooldown}ms ---`);
+                                        await new Promise(resolve => setTimeout(resolve, cooldown));
                                     } else {
-                                        await new Promise(resolve => setTimeout(resolve, 50));
+                                        await new Promise(resolve => setTimeout(resolve, isM2M ? 20 : 50));
                                     }
                                 }
                             };
                             startStaggeredHandshake();
                         } else if (data.type === 'answer') {
                             const pIdx = data.type === 'answer' ? (data.pipeIdx || 0) : 0;
-                            const gen = data.gen || 0;
+                            const rawGen = data.gen;
+                            const gen = (typeof rawGen === 'number' && Number.isFinite(rawGen)) ? rawGen : 1;
                             if (gen !== pipeGenerationRef.current[pIdx]) return;
                             try {
                                 const peer = peersRef.current[pIdx];
@@ -1317,7 +1318,8 @@ ${capturedLogsRef.current.join('\n')}
                             } catch (e: any) { logDebug(`❌ Pipe-${pIdx} Answer Error: ${e.message}`); }
                         } else if (data.type === 'ice-candidate') {
                             const pIdx = data.pipeIdx || 0;
-                            const gen = data.gen || 0;
+                            const rawGen = data.gen;
+                            const gen = (typeof rawGen === 'number' && Number.isFinite(rawGen)) ? rawGen : 1;
                             if (gen !== pipeGenerationRef.current[pIdx]) return;
                             if (!remoteDescriptionSetsRef.current[pIdx]) {
                                 iceBuffersRef.current[pIdx].push(data.candidate);
@@ -1394,12 +1396,14 @@ ${capturedLogsRef.current.join('\n')}
             }
             peersRef.current[pipeIdx] = peer;
 
-            // v02.2.26: [FINAL-SYNC] ICE Resuscitator Cleanup logic
+            // v02.2.56: Accelerated M2M Resuscitator (1.5s vs 4.0s)
             if (resuscitatorTimersRef.current[pipeIdx]) clearTimeout(resuscitatorTimersRef.current[pipeIdx]);
             resuscitatorTimersRef.current[pipeIdx] = setTimeout(() => {
                 const pc = peersRef.current[pipeIdx];
                 if (pc && (pc.iceConnectionState === 'new' || pc.iceConnectionState === 'checking')) {
-                    logDebug(`🚨 Pipe-${pipeIdx} HANG [Carrier Black-Hole] detected. Resuscitating...`);
+                    const isM2M = isMobileDevice() && remoteCapabilityRef.current.isMobile;
+                    const hangTimeout = isM2M ? 1500 : 4000;
+                    logDebug(`🚨 Pipe-${pipeIdx} HANG [Carrier Black-Hole] detected. Resuscitating after ${hangTimeout}ms...`);
                     try { 
                         pc.restartIce(); 
                         // v02.2.46: Trigger HSFC Rollback to prevent buffer wipe data loss
@@ -1410,7 +1414,7 @@ ${capturedLogsRef.current.join('\n')}
                         }
                     } catch (e) {}
                 }
-            }, 4000);
+            }, (isMobileDevice() && remoteCapabilityRef.current.isMobile) ? 1500 : 4000);
 
             if (!useFallback && isSender && (pipeIdx >= 0)) {
                 // v02.1.69: Symmetric Escalation Watchdog (Sender-Only)
@@ -2045,7 +2049,8 @@ ${capturedLogsRef.current.join('\n')}
                     }
 
                     // v02.2.46: M2M HSFC Gate Enforcement
-                    const currentGate = isM2M ? 4 * 1024 * 1024 : BDP_GPE_GATE;
+                    // v02.2.56: M2M Zenith Gate (32MB Floor for 10MB/s Saturation)
+                    const currentGate = isM2M ? Math.max(32 * 1024 * 1024, (smoothedRTT * (10 * 1024 * 1024)) * 4) : BDP_GPE_GATE;
                     const canSend = (gpeInFlightBytesRef.current < currentGate);
                     
                     // v02.2.29: GPE Deadlock Watchdog (Stuck-Gate Buster)
