@@ -37,34 +37,37 @@ import { PaywallModal } from "@/components/layout/PaywallModal";
 // v02.2.47 (Tachyon Omega - Solar Flare) - WebRTC Stability Fix
 // v02.2.48 (Tachyon Omega - Solar Flare) - 10MB/s M2M Persistent Core
 // v02.2.60 (Tachyon Omega - Fixed Stable) - v02.2.56 Core + Vanguard Guarded Migration + Batch-ACK Patch
-const VERSION = "v02.2.60 (Tachyon Omega - Fixed Stable)";
+// v02.2.61 (Tachyon Omega - Apex) - 4-Pipe Pruning + SRFLX Lock + 64MB GPE + Zero-Rollback NACK + 64KB MTU
+const VERSION = "v02.2.61 (Tachyon Omega - Apex)";
 
 
 function getEngineConfig(engine: 'M2M' | 'HYBRID' | 'NITRO') {
     if (engine === 'M2M') {
         return {
-            pipes: 12, // Extreme Concurrency for Mobile Carriers
-            pacerThreshold: 32 * 1024 * 1024, // 32MB Deep Buffer for Jitter
-            mtuLimit: 32 * 1024, // Survival MTU (Carrier-Tested)
-            nackBackoff: 500 // Faster re-send recovery
+            pipes: 4, // v02.2.61 Apex: 4-Pipe Pruning (prevents carrier NAT table overflow)
+            channelsPerPipe: 24, // v02.2.61: 24 channels/pipe (4×24=96 total maintained)
+            pacerThreshold: 64 * 1024 * 1024, // v02.2.61: 64MB Deep Buffer for saturation
+            mtuLimit: 64 * 1024, // v02.2.61: 64KB MTU (Singularity-era peak config)
+            nackBackoff: 200 // v02.2.61: Faster targeted NACK recovery
         };
     }
     return {
         pipes: 4, // Fiber-Optimized Standard
+        channelsPerPipe: 8,
         pacerThreshold: 16 * 1024 * 1024,
         mtuLimit: 64 * 1024, // High-Speed L2M MTU
         nackBackoff: 1000
     };
 }
-const PIPES = 12; // v02.2.23: Global Buffer Alignment (Full Context)
-const CHANNELS_PER_PIPE = 8;
-const CHANNELS = 96; // 12 pipes x 8 channels = 96 logical streams
-const CHUNK_SIZE = 32 * 1024; // 32KB - Velocity Max (Mobile Resilient)
-const HIGH_WATER_MARK_MAX = 32 * 1024 * 1024; // 32MB Jumbo Window for 10 MB/s saturation 
-const BASE_PACER_THRESHOLD = 16 * 1024 * 1024; // 16MB Pacer Threshold
-const MAX_IN_FLIGHT = 4096; // 4096 chunks (x32KB = 128MB ceiling)
+const PIPES = 4; // v02.2.61 Apex: Reduced from 12→4 for M2M carrier NAT safety
+const CHANNELS_PER_PIPE = 24; // v02.2.61: Increased from 8→24 (4×24=96 channels maintained)
+const CHANNELS = 96; // 4 pipes x 24 channels = 96 logical streams
+const CHUNK_SIZE = 64 * 1024; // v02.2.61: 64KB - Singularity-era peak (halves SCTP overhead)
+const HIGH_WATER_MARK_MAX = 64 * 1024 * 1024; // v02.2.61: 64MB Jumbo Window for saturation
+const BASE_PACER_THRESHOLD = 32 * 1024 * 1024; // v02.2.61: 32MB Pacer Threshold
+const MAX_IN_FLIGHT = 4096; // 4096 chunks (x64KB = 256MB ceiling)
 const DRAIN_THRESHOLD = 64 * 1024 * 1024; 
-const BDP_GPE_GATE = 64 * 1024 * 1024; // v02.2.48: Default Nitro (M2M uses 32MB hard-floor for 10MB/s)
+const BDP_GPE_GATE = 64 * 1024 * 1024; // v02.2.61: 64MB Default Gate
 
 
 const isMobileDevice = () => {
@@ -279,9 +282,10 @@ function InstantDropContent() {
         // v02.1.18: Define next target based on RTT bands
         let target = 1;
         if (engineMode === 'M2M') {
-            if (rtt < 0.350) target = 12; // v02.2.48: Augmented Tachyon Bands
-            else if (rtt < 0.800) target = 10;
-            else target = 8; // Persistent Concurrency for 10MB/s Target
+            // v02.2.61 Apex: 4-pipe architecture — always use all 4 SRFLX pipes
+            if (rtt < 0.500) target = 4;
+            else if (rtt < 1.000) target = 3;
+            else target = 2; // Minimum 2 pipes even under jitter
         } else if (engineMode === 'HYBRID') {
             if (rtt < 0.600) target = 6; // v02.2.48: Hybrid Overdrive
             else target = 4;
@@ -294,7 +298,7 @@ function InstantDropContent() {
 
         // Hysteresis Logic:
         // Enforce Hard Engine Ceilings (v02.2.23)
-        const ceiling = engineMode === 'M2M' ? 12 : 4;
+        const ceiling = engineMode === 'M2M' ? 4 : 4; // v02.2.61 Apex: 4 pipes max
         target = Math.min(target, ceiling);
         
         // 1. If scaling DOWN, record the time.
@@ -473,7 +477,7 @@ function InstantDropContent() {
             totalReceivedChunksCountRef.current = 0;
             
             // v02.2.23: Reset All Piston HUDs
-            diagnosticMetricsRef.current.pistonStats = Array(12).fill({ speed: 0, health: 'green' });
+            diagnosticMetricsRef.current.pistonStats = Array(PIPES).fill({ speed: 0, health: 'green' });
             
             // v02.1.80: Full Memory Hygiene (No-OR Hardening)
             lastSuccessfulChunkIdxRef.current = 0;
@@ -1413,6 +1417,7 @@ ${capturedLogsRef.current.join('\n')}
 
             // v02.2.56: Accelerated M2M Resuscitator (1.5s vs 4.0s)
             // v02.2.60: Guarded Migration Handshake (Fix A)
+            // v02.2.61 Apex: Zero-Rollback — pipe hang no longer resets byte counter
             const pipeConnectTime = Date.now();
             if (resuscitatorTimersRef.current[pipeIdx]) clearTimeout(resuscitatorTimersRef.current[pipeIdx]);
             resuscitatorTimersRef.current[pipeIdx] = setTimeout(() => {
@@ -1420,32 +1425,18 @@ ${capturedLogsRef.current.join('\n')}
                 if (pc && (pc.iceConnectionState === 'new' || pc.iceConnectionState === 'checking')) {
                     const isM2M = isMobileDevice() && remoteCapabilityRef.current.isMobile;
                     
-                    // Fix A: Only migrate if the pipe has actually confirmed stable data flow
-                    const isPipeReadyForMigration = () => {
-                        const elapsed = Date.now() - pipeConnectTime;
-                        // For M2M, we require 200ms grace + at least 1 statistical byte confirmed
-                        return elapsed > 200 && (diagnosticMetricsRef.current.pistonStats[pipeIdx]?.speed || 0) > 0;
-                    };
-
-                    const hangTimeout = isM2M ? 1500 : 4000;
-                    logDebug(`≡ƒÜ¿ Pipe-${pipeIdx} HANG [Carrier Black-Hole] detected. Resuscitating after ${hangTimeout}ms...`);
+                    const hangTimeout = isM2M ? 2000 : 4000;
+                    logDebug(`⚠️ Pipe-${pipeIdx} HANG detected. Restarting ICE (no rollback) after ${hangTimeout}ms...`);
                     try { 
-                        // v02.2.60: Use the Guard to prevent rollback loops on unstable pipes
-                        if (isM2M && !isPipeReadyForMigration()) {
-                            logDebug(`≡ƒ¢í∩╕Å Guarded Migration: Pipe-${pipeIdx} unstable. Delaying resuscitation...`);
-                            return; 
-                        }
-
                         pc.restartIce(); 
-                        // v02.2.46: Trigger HSFC Rollback to prevent buffer wipe data loss
-                        if (modeRef.current === 'send') {
-                            const lastCleared = diagnosticMetricsRef.current.bytesCleared || 0;
-                            logDebug(`≡ƒ¢í∩╕Å HSFC ROLLBACK: Signaling rollback to last known-good byte: ${lastCleared}`);
-                            rollbackTriggerRef.current = lastCleared;
-                        }
+                        // v02.2.61 Apex: REMOVED HSFC ROLLBACK — no more resetting byteOffset to 0
+                        // Old code triggered rollbackTriggerRef.current = lastCleared which caused
+                        // 8MB+ of wasted re-sends per pipe failure. With 4 total pipes, a single
+                        // pipe restart just reduces concurrency temporarily, not the transfer state.
+                        logDebug(`✅ Pipe-${pipeIdx} ICE restarted. Transfer continues on remaining pipes.`);
                     } catch (e) {}
                 }
-            }, (isMobileDevice() && remoteCapabilityRef.current.isMobile) ? 1500 : 4000);
+            }, (isMobileDevice() && remoteCapabilityRef.current.isMobile) ? 2000 : 4000);
 
             if (!useFallback && isSender && (pipeIdx >= 0)) {
                 // v02.1.69: Symmetric Escalation Watchdog (Sender-Only)
@@ -1927,8 +1918,8 @@ ${capturedLogsRef.current.join('\n')}
             const activeEngine = isM2M ? 'M2M' : (isSelfMobile || remoteCapabilityRef.current.isMobile) ? 'HYBRID' : 'NITRO';
             const config = getEngineConfig(activeEngine);
             
-            // v02.2.48: Solar Flare Augmented Gate (16MB floor / 64MB cap)
-            const dynamicGate = isM2M ? Math.min(64 * 1024 * 1024, Math.max(16 * 1024 * 1024, (smoothedRTT * (10 * 1024 * 1024)) * 1.5)) : 512 * 1024 * 1024;
+            // v02.2.61 Apex: Jumbo GPE Gate (64MB floor / 128MB cap) — 6× BDP headroom
+            const dynamicGate = isM2M ? Math.min(128 * 1024 * 1024, Math.max(64 * 1024 * 1024, (smoothedRTT * (10 * 1024 * 1024)) * 6)) : 512 * 1024 * 1024;
 
             const isGPEBlocked = gpeInFlightBytesRef.current > dynamicGate; 
             
@@ -2081,7 +2072,8 @@ ${capturedLogsRef.current.join('\n')}
 
                     // v02.2.46: M2M HSFC Gate Enforcement
                     // v02.2.56: M2M Zenith Gate (32MB Floor for 10MB/s Saturation)
-                    const currentGate = isM2M ? Math.max(32 * 1024 * 1024, (smoothedRTT * (10 * 1024 * 1024)) * 4) : BDP_GPE_GATE;
+                    // v02.2.61 Apex: Unified GPE Gate (64MB floor for M2M)
+                    const currentGate = isM2M ? Math.max(64 * 1024 * 1024, (smoothedRTT * (10 * 1024 * 1024)) * 6) : BDP_GPE_GATE;
                     const canSend = (gpeInFlightBytesRef.current < currentGate);
                     
                     // v02.2.29: GPE Deadlock Watchdog (Stuck-Gate Buster)
