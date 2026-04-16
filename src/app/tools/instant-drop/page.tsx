@@ -36,7 +36,8 @@ import { PaywallModal } from "@/components/layout/PaywallModal";
 // v02.2.46 (Tachyon Omega - Galactic Burst) - 10MB/s Final Form
 // v02.2.47 (Tachyon Omega - Solar Flare) - WebRTC Stability Fix
 // v02.2.48 (Tachyon Omega - Solar Flare) - 10MB/s M2M Persistent Core
-const VERSION = "v02.2.59 (Tachyon Omega - Vanguard)";
+// v02.2.60 (Tachyon Omega - Fixed Stable) - v02.2.56 Core + Vanguard Guarded Migration + Batch-ACK Patch
+const VERSION = "v02.2.60 (Tachyon Omega - Fixed Stable)";
 
 
 function getEngineConfig(engine: 'M2M' | 'HYBRID' | 'NITRO') {
@@ -44,7 +45,7 @@ function getEngineConfig(engine: 'M2M' | 'HYBRID' | 'NITRO') {
         return {
             pipes: 12, // Extreme Concurrency for Mobile Carriers
             pacerThreshold: 32 * 1024 * 1024, // 32MB Deep Buffer for Jitter
-            mtuLimit: 64 * 1024, // v02.2.59: Restore adaptive probe ceiling
+            mtuLimit: 32 * 1024, // Survival MTU (Carrier-Tested)
             nackBackoff: 500 // Faster re-send recovery
         };
     }
@@ -58,7 +59,7 @@ function getEngineConfig(engine: 'M2M' | 'HYBRID' | 'NITRO') {
 const PIPES = 12; // v02.2.23: Global Buffer Alignment (Full Context)
 const CHANNELS_PER_PIPE = 8;
 const CHANNELS = 96; // 12 pipes x 8 channels = 96 logical streams
-const CHUNK_SIZE = 16384; // v02.2.59: Soft-Floor for initial handshake (16KB)
+const CHUNK_SIZE = 32 * 1024; // 32KB - Velocity Max (Mobile Resilient)
 const HIGH_WATER_MARK_MAX = 32 * 1024 * 1024; // 32MB Jumbo Window for 10 MB/s saturation 
 const BASE_PACER_THRESHOLD = 16 * 1024 * 1024; // 16MB Pacer Threshold
 const MAX_IN_FLIGHT = 4096; // 4096 chunks (x32KB = 128MB ceiling)
@@ -96,20 +97,7 @@ function InstantDropContent() {
     const searchParams = useSearchParams();
     const initialRoom = searchParams.get("room");
 
-    const isPipeReadyForMigration = (pipeIdx: number) => {
-        const stats = diagnosticMetricsRef.current.pistonStats[pipeIdx];
-        const pc = peersRef.current[pipeIdx];
-        const connectedAt = pipeConnectedAtRef.current[pipeIdx] || 0;
-        
-        return (
-            pc && (pc.connectionState === 'connected' || pc.iceConnectionState === 'connected') &&
-            stats && stats.speed >= 0 && // At least some metrics flowing
-            Date.now() - connectedAt > 200 // 2 RTT grace period (approx)
-        );
-    };
-
     const [mode, setMode] = useState<'select' | 'send' | 'receive'>(initialRoom ? 'receive' : 'select');
-
     const [engineMode, setEngineMode] = useState<'M2M' | 'HYBRID' | 'NITRO'>('NITRO');
     const [roomId, setRoomId] = useState<string>(initialRoom || "");
     const { recordUsage, isPaywallOpen, setIsPaywallOpen, handleAction, deviceId, isPro, email } = useUsage();
@@ -179,9 +167,6 @@ function InstantDropContent() {
     const filesRef = useRef<File[]>([]);
     const modeRef = useRef(mode);
     const statusRef = useRef(status);
-    const lastNackDrainTsRef = useRef<number | null>(null);
-    const pipeConnectedAtRef = useRef<number[]>([]);
-    const migrationQueueRef = useRef<{channelIdx: number, targetPipeIdx: number}[]>([]);
     const isProRef = useRef(isPro);
     const emailRef = useRef(email);
     const deviceIdRef = useRef(deviceId);
@@ -260,14 +245,14 @@ function InstantDropContent() {
     useEffect(() => {
         (window as any).__CHAOS_MODE__ = (active: boolean) => {
             diagnosticMetricsRef.current.isChaosMode = active;
-            logDebug(`🚨 Chaos Mode: ${active ? 'ACTIVE (Injecting 100ms Jitter)' : 'OFF'}`);
+            logDebug(`≡ƒÜ¿ Chaos Mode: ${active ? 'ACTIVE (Injecting 100ms Jitter)' : 'OFF'}`);
         };
         (window as any).__SET_PIPE_LATENCY__ = (pipeIdx: number, ms: number) => {
             logDebug(`[OMEGA] CHAOS: Throttling Pipe-${pipeIdx} to ${ms}ms latency.`);
             pipeLatenciesRef.current[pipeIdx] = ms;
         };
         (window as any).__FORCE_RELAY__ = () => {
-            logDebug("🛡️ FORCING RELAY: Stripping STUN/Host candidates...");
+            logDebug("≡ƒ¢í∩╕Å FORCING RELAY: Stripping STUN/Host candidates...");
             relayServersRef.current = relayServersRef.current.filter(s => s.urls.includes("turn:"));
         };
         (window as any).__GET_OMEGA_HEALTH__ = () => ({
@@ -337,13 +322,13 @@ function InstantDropContent() {
             try {
                 const res = await fetch(url);
                 if (res.status < 500) {
-                    logDebug(`✅ [PRE-FLIGHT] Backend REACHABLE (Status: ${res.status}). Signal GREEN.`);
+                    logDebug(`Γ£à [PRE-FLIGHT] Backend REACHABLE (Status: ${res.status}). Signal GREEN.`);
                     setWsConnected(true);
                 } else {
-                    logDebug(`⚠️ [PRE-FLIGHT] Backend Server Error: ${res.status}`);
+                    logDebug(`ΓÜá∩╕Å [PRE-FLIGHT] Backend Server Error: ${res.status}`);
                 }
             } catch (e: any) {
-                logDebug(`❌ [PRE-FLIGHT] Backend UNREACHABLE: ${e.message}`);
+                logDebug(`Γ¥î [PRE-FLIGHT] Backend UNREACHABLE: ${e.message}`);
                 setWsConnected(false);
             }
         };
@@ -407,17 +392,17 @@ function InstantDropContent() {
                 })
             });
             if (res.ok) {
-                logDebug(`✅ [DIAGNOSTICS] Upload Successful (${mode}). Forensic ID: ${roomId}`);
+                logDebug(`Γ£à [DIAGNOSTICS] Upload Successful (${mode}). Forensic ID: ${roomId}`);
             } else {
-                logDebug(`❌ [DIAGNOSTICS] Upload Failed (Status: ${res.status})`);
+                logDebug(`Γ¥î [DIAGNOSTICS] Upload Failed (Status: ${res.status})`);
             }
         } catch (e: any) {
-            logDebug(`❌ [DIAGNOSTICS] Upload Error: ${e.message}`);
+            logDebug(`Γ¥î [DIAGNOSTICS] Upload Error: ${e.message}`);
         }
     }
 
     const reportIssue = () => {
-        logDebug("🚨 [FORENSIC] Initiating Dual-Peer Sync Diagnostic Upload...");
+        logDebug("≡ƒÜ¿ [FORENSIC] Initiating Dual-Peer Sync Diagnostic Upload...");
         uploadDiagnostics(); // Local Upload
         sendControlMsg({ type: 'request-diagnostics' }); // Remote Trigger
         alert("Diagnostics uploaded! Developer notified.");
@@ -518,7 +503,7 @@ function InstantDropContent() {
                     const logDump = capturedLogsRef.current.join('\n');
                     sendControlMsg({ type: 'diagnostic-dump', data: logDump });
                 } else if (msg.cmd === 'switch-to-sender') {
-                    logDebug("🚀 AI-Requested Role Swap: Switching to SENDER");
+                    logDebug("≡ƒÜÇ AI-Requested Role Swap: Switching to SENDER");
                     const currentRoom = roomRef.current;
                     disconnectEverything();
                     setRoomId(currentRoom || "");
@@ -553,7 +538,7 @@ function InstantDropContent() {
                     const safeTotal = Number(msg.totalFiles);
 
                     if (isNaN(safeIdx)) {
-                        logDebug(`⚠️ CRITICAL: Metadata index corrupt (Value: ${msg.currentIdx}). Ignoring...`);
+                        logDebug(`ΓÜá∩╕Å CRITICAL: Metadata index corrupt (Value: ${msg.currentIdx}). Ignoring...`);
                         return;
                     }
 
@@ -573,7 +558,7 @@ function InstantDropContent() {
                     if (!nackQueueRef.current.has(nackKey)) {
                         nackQueueRef.current.set(nackKey, { fileIdx: msg.fileIdx, chunkIdx: msg.chunkIdx, ts: Date.now() });
                         if (nackQueueRef.current.size % 50 === 0) {
-                            logDebug(`📥 NACK Queue Growth: ${nackQueueRef.current.size} unique pending resends.`);
+                            logDebug(`≡ƒôÑ NACK Queue Growth: ${nackQueueRef.current.size} unique pending resends.`);
                         }
                     }
                 }
@@ -589,6 +574,20 @@ function InstantDropContent() {
                     }
                     setStatus('done-waiting');
                     workerRef.current?.postMessage({ type: 'chunk', fileIdx: 0, chunkIdx: 0xFFFFFFFD, payloadCount: msg.totalFiles });
+
+                    // v02.2.60: Aggressive Batch-ACK Pulsar (Fixes 7/12 completion hang)
+                    const ackInterval = setInterval(() => {
+                        if (statusRef.current === 'done') {
+                            clearInterval(ackInterval);
+                            return;
+                        }
+                        logDebug("Receiver: Pulsing Batch-ACK to sender...");
+                        sendControlMsg({ type: 'batch-ack', totalFiles: msg.totalFiles });
+                        // Also pulse flow ready to unblock any stuck pacer
+                        wsRef.current?.send(JSON.stringify({ type: 'flow', status: 'ready' }));
+                    }, 500);
+                    // Absolute safety net to stop pulsar after 10s
+                    setTimeout(() => clearInterval(ackInterval), 10000);
                 }
                 break;
             case 'request-diagnostics':
@@ -649,7 +648,7 @@ function InstantDropContent() {
                     if (rtt > 1500) {
                         // Emergency Bufferbloat Mode: Drop to 16KB immediately
                         dynamicChunkSizeRef.current = 16 * 1024;
-                        if (msg.ts % 10 === 0) logDebug("🚨 BUFFERBLOAT DETECTED: Emergency MTU Reset (16KB)");
+                        if (msg.ts % 10 === 0) logDebug("≡ƒÜ¿ BUFFERBLOAT DETECTED: Emergency MTU Reset (16KB)");
                     } else if (rtt > 800 && diagnosticMetricsRef.current.retransmissions > 0) {
                         dynamicChunkSizeRef.current = Math.max(16 * 1024, dynamicChunkSizeRef.current - 8 * 1024);
                     } else if (rtt < 300) {
@@ -661,7 +660,7 @@ function InstantDropContent() {
                     }
 
                     if (msg.ts % 100 === 0) { 
-                        logDebug(`📊 Deep-Insight: OWTT=${diagnosticMetricsRef.current.owtt}ms MTU=${Math.round(dynamicChunkSizeRef.current/1024)}KB GPE=${Math.round(gpeInFlightBytesRef.current/1024)}KB [M2M:${isM2M}]`);
+                        logDebug(`≡ƒôè Deep-Insight: OWTT=${diagnosticMetricsRef.current.owtt}ms MTU=${Math.round(dynamicChunkSizeRef.current/1024)}KB GPE=${Math.round(gpeInFlightBytesRef.current/1024)}KB [M2M:${isM2M}]`);
                     }
                 }
                 break;
@@ -670,7 +669,7 @@ function InstantDropContent() {
                     gpeInFlightBytesRef.current = Math.max(0, gpeInFlightBytesRef.current - msg.bytesCleared);
                     gpePullRequestsRef.current++;
                     if (gpePullRequestsRef.current % 10 === 0) {
-                        logDebug(`📥 GPE Pull [${gpePullRequestsRef.current}]: Cleared ${Math.round(msg.bytesCleared/1024)}KB. In-Flight: ${Math.round(gpeInFlightBytesRef.current/1024)}KB`);
+                        logDebug(`≡ƒôÑ GPE Pull [${gpePullRequestsRef.current}]: Cleared ${Math.round(msg.bytesCleared/1024)}KB. In-Flight: ${Math.round(gpeInFlightBytesRef.current/1024)}KB`);
                     }
                 }
                 break;
@@ -712,13 +711,13 @@ ${capturedLogsRef.current.join('\n')}
                 break;
             case 'force-tunnel':
                 if (modeRef.current === 'send') {
-                    logDebug("🚀 Remote REQUEST: Forcing Emergency Tunnel Mode.");
+                    logDebug("≡ƒÜÇ Remote REQUEST: Forcing Emergency Tunnel Mode.");
                     setUseEmergencyTunnel(true);
                 }
                 break;
             case 'direct-link':
                 if (msg.targetId === signalIdRef.current) {
-                    logDebug("🔗 MATRIX LINK: Connection request received.");
+                    logDebug("≡ƒöù MATRIX LINK: Connection request received.");
                     if (modeRef.current === 'receive') {
                         wsRef.current?.send(JSON.stringify({ type: 'receiver-ready', isMobile: isMobileDevice() }));
                     } else if (modeRef.current === 'send') {
@@ -731,7 +730,7 @@ ${capturedLogsRef.current.join('\n')}
                 if (modeRef.current === 'receive') {
                     console.log("%c[REMOTE DIAGNOSTICS RECEIVED]", "color: lime; font-weight: bold; font-size: 14px;");
                     console.log(msg.data);
-                    logDebug("📥 Remote Diagnostic Dump captured in Console.");
+                    logDebug("≡ƒôÑ Remote Diagnostic Dump captured in Console.");
                 }
                 break;
         }
@@ -772,7 +771,7 @@ ${capturedLogsRef.current.join('\n')}
                     const turnData = await turnRes.json();
                     if (Array.isArray(turnData)) {
                         relayServersRef.current = [...ICE_SERVERS.iceServers, ...turnData];
-                        logDebug(`✅ Relays Pre-fetched: ${turnData.length} servers ready.`);
+                        logDebug(`Γ£à Relays Pre-fetched: ${turnData.length} servers ready.`);
                     }
                 }
             } catch (e) { console.error("Relay pre-fetch failed", e); }
@@ -1080,7 +1079,7 @@ ${capturedLogsRef.current.join('\n')}
                  logDebug(`Receiver: Worker reassembly complete for ${name}.`);
             } else if (e.data.type === 'nack') {
                 // v02.1.95: Loss Recovery Trigger
-                logDebug(`🛰️ Hole Detected! Requesting re-send for File-${e.data.fileIdx} Chunk-${e.data.chunkIdx}`);
+                logDebug(`≡ƒ¢░∩╕Å Hole Detected! Requesting re-send for File-${e.data.fileIdx} Chunk-${e.data.chunkIdx}`);
                 sendControlMsg({ type: 'nack', fileIdx: e.data.fileIdx, chunkIdx: e.data.chunkIdx });
             } else if (e.data.type === 'need-metadata') {
                  const fIdx = e.data.fileIdx;
@@ -1113,9 +1112,9 @@ ${capturedLogsRef.current.join('\n')}
         if (typeof window !== 'undefined' && 'wakeLock' in navigator) {
             try {
                 wakeLockRef.current = await (navigator as any).wakeLock.request('screen');
-                logDebug("✅ Screen Wake Lock Active (v02.2.10.7)");
+                logDebug("Γ£à Screen Wake Lock Active (v02.2.10.7)");
             } catch (err: any) {
-                logDebug(`⚠️ Wake Lock failed (Attempt ${retryCount}): ${err.message}`);
+                logDebug(`ΓÜá∩╕Å Wake Lock failed (Attempt ${retryCount}): ${err.message}`);
                 if (retryCount < 5) setTimeout(() => requestWakeLock(retryCount + 1), 3000);
             }
         }
@@ -1191,7 +1190,7 @@ ${capturedLogsRef.current.join('\n')}
         if (wakeLockRef.current) {
             wakeLockRef.current.release().then(() => {
                 wakeLockRef.current = null;
-                logDebug("🔓 Screen Wake Lock Released");
+                logDebug("≡ƒöô Screen Wake Lock Released");
             }).catch(() => {});
         }
     };
@@ -1237,7 +1236,7 @@ ${capturedLogsRef.current.join('\n')}
                     setTimeout(connect, 2000);
                 } else if (attempts >= 3) {
                     setStatus('error');
-                    logDebug("❌ Persistent Signaling Failure after 3 attempts.");
+                    logDebug("Γ¥î Persistent Signaling Failure after 3 attempts.");
                 }
             };
 
@@ -1261,7 +1260,7 @@ ${capturedLogsRef.current.join('\n')}
                     // v02.2.39: Re-trigger offer if stuck in waiting for 10s
                     const timeSinceStart = Date.now() - (startTimeRef.current || 0);
                     if (statusRef.current === 'waiting' && timeSinceStart > 10000 && timeSinceStart % 5000 < 2000) {
-                        logDebug("🛰️ Tachyon Glue: Re-broadcasting sender availability...");
+                        logDebug("≡ƒ¢░∩╕Å Tachyon Glue: Re-broadcasting sender availability...");
                         ws.send(JSON.stringify({ type: 'sender-ready', roomId: finalRoomId, isMobile: true }));
                     }
 
@@ -1284,7 +1283,7 @@ ${capturedLogsRef.current.join('\n')}
                             remoteCapabilityRef.current.isMobile = !!data.isMobile; // Capture Peer Capability
                             // v02.1.68: Added 'connecting' status guard to prevent redundant resets during ICE.
                             if (isActive.current || isInitializingRef.current || statusRef.current === 'connecting') {
-                                logDebug(`⚠️ Receiver Ready Sig Ignored: status=${statusRef.current} init=${isInitializingRef.current}`);
+                                logDebug(`ΓÜá∩╕Å Receiver Ready Sig Ignored: status=${statusRef.current} init=${isInitializingRef.current}`);
                                 return;
                             }
                             const isM2M = isMobileDevice() && !!data.isMobile;
@@ -1331,7 +1330,7 @@ ${capturedLogsRef.current.join('\n')}
                                     try { await peer.addIceCandidate(new RTCIceCandidate(candidate)); } catch (e) {}
                                 }
                                 iceBuffersRef.current[pIdx] = [];
-                            } catch (e: any) { logDebug(`❌ Pipe-${pIdx} Answer Error: ${e.message}`); }
+                            } catch (e: any) { logDebug(`Γ¥î Pipe-${pIdx} Answer Error: ${e.message}`); }
                         } else if (data.type === 'ice-candidate') {
                             const pIdx = data.pipeIdx || 0;
                             const rawGen = data.gen;
@@ -1348,7 +1347,7 @@ ${capturedLogsRef.current.join('\n')}
                         
                         handleControlMessage(data);
                     } catch (err: any) {
-                        logDebug("❌ Sender WS Msg Error: " + err.message);
+                        logDebug("Γ¥î Sender WS Msg Error: " + err.message);
                     }
                 })();
             };
@@ -1413,17 +1412,37 @@ ${capturedLogsRef.current.join('\n')}
             peersRef.current[pipeIdx] = peer;
 
             // v02.2.56: Accelerated M2M Resuscitator (1.5s vs 4.0s)
+            // v02.2.60: Guarded Migration Handshake (Fix A)
+            const pipeConnectTime = Date.now();
             if (resuscitatorTimersRef.current[pipeIdx]) clearTimeout(resuscitatorTimersRef.current[pipeIdx]);
             resuscitatorTimersRef.current[pipeIdx] = setTimeout(() => {
                 const pc = peersRef.current[pipeIdx];
                 if (pc && (pc.iceConnectionState === 'new' || pc.iceConnectionState === 'checking')) {
                     const isM2M = isMobileDevice() && remoteCapabilityRef.current.isMobile;
+                    
+                    // Fix A: Only migrate if the pipe has actually confirmed stable data flow
+                    const isPipeReadyForMigration = () => {
+                        const elapsed = Date.now() - pipeConnectTime;
+                        // For M2M, we require 200ms grace + at least 1 statistical byte confirmed
+                        return elapsed > 200 && (diagnosticMetricsRef.current.pistonStats[pipeIdx]?.speed || 0) > 0;
+                    };
+
                     const hangTimeout = isM2M ? 1500 : 4000;
-                    logDebug(`🚨 Pipe-${pipeIdx} HANG [Carrier Black-Hole] detected. Resuscitating after ${hangTimeout}ms...`);
+                    logDebug(`≡ƒÜ¿ Pipe-${pipeIdx} HANG [Carrier Black-Hole] detected. Resuscitating after ${hangTimeout}ms...`);
                     try { 
+                        // v02.2.60: Use the Guard to prevent rollback loops on unstable pipes
+                        if (isM2M && !isPipeReadyForMigration()) {
+                            logDebug(`≡ƒ¢í∩╕Å Guarded Migration: Pipe-${pipeIdx} unstable. Delaying resuscitation...`);
+                            return; 
+                        }
+
                         pc.restartIce(); 
-                        // v02.2.58 [NMI FIX]: DELETED Global Rollback. 
-                        // Holes are now handled via per-sector NACKs to prevent healthy pipe regression.
+                        // v02.2.46: Trigger HSFC Rollback to prevent buffer wipe data loss
+                        if (modeRef.current === 'send') {
+                            const lastCleared = diagnosticMetricsRef.current.bytesCleared || 0;
+                            logDebug(`≡ƒ¢í∩╕Å HSFC ROLLBACK: Signaling rollback to last known-good byte: ${lastCleared}`);
+                            rollbackTriggerRef.current = lastCleared;
+                        }
                     } catch (e) {}
                 }
             }, (isMobileDevice() && remoteCapabilityRef.current.isMobile) ? 1500 : 4000);
@@ -1434,13 +1453,13 @@ ${capturedLogsRef.current.join('\n')}
                 setTimeout(() => {
                     const pc = peersRef.current[pipeIdx];
                     if (pc && (pc.iceConnectionState === 'new' || pc.iceConnectionState === 'checking')) {
-                        logDebug(`⚠️ Pipe-${pipeIdx} Stuck in ${pc.iceConnectionState}. Escalating to Relay Fallback...`);
+                        logDebug(`ΓÜá∩╕Å Pipe-${pipeIdx} Stuck in ${pc.iceConnectionState}. Escalating to Relay Fallback...`);
                         pc.close();
                         
                         // v02.2.29: Three-Strikes Pipe Retirement
                         // If we are already generational (Gen 2+), skip and retire the pipe.
                         if (pipeGenerationRef.current[pipeIdx] > 2) {
-                            logDebug(`🛡️ Pipe-${pipeIdx} Retired [3-Strikes FAIL]`);
+                            logDebug(`≡ƒ¢í∩╕Å Pipe-${pipeIdx} Retired [3-Strikes FAIL]`);
                             diagnosticMetricsRef.current.pistonStats[pipeIdx] = { speed: 0, health: 'red' };
                             return;
                         }
@@ -1505,8 +1524,7 @@ ${capturedLogsRef.current.join('\n')}
                     if (resuscitatorTimersRef.current[pipeIdx]) {
                         clearTimeout(resuscitatorTimersRef.current[pipeIdx]);
                         resuscitatorTimersRef.current[pipeIdx] = null;
-                        pipeConnectedAtRef.current[pipeIdx] = Date.now();
-                        logDebug(`✅ Pipe-${pipeIdx} Resuscitator Stand-down. [Connected: ${new Date().toLocaleTimeString()}]`);
+                        logDebug(`Γ£à Pipe-${pipeIdx} Resuscitator Stand-down.`);
                         
                         // v02.2.29: Piston-Gated Metadata Catch-up (Async)
                         // Send metadata ONCE per successful pipe open to minimize noise.
@@ -1531,7 +1549,7 @@ ${capturedLogsRef.current.join('\n')}
             // v02.2.10: Proactive Dead-Pipe Pruning (Log-Aware 701 Detector)
             peer.onicecandidateerror = (e: any) => {
                 if (e.errorCode === 701) {
-                    logDebug(`🛰️ ICE Candidate Error (Pipe-${pipeIdx}): ${e.errorCode} - ${e.errorText} [${e.url}]`);
+                    logDebug(`≡ƒ¢░∩╕Å ICE Candidate Error (Pipe-${pipeIdx}): ${e.errorCode} - ${e.errorText} [${e.url}]`);
                     // Immediate health downgrade to avoid load-balancing onto blocked relay
                     diagnosticMetricsRef.current.pistonStats[pipeIdx] = { speed: 0, health: 'red' };
                 }
@@ -1547,7 +1565,7 @@ ${capturedLogsRef.current.join('\n')}
             // v02.1.70: Deep ICE Error Tracker (NMI Diagnostics)
             // @ts-ignore
             peer.onicecandidateerror = (e: any) => {
-                logDebug(`🛰️ ICE Candidate Error (Pipe-${pipeIdx}): ${e.errorCode} - ${e.errorText} [${e.url}]`);
+                logDebug(`≡ƒ¢░∩╕Å ICE Candidate Error (Pipe-${pipeIdx}): ${e.errorCode} - ${e.errorText} [${e.url}]`);
             };
 
             if (isSender) {
@@ -1556,7 +1574,7 @@ ${capturedLogsRef.current.join('\n')}
                 ws.send(JSON.stringify({ type: 'offer', pipeIdx, gen, sdp: peer.localDescription }));
             }
         } catch (err: any) {
-            logDebug(`❌ Pipe-${pipeIdx} Error: ${err.message}`);
+            logDebug(`Γ¥î Pipe-${pipeIdx} Error: ${err.message}`);
         }
     };
 
@@ -1566,7 +1584,7 @@ ${capturedLogsRef.current.join('\n')}
         dc.binaryType = 'arraybuffer';
 
         dc.onopen = () => {
-            logDebug(`✅ DataChannel ${channelIdx} OPEN (Mode: ${modeRef.current})`);
+            logDebug(`Γ£à DataChannel ${channelIdx} OPEN (Mode: ${modeRef.current})`);
             
             // v02.2.27: Late-Joiner Metadata Catch-up
             // If we are already transferring, this new channel needs the current file info!
@@ -1674,10 +1692,10 @@ ${capturedLogsRef.current.join('\n')}
             const testMode = params.get('mode');
             setTimeout(() => {
                 if (testMode === 'receiver') {
-                    logDebug("🤖 NMI: Auto-starting Receiver Mode...");
+                    logDebug("≡ƒñû NMI: Auto-starting Receiver Mode...");
                     setMode('receive');
                 } else if (testMode === 'sender') {
-                    logDebug("🤖 NMI: Auto-starting Sender Mode...");
+                    logDebug("≡ƒñû NMI: Auto-starting Sender Mode...");
                     setMode('send');
                 }
             }, 2000);
@@ -1697,7 +1715,7 @@ ${capturedLogsRef.current.join('\n')}
         // v02.2.10.8: NAT Warm-up Pulse (200ms)
         // Ensures the Mumbai relay and client NAT mappings are fully established before the first metadata blast.
         await new Promise(resolve => setTimeout(resolve, 200));
-        logDebug("✅ NAT WARMED: Starting High-Speed Batch broadcast.");
+        logDebug("Γ£à NAT WARMED: Starting High-Speed Batch broadcast.");
 
         // v02.1.39 (Patch 6): Initial Metadata Sweep (Redundant)
         broadcastMetadata();
@@ -1789,13 +1807,6 @@ ${capturedLogsRef.current.join('\n')}
 
             // Post-Transmission NACK Drainer
             const nackInterval = setInterval(() => {
-                const activePipeCount = Object.values(diagnosticMetricsRef.current.pistonStats).filter(s => s.health === 'green').length;
-                const dynamicNackDelay = activePipeCount >= 8 ? 5 : activePipeCount >= 4 ? 20 : 50;
-                
-                // Adaptive NACK Draining (v02.2.59: Vanguard Path)
-                if (Date.now() - (lastNackDrainTsRef.current || 0) < dynamicNackDelay) return;
-                lastNackDrainTsRef.current = Date.now();
-
                 if (nackQueueRef.current.size > 0 && isActive.current) {
                     const openChannels = dataChannelsRef.current.filter(dc => dc && dc.readyState === 'open');
                     if (openChannels.length === 0) return;
@@ -1818,7 +1829,7 @@ ${capturedLogsRef.current.join('\n')}
                         }
                     }
                 }
-            }, 15); // v02.2.58: Balanced NACK Pacing (15ms) for Mobile Stability
+            }, 20); // v02.2.10.8: Rapid NACK Draining (20ms)
             const cleanup = () => {
                 clearInterval(nackInterval);
                 window.removeEventListener('webrtc-sender-msg', wsHandler);
@@ -1884,7 +1895,7 @@ ${capturedLogsRef.current.join('\n')}
                 const targetOffset = rollbackTriggerRef.current;
                 rollbackTriggerRef.current = null;
                 if (targetOffset < byteOffset) {
-                    logDebug(`🔄 ROLLBACK IN PROGRESS: ${byteOffset} -> ${targetOffset}`);
+                    logDebug(`≡ƒöä ROLLBACK IN PROGRESS: ${byteOffset} -> ${targetOffset}`);
                     byteOffset = targetOffset;
                     pendingChunk = null;
                     currentChunkResidual = null;
@@ -1916,19 +1927,19 @@ ${capturedLogsRef.current.join('\n')}
             const activeEngine = isM2M ? 'M2M' : (isSelfMobile || remoteCapabilityRef.current.isMobile) ? 'HYBRID' : 'NITRO';
             const config = getEngineConfig(activeEngine);
             
-            // v02.2.58: [STABLE PATH] 4x BDP Gate to prevent 350ms Buffer-Bloat
-            const dynamicGate = isM2M ? Math.min(64 * 1024 * 1024, Math.max(32 * 1024 * 1024, (smoothedRTT * (10 * 1024 * 1024)) * 4)) : 512 * 1024 * 1024;
+            // v02.2.48: Solar Flare Augmented Gate (16MB floor / 64MB cap)
+            const dynamicGate = isM2M ? Math.min(64 * 1024 * 1024, Math.max(16 * 1024 * 1024, (smoothedRTT * (10 * 1024 * 1024)) * 1.5)) : 512 * 1024 * 1024;
 
             const isGPEBlocked = gpeInFlightBytesRef.current > dynamicGate; 
             
             if (isGPEBlocked && chunkSeqIdx % 50 === 0) {
-                logDebug(`🛰️ GPE ENFORCEMENT: Burst Pause. In-Flight: ${(gpeInFlightBytesRef.current / 1024 / 1024).toFixed(2)}MB / Limit: ${(dynamicGate / 1024 / 1024).toFixed(2)}MB`);
+                logDebug(`≡ƒ¢░∩╕Å GPE ENFORCEMENT: Burst Pause. In-Flight: ${(gpeInFlightBytesRef.current / 1024 / 1024).toFixed(2)}MB / Limit: ${(dynamicGate / 1024 / 1024).toFixed(2)}MB`);
             }
             let targetPipeCount = Math.min(config.pipes, getAdaptivePipeCount(currentRTT, activeEngine));
             const targetChannelLimit = targetPipeCount * CHANNELS_PER_PIPE;
 
             if (targetPipeCount !== lastScaleRef.current) {
-                logDebug(`📡 ADAPTIVE SCALE: RTT=${currentRTT.toFixed(3)}s -> Concurrency: ${targetPipeCount} Pipes (${targetChannelLimit} Channels)`);
+                logDebug(`≡ƒôí ADAPTIVE SCALE: RTT=${currentRTT.toFixed(3)}s -> Concurrency: ${targetPipeCount} Pipes (${targetChannelLimit} Channels)`);
                 lastScaleRef.current = targetPipeCount;
             }
 
@@ -1953,7 +1964,7 @@ ${capturedLogsRef.current.join('\n')}
                 const estimatedInFlight = totalSentBytesRef.current - receiverCleared;
                 // If there's a massive discrepancy (more than 32MB), we sync to reality.
                 if (Math.abs(gpeInFlightBytesRef.current - estimatedInFlight) > 32 * 1024 * 1024) {
-                    logDebug(`📡 [SYNC] GPE In-Flight Corrected: ${Math.round(gpeInFlightBytesRef.current/1024)}KB -> ${Math.round(estimatedInFlight/1024)}KB`);
+                    logDebug(`≡ƒôí [SYNC] GPE In-Flight Corrected: ${Math.round(gpeInFlightBytesRef.current/1024)}KB -> ${Math.round(estimatedInFlight/1024)}KB`);
                     gpeInFlightBytesRef.current = Math.max(0, estimatedInFlight);
                 }
             }
@@ -1967,7 +1978,7 @@ ${capturedLogsRef.current.join('\n')}
             if (openChannels.length === 0 || hardwareStalled || gpeStalled) {
                 blockedLoopCount.current++;
                 if (blockedLoopCount.current % 5000 === 0 && totalBuffered > NITRO_THRESHOLD) {
-                    logDebug(`🚀 NITRO FLOW HANG: Buffer=${(totalBuffered / 1024 / 1024).toFixed(1)}MB / Threshold=${(NITRO_THRESHOLD / 1024 / 1024).toFixed(1)}MB`);
+                    logDebug(`≡ƒÜÇ NITRO FLOW HANG: Buffer=${(totalBuffered / 1024 / 1024).toFixed(1)}MB / Threshold=${(NITRO_THRESHOLD / 1024 / 1024).toFixed(1)}MB`);
                 }
                 
                 // Use bufferedamountlow for zero-latency wakeup if possible
@@ -1997,7 +2008,7 @@ ${capturedLogsRef.current.join('\n')}
             if (isGPEBlocked) {
                 if (!gpeBlockedSinceRef.current) gpeBlockedSinceRef.current = Date.now();
                 if (Date.now() - gpeBlockedSinceRef.current > 5000) { // 5s ceiling
-                    logDebug("⚠️ GPE Deadlock detected (5s). Performing Emergency Drain...");
+                    logDebug("ΓÜá∩╕Å GPE Deadlock detected (5s). Performing Emergency Drain...");
                     gpeInFlightBytesRef.current = 0; // Complete reset to force stream resumption
                     sendControlMsg({ type: 'heartbeat', ts: Date.now() }); 
                     gpeBlockedSinceRef.current = Date.now();
@@ -2015,16 +2026,16 @@ ${capturedLogsRef.current.join('\n')}
                     const dc = openChannels[testIdx];
                     if (!dc || dc.readyState !== 'open') continue;
 
+                    // v02.2.08.1: Omega-Infinite Load Balancing
                     const pipeIdx = Math.floor(testIdx / CHANNELS_PER_PIPE);
-                    
-                    // v02.2.59: [VANGUARD] Guarded Migration (Fix A)
-                    if (isM2M && !isPipeReadyForMigration(pipeIdx)) continue;
-
                     const health = diagnosticMetricsRef.current.pistonStats[pipeIdx]?.health || 'green';
-                    if (health !== 'green') {
-                        await new Promise(r => setTimeout(r, health === 'red' ? 2 : 1));
-                    }
+                    
+                    // If pipe is red, we only use it 10% of the time to avoid clog
+                    if (health === 'red' && Math.random() > 0.1) continue;
+                    // If pipe is amber, we only use it 50% of the time
+                    if (health === 'amber' && Math.random() > 0.5) continue;
 
+                    // v02.2.16: SCTP Saturation Tuning - 16MB is the reliable ceiling for libwebrtc buffers.
                     const rttMs = (smoothedRTT || 0.1) * 1000;
                     const saturationThreshold = Math.min(16 * 1024 * 1024, Math.max(4 * 1024 * 1024, (rttMs / 50) * 4 * 1024 * 1024));
                     
@@ -2064,21 +2075,13 @@ ${capturedLogsRef.current.join('\n')}
                     const timeSinceLastPulse = Date.now() - flowPulseLastTsRef.current;
                     if (timeSinceLastPulse > 2000 && dynamicChunkSizeRef.current > 16384) {
                         dynamicChunkSizeRef.current = Math.floor(dynamicChunkSizeRef.current / 2);
-                        logDebug(`📡 BACKPRESSURE: No flow pulse for 2s. Throttling MTU to ${Math.round(dynamicChunkSizeRef.current/1024)}KB`);
+                        logDebug(`≡ƒôí BACKPRESSURE: No flow pulse for 2s. Throttling MTU to ${Math.round(dynamicChunkSizeRef.current/1024)}KB`);
                         flowPulseLastTsRef.current = Date.now(); // Reset to avoid constant halving
                     }
 
                     // v02.2.46: M2M HSFC Gate Enforcement
                     // v02.2.56: M2M Zenith Gate (32MB Floor for 10MB/s Saturation)
-                    // v02.2.58: [STABLE PATH] Restore 4x BDP Multiplier
-                    // v02.2.59: [VANGUARD] Adaptive BDP Gating (Fix B)
-                    const activePipeCount = Object.values(diagnosticMetricsRef.current.pistonStats).filter(s => s.health === 'green').length;
-                    const safeActiveCount = Math.max(1, activePipeCount);
-                    const perPipeBDP = (smoothedRTT || 0.1) * (10 * 1024 * 1024 / safeActiveCount); // Based on 10MB/s target
-                    const currentGate = isM2M 
-                        ? Math.max(8 * 1024 * 1024, perPipeBDP * 6) // 6x per-pipe BDP, min 8MB
-                        : BDP_GPE_GATE;
-
+                    const currentGate = isM2M ? Math.max(32 * 1024 * 1024, (smoothedRTT * (10 * 1024 * 1024)) * 4) : BDP_GPE_GATE;
                     const canSend = (gpeInFlightBytesRef.current < currentGate);
                     
                     // v02.2.29: GPE Deadlock Watchdog (Stuck-Gate Buster)
@@ -2086,7 +2089,7 @@ ${capturedLogsRef.current.join('\n')}
                     if (canSend) gpeBlockedSinceRef.current = null;
                     
                     if (gpeBlockedSinceRef.current && (Date.now() - gpeBlockedSinceRef.current > 3000)) {
-                        logDebug("🚨 GPE DEADLOCK: Gate stuck for 3s. Auto-Resetting in-flight counter.");
+                        logDebug("≡ƒÜ¿ GPE DEADLOCK: Gate stuck for 3s. Auto-Resetting in-flight counter.");
                         gpeInFlightBytesRef.current = 0;
                         gpeBlockedSinceRef.current = null;
                     }
@@ -2112,7 +2115,7 @@ ${capturedLogsRef.current.join('\n')}
                                         dc.send(cachedPacket as any);
                                         gpeInFlightBytesRef.current += cachedPacket.byteLength;
                                         lastNackResendTimeRef.current.set(key, now);
-                                        if (nack.chunkIdx % 20 === 0) logDebug(`🚀 NACK Resend Sent: File-${nack.fileIdx} Chunk-${nack.chunkIdx}`);
+                                        if (nack.chunkIdx % 20 === 0) logDebug(`≡ƒÜÇ NACK Resend Sent: File-${nack.fileIdx} Chunk-${nack.chunkIdx}`);
                                     } catch (e) {}
                                 }
                             }
@@ -2178,10 +2181,10 @@ ${capturedLogsRef.current.join('\n')}
 
                         if (rtt < 0.200 && speed > 1.0 && dynamicChunkSizeRef.current < currentLimit) {
                             dynamicChunkSizeRef.current = Math.min(currentLimit, dynamicChunkSizeRef.current + 4 * 1024);
-                            logDebug(`🚀 TACHYON BOOST: Scaling MTU to ${Math.round(dynamicChunkSizeRef.current/1024)}KB (${isM2M ? 'M2M GOLD' : 'NITRO GOLD'})`);
-                        } else if ((rtt > 0.400 || speed < 0.5) && dynamicChunkSizeRef.current > 16384) {
+                            logDebug(`≡ƒÜÇ TACHYON BOOST: Scaling MTU to ${Math.round(dynamicChunkSizeRef.current/1024)}KB (${isM2M ? 'M2M GOLD' : 'NITRO GOLD'})`);
+                        } else if ((rtt > 0.600 || speed < 0.5) && dynamicChunkSizeRef.current > 16384) {
                             dynamicChunkSizeRef.current = Math.max(16384, dynamicChunkSizeRef.current - 8 * 1024);
-                            logDebug(`📉 JITTER BACKOFF: Restoring survival floor 16KB`);
+                            logDebug(`≡ƒôë JITTER BACKOFF: Restoring Survival MTU (${Math.round(dynamicChunkSizeRef.current/1024)}KB)`);
                         }
                     }
                     
@@ -2211,7 +2214,7 @@ ${capturedLogsRef.current.join('\n')}
                         }
 
                         if (dc.readyState !== 'open') {
-                            logDebug(`⚠️ DataChannel ${dc.label} not open while sending. Retrying current chunk (Seq: ${currentSeq})...`);
+                            logDebug(`ΓÜá∩╕Å DataChannel ${dc.label} not open while sending. Retrying current chunk (Seq: ${currentSeq})...`);
                             await new Promise(resolve => setTimeout(resolve, 200));
                             continue;
                         }
@@ -2243,7 +2246,7 @@ ${capturedLogsRef.current.join('\n')}
                         chunkSeqIdx++;
                         pendingChunk = null; 
                     } catch (e: any) {
-                        logDebug(`❌ DataChannel Send Error: ${e.message}. Retrying current chunk...`);
+                        logDebug(`Γ¥î DataChannel Send Error: ${e.message}. Retrying current chunk...`);
                         await new Promise(resolve => setTimeout(resolve, 200));
                     }
                 }
@@ -2279,7 +2282,7 @@ ${capturedLogsRef.current.join('\n')}
                             chunkSeqIdx++;
                             pendingChunk = null;
                             if (!useEmergencyTunnel) setUseEmergencyTunnel(true);
-                            if (currentSeq % 10 === 0) logDebug(`🛡️ Emergency Tunnel Sent: Chunk-${currentSeq}`);
+                            if (currentSeq % 10 === 0) logDebug(`≡ƒ¢í∩╕Å Emergency Tunnel Sent: Chunk-${currentSeq}`);
                             
                             // v02.2.41: Rate-Limit Tunnel (15ms delay per 16KB)
                             await new Promise(resolve => setTimeout(resolve, 15));
@@ -2365,7 +2368,7 @@ ${capturedLogsRef.current.join('\n')}
                     setTimeout(connect, 2000);
                 } else if (attempts >= 3) {
                     setStatus('error');
-                    logDebug("❌ Persistent Signaling Failure after 3 attempts.");
+                    logDebug("Γ¥î Persistent Signaling Failure after 3 attempts.");
                 }
             };
 
@@ -2388,7 +2391,7 @@ ${capturedLogsRef.current.join('\n')}
                     // v02.2.38: Receiver Auto-Wake (8s stall monitor)
                     const timeSinceLastMsg = Date.now() - flowPulseLastTsRef.current;
                     if (statusRef.current === 'connecting' && timeSinceLastMsg > 8000) {
-                        logDebug("🚑 Receiver Stall Detected: Auto-Refreshing signaling...");
+                        logDebug("≡ƒÜæ Receiver Stall Detected: Auto-Refreshing signaling...");
                         ws.send(JSON.stringify({ type: 'receiver-ready', isMobile: isMobileDevice(), urgent: true }));
                         flowPulseLastTsRef.current = Date.now(); // Reset
                     }
@@ -2431,7 +2434,7 @@ ${capturedLogsRef.current.join('\n')}
                     }
                     handleControlMessage(data);
                 } catch (err: any) {
-                    logDebug("❌ Receiver WS Error: " + err.message);
+                    logDebug("Γ¥î Receiver WS Error: " + err.message);
                 }
             };
         };
@@ -2444,7 +2447,7 @@ ${capturedLogsRef.current.join('\n')}
         const targetBlocks = expectedChunksMapRef.current.get(fileIdx);
         
         if (targetBlocks && fileBitset && fileBitset.size >= targetBlocks) {
-            logDebug(`✅ File ${fileIdx} fully reassembled asynchronously (${fileBitset.size} chunks). Symmetry Verified.`);
+            logDebug(`Γ£à File ${fileIdx} fully reassembled asynchronously (${fileBitset.size} chunks). Symmetry Verified.`);
             
             // v02.2.10.6b: Don't increment reassembledCount here. 
             // We wait for the Worker to finish 'reassembled' for an accurate file list.
@@ -2513,7 +2516,7 @@ ${capturedLogsRef.current.join('\n')}
                                     const roomNum = parseInt(roomId);
                                     if (roomNum > 0 && roomNum < 20) {
                                         const nextRoom = (roomNum + 1).toString().padStart(6, '0');
-                                        logDebug(`🚀 TRIAL ${roomNum} SUCCESS. Auto-navigating to Room ${nextRoom} in 5s...`);
+                                        logDebug(`≡ƒÜÇ TRIAL ${roomNum} SUCCESS. Auto-navigating to Room ${nextRoom} in 5s...`);
                                         setTimeout(() => {
                                             window.location.href = `${window.location.origin}${window.location.pathname}?room=${nextRoom}&v=sentinel&trial=${roomNum+1}`;
                                         }, 5000);
@@ -2716,14 +2719,14 @@ ${capturedLogsRef.current.join('\n')}
         const images = receivedFiles.filter(rf => rf.blob && isImageFile(rf.blob, rf.name));
         const docs = receivedFiles.filter(rf => rf.blob && !isImageFile(rf.blob, rf.name));
 
-        // Batch-share 3+ images in one native share sheet (one tap ΓåÆ Save to Photos/Google Photos)
+        // Batch-share 3+ images in one native share sheet (one tap ╬ô├Ñ├å Save to Photos/Google Photos)
         if (images.length >= 3 && navigator.canShare) {
             const imageFiles = images.map(rf => new File([rf.blob!], rf.name, { type: (rf.blob && rf.blob.type) || 'image/jpeg' }));
             if (navigator.canShare({ files: imageFiles })) {
                 try {
                     await navigator.share({ files: imageFiles, title: `${images.length} Photos` });
                 } catch (_) {
-                    // Cancelled or failed ΓÇö fall back to per-image downloads
+                    // Cancelled or failed ╬ô├ç├╢ fall back to per-image downloads
                     for (const rf of images) {
                         if (rf.blob) await smartSaveFile(rf.blob, rf.name);
                         await new Promise(res => setTimeout(res, 400));
@@ -2831,14 +2834,14 @@ Buffer-Bloat Grade: ${d.bufferBloatGrade}
                 window.open(url, '_blank');
             }
 
-            logDebug(`💾 Diagnostic Download Triggered: ${fileName}`);
+            logDebug(`≡ƒÆ╛ Diagnostic Download Triggered: ${fileName}`);
 
             setTimeout(() => {
                 if (document.body.contains(a)) document.body.removeChild(a);
                 URL.revokeObjectURL(url);
             }, 3000); // 3s buffer for mobile OS
         } catch (e: any) {
-            logDebug(`❌ Download Failed: ${e.message}`);
+            logDebug(`Γ¥î Download Failed: ${e.message}`);
             alert("Download failed. Copy logs manually from console if possible.");
         }
     };
@@ -3134,7 +3137,7 @@ Buffer-Bloat Grade: ${d.bufferBloatGrade}
                                             </p>
                                             <p className="text-xs text-muted-foreground flex items-center mt-1">
                                                 <span className="bg-indigo-100 text-indigo-700 dark:bg-indigo-900/40 dark:text-indigo-300 px-2 py-0.5 rounded-full font-bold inline-flex items-center gap-1 mr-2">
-                                                    ⚡ OOBS Engine
+                                                    ΓÜí OOBS Engine
                                                 </span>
                                                 Batch size: {mode === 'send'
                                                     ? (files.reduce((acc, f) => acc + f.size, 0) / 1024 / 1024).toFixed(2)
@@ -3188,18 +3191,18 @@ Buffer-Bloat Grade: ${d.bufferBloatGrade}
                                         <div className="flex flex-col gap-2">
                                             {diagnosticMetricsRef.current.transportType === 'relay' && (
                                                 <div className="text-[10px] font-bold bg-amber-100 text-amber-700 dark:bg-amber-900/30 dark:text-amber-400 px-3 py-1 rounded-md border border-amber-200/50 flex items-center justify-between">
-                                                    <span>🚨 TRANSPORT: TURN RELAY (Throttled Path)</span>
+                                                    <span>≡ƒÜ¿ TRANSPORT: TURN RELAY (Throttled Path)</span>
                                                     <span className="uppercase text-[8px] opacity-70">{diagnosticMetricsRef.current.protocol}</span>
                                                 </div>
                                             )}
                                             {diagnosticMetricsRef.current.workerLag > 50 && (
                                                 <div className="text-[10px] font-bold bg-red-100 text-red-700 dark:bg-red-900/30 dark:text-red-400 px-3 py-1 rounded-md border border-red-200/50">
-                                                    🔥 CPU PRESSURE: Worker Lag {diagnosticMetricsRef.current.workerLag}ms
+                                                    ≡ƒöÑ CPU PRESSURE: Worker Lag {diagnosticMetricsRef.current.workerLag}ms
                                                 </div>
                                             )}
                                             {diagnosticMetricsRef.current.retransmissions > 100 && (
                                                 <div className="text-[10px] font-bold bg-indigo-100 text-indigo-700 dark:bg-indigo-900/30 dark:text-indigo-400 px-3 py-1 rounded-md border border-indigo-200/50">
-                                                    📡 LOSS DETECTED: Application NACK Recovery Active
+                                                    ≡ƒôí LOSS DETECTED: Application NACK Recovery Active
                                                 </div>
                                             )}
                                         </div>
@@ -3229,7 +3232,7 @@ Buffer-Bloat Grade: ${d.bufferBloatGrade}
                                                             : transferSpeed >= 1 ? 'bg-amber-100 text-amber-700 dark:bg-amber-900/40 dark:text-amber-300'
                                                                 : 'bg-red-100 text-red-700 dark:bg-red-900/40 dark:text-red-300'
                                                             }`}>
-                                                            ΓÜí {transferSpeed} MB/s
+                                                            ╬ô├£├¡ {transferSpeed} MB/s
                                                         </span>
                                                     )}
                                                     <span>{progress}%</span>
@@ -3335,7 +3338,7 @@ Buffer-Bloat Grade: ${d.bufferBloatGrade}
                                                         onClick={() => {
                                                             const input = document.getElementById('peerSignalIdInput') as HTMLInputElement;
                                                             if (input?.value.length === 6) {
-                                                                logDebug(`🔗 MATRIX SYNC: Linking to peer ${input.value}`);
+                                                                logDebug(`≡ƒöù MATRIX SYNC: Linking to peer ${input.value}`);
                                                                 sendControlMsg({ type: 'direct-link', targetId: input.value });
                                                             }
                                                         }}
@@ -3366,7 +3369,7 @@ Buffer-Bloat Grade: ${d.bufferBloatGrade}
                                                         size="sm"
                                                         className="w-full text-indigo-600 dark:text-indigo-400 font-black h-12 uppercase tracking-widest text-[9px] border-2 border-dashed border-indigo-200"
                                                         onClick={() => {
-                                                            logDebug("🛑 Manual Override: FORCING WebSocket Tunnel.");
+                                                            logDebug("≡ƒ¢æ Manual Override: FORCING WebSocket Tunnel.");
                                                             sendControlMsg({ type: 'force-tunnel' });
                                                             setUseEmergencyTunnel(true);
                                                         }}
@@ -3435,7 +3438,7 @@ Buffer-Bloat Grade: ${d.bufferBloatGrade}
                                             <div key={idx} className="flex items-center justify-between p-3 bg-card border rounded-lg">
                                                 <p className="text-xs font-semibold text-left truncate flex-1 mr-2">{rf.name}</p>
                                                 <Button size="sm" variant="secondary" onClick={() => rf.blob && smartSaveFile(rf.blob, rf.name)} disabled={!rf.blob}>
-                                                    {(rf.blob && isImageFile(rf.blob, rf.name)) ? '📷 Save' : '💾 Save'}
+                                                    {(rf.blob && isImageFile(rf.blob, rf.name)) ? '≡ƒô╖ Save' : '≡ƒÆ╛ Save'}
                                                 </Button>
                                             </div>
                                         ))}
@@ -3466,7 +3469,7 @@ Buffer-Bloat Grade: ${d.bufferBloatGrade}
                         </p>
                         <div className="flex gap-2">
                             <Button variant="outline" size="sm" onClick={downloadDiagnostics} className="text-indigo-600 border-indigo-200 hover:bg-indigo-50">
-                                📊 Download Meta Diagnostics
+                                ≡ƒôè Download Meta Diagnostics
                             </Button>
                             <Button size="sm" onClick={reportIssue} className="bg-indigo-600 hover:bg-indigo-700 text-white font-bold gap-2">
                                 <Activity className="w-4 h-4" />
