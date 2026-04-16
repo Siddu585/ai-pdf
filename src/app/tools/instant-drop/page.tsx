@@ -36,7 +36,7 @@ import { PaywallModal } from "@/components/layout/PaywallModal";
 // v02.2.46 (Tachyon Omega - Galactic Burst) - 10MB/s Final Form
 // v02.2.47 (Tachyon Omega - Solar Flare) - WebRTC Stability Fix
 // v02.2.48 (Tachyon Omega - Solar Flare) - 10MB/s M2M Persistent Core
-const VERSION = "v02.2.56 (Tachyon Omega - Zenith)";
+const VERSION = "v02.2.57 (Tachyon Omega - Zenith+)";
 
 
 function getEngineConfig(engine: 'M2M' | 'HYBRID' | 'NITRO') {
@@ -1798,7 +1798,7 @@ ${capturedLogsRef.current.join('\n')}
                         }
                     }
                 }
-            }, 20); // v02.2.10.8: Rapid NACK Draining (20ms)
+            }, 5); // v02.2.57: Hyper-Active NACK Draining (5ms) for 10MB/s Zenith+
             const cleanup = () => {
                 clearInterval(nackInterval);
                 window.removeEventListener('webrtc-sender-msg', wsHandler);
@@ -1896,8 +1896,8 @@ ${capturedLogsRef.current.join('\n')}
             const activeEngine = isM2M ? 'M2M' : (isSelfMobile || remoteCapabilityRef.current.isMobile) ? 'HYBRID' : 'NITRO';
             const config = getEngineConfig(activeEngine);
             
-            // v02.2.48: Solar Flare Augmented Gate (16MB floor / 64MB cap)
-            const dynamicGate = isM2M ? Math.min(64 * 1024 * 1024, Math.max(16 * 1024 * 1024, (smoothedRTT * (10 * 1024 * 1024)) * 1.5)) : 512 * 1024 * 1024;
+            // v02.2.57: [ZENITH+] Hyper-Saturation Gate (32MB floor / 8x BDP ceiling)
+            const dynamicGate = isM2M ? Math.min(128 * 1024 * 1024, Math.max(32 * 1024 * 1024, (smoothedRTT * (10 * 1024 * 1024)) * 8)) : 512 * 1024 * 1024;
 
             const isGPEBlocked = gpeInFlightBytesRef.current > dynamicGate; 
             
@@ -1997,12 +1997,13 @@ ${capturedLogsRef.current.join('\n')}
 
                     // v02.2.08.1: Omega-Infinite Load Balancing
                     const pipeIdx = Math.floor(testIdx / CHANNELS_PER_PIPE);
+                    // v02.2.57: Zenith+ Migration (If 8/12 pipes blocked, working pipes over-saturate)
                     const health = diagnosticMetricsRef.current.pistonStats[pipeIdx]?.health || 'green';
-                    
-                    // If pipe is red, we only use it 10% of the time to avoid clog
-                    if (health === 'red' && Math.random() > 0.1) continue;
-                    // If pipe is amber, we only use it 50% of the time
-                    if (health === 'amber' && Math.random() > 0.5) continue;
+
+                    // If pipe is red, we only use it 1% of the time (Pruned)
+                    if (health === 'red' && Math.random() > 0.01) continue;
+                    // If pipe is amber, we only use it 30% of the time
+                    if (health === 'amber' && Math.random() > 0.3) continue;
 
                     // v02.2.16: SCTP Saturation Tuning - 16MB is the reliable ceiling for libwebrtc buffers.
                     const rttMs = (smoothedRTT || 0.1) * 1000;
@@ -2050,7 +2051,8 @@ ${capturedLogsRef.current.join('\n')}
 
                     // v02.2.46: M2M HSFC Gate Enforcement
                     // v02.2.56: M2M Zenith Gate (32MB Floor for 10MB/s Saturation)
-                    const currentGate = isM2M ? Math.max(32 * 1024 * 1024, (smoothedRTT * (10 * 1024 * 1024)) * 4) : BDP_GPE_GATE;
+                    // v02.2.57: [ZENITH+] Accelerated Multiplier (8x BDP)
+                    const currentGate = isM2M ? Math.max(32 * 1024 * 1024, (smoothedRTT * (10 * 1024 * 1024)) * 8) : BDP_GPE_GATE;
                     const canSend = (gpeInFlightBytesRef.current < currentGate);
                     
                     // v02.2.29: GPE Deadlock Watchdog (Stuck-Gate Buster)
@@ -2151,8 +2153,8 @@ ${capturedLogsRef.current.join('\n')}
                         if (rtt < 0.200 && speed > 1.0 && dynamicChunkSizeRef.current < currentLimit) {
                             dynamicChunkSizeRef.current = Math.min(currentLimit, dynamicChunkSizeRef.current + 4 * 1024);
                             logDebug(`🚀 TACHYON BOOST: Scaling MTU to ${Math.round(dynamicChunkSizeRef.current/1024)}KB (${isM2M ? 'M2M GOLD' : 'NITRO GOLD'})`);
-                        } else if ((rtt > 0.600 || speed < 0.5) && dynamicChunkSizeRef.current > 16384) {
-                            dynamicChunkSizeRef.current = Math.max(16384, dynamicChunkSizeRef.current - 8 * 1024);
+                        } else if ((rtt > 0.600 || speed < 0.5) && dynamicChunkSizeRef.current > (isM2M ? 32768 : 16384)) {
+                            dynamicChunkSizeRef.current = Math.max((isM2M ? 32768 : 16384), dynamicChunkSizeRef.current - 8 * 1024);
                             logDebug(`📉 JITTER BACKOFF: Restoring Survival MTU (${Math.round(dynamicChunkSizeRef.current/1024)}KB)`);
                         }
                     }
