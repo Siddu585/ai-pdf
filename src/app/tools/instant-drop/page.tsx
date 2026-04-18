@@ -41,7 +41,7 @@ import { PaywallModal } from "@/components/layout/PaywallModal";
 // v02.2.63 (Tachyon Omega - Zenith Surgical) - 5 Surgical Patches (Rollback Debounce, Migration Guard, Active BDP Gate, MTU Floor Removal, NACK Throttling)
 // v02.2.64 (Tachyon Omega - Gate Unblocker) - GPE 8MB Floor Removal + ICE-based activePipeCount + Unified BDP Formula
 // v02.2.65 (Tachyon Omega - MTU Shield) - File-start MTU grace period + Permanent pipe retirement + Dispatch rate telemetry
-const VERSION = "v02.2.68 (Burst Engine - 10MB/s Push)";
+const VERSION = "v02.2.69 (Tachyon Fix - 10MB/s Push)";
 
 
 function getEngineConfig(engine: 'M2M' | 'HYBRID' | 'NITRO') {
@@ -2130,9 +2130,9 @@ ${capturedLogsRef.current.join('\n')}
                 let selectedDC: RTCDataChannel | null = null;
                 const baseIdx = (pendingChunk?.seq || chunkSeqIdx) % openChannels.length;
                 
-                // v02.2.67: SCTP Saturation Flood - Increase ceiling to 32MB for 4G jitter damping
+                // v02.2.69: Tuned Saturation Ceiling (16MB) to prevent 4G buffer-bloat
                 const rttMs = (smoothedRTT || 0.1) * 1000;
-                const saturationThreshold = Math.min(32 * 1024 * 1024, Math.max(8 * 1024 * 1024, (rttMs / 50) * 8 * 1024 * 1024));
+                const saturationThreshold = Math.min(16 * 1024 * 1024, Math.max(8 * 1024 * 1024, (rttMs / 50) * 8 * 1024 * 1024));
 
                 for (let i = 0; i < openChannels.length; i++) {
                     const testIdx = (baseIdx + i) % openChannels.length;
@@ -2293,26 +2293,25 @@ ${capturedLogsRef.current.join('\n')}
                         headerViewRef.current.setUint16(0, index, true);
                         headerViewRef.current.setUint16(2, currentGen, true);
                         headerViewRef.current.setUint32(4, currentSeq, true); 
-                        headerViewRef.current.setUint32(8, currentOffset, true); 
-
                         try {
-                            // v02.2.68: Double-Send Header and Body (Zero-Copy Body)
-                            dc.send(headerBufRef.current as any);
-                            dc.send(chunkData as any);
+                            // v02.2.69: Fix Fix 5 — Re-Unify Packet Atomicity
+                            // Use unified cachePacket for primary send to ensure receiver compatibility
+                            const unifiedPacket = new Uint8Array(12 + chunkData.byteLength);
+                            unifiedPacket.set(headerBufRef.current);
+                            unifiedPacket.set(chunkData, 12);
+
+                            dc.send(unifiedPacket as any);
                             
-                            // Cache for NACK recovery (still require one copy for cache window)
-                            const cachePacket = new Uint8Array(12 + chunkData.byteLength);
-                            cachePacket.set(headerBufRef.current);
-                            cachePacket.set(chunkData, 12);
+                            // Cache for NACK recovery
                             const cacheKey = `${index}_${currentSeq}`;
-                            senderChunkCacheRef.current.set(cacheKey, cachePacket);
+                            senderChunkCacheRef.current.set(cacheKey, unifiedPacket);
                             if (senderChunkCacheRef.current.size > 2048) {
                                 const k = senderChunkCacheRef.current.keys().next().value;
                                 if (k) senderChunkCacheRef.current.delete(k);
                             }
 
-                            totalSentBytesRef.current += (12 + chunkData.byteLength);
-                            gpeInFlightBytesRef.current += (12 + chunkData.byteLength); 
+                            totalSentBytesRef.current += unifiedPacket.byteLength;
+                            gpeInFlightBytesRef.current += unifiedPacket.byteLength; 
                             lastProgressTimeRef.current = Date.now();
                             
                             byteOffset += chunkData.byteLength; 
