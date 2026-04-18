@@ -38,7 +38,8 @@ import { PaywallModal } from "@/components/layout/PaywallModal";
 // v02.2.48 (Tachyon Omega - Solar Flare) - 10MB/s M2M Persistent Core
 // v02.2.60 (Tachyon Omega - Fixed Stable) - v02.2.56 Core + Vanguard Guarded Migration + Batch-ACK Patch
 // v02.2.62 (Tachyon Omega - Prompt001) - GPE 32MB Gate + 50ms Cooldown + 1.5s Resuscitator + Dead STUN Strip + Gen Guard
-const VERSION = "v02.2.62 (Tachyon Omega - Prompt001)";
+// v02.2.63 (Tachyon Omega - Zenith Surgical) - 5 Surgical Patches (Rollback Debounce, Migration Guard, Active BDP Gate, MTU Floor Removal, NACK Throttling)
+const VERSION = "v02.2.63 (Tachyon Omega - Zenith Surgical)";
 
 
 function getEngineConfig(engine: 'M2M' | 'HYBRID' | 'NITRO') {
@@ -185,6 +186,8 @@ function InstantDropContent() {
     const pipeGenerationRef = useRef<number[]>(new Array(12).fill(0)); // v02.2.23: Fixed Memory Capacity (12-Pipe context)
     const stallWatchdogRef = useRef<any>(null);
     const resuscitatorTimersRef = useRef<any[]>(new Array(12).fill(null)); // v02.2.26: Per-pipe health watchdog
+    const pipeConnectedAtRef = useRef<number[]>(new Array(12).fill(0)); // v02.2.58: Pipe ready timestamp
+    const pipeSentBytesRef = useRef<number[]>(new Array(12).fill(0)); // v02.2.58: Confirmed bytes sent per pipe
     const wakeLockRef = useRef<any>(null);
     const gpeInFlightBytesRef = useRef(0); // v02.1.50: GPE Gated In-Flight Tracking
     const gpePullRequestsRef = useRef(0); // v02.1.50: GPE Pull Request Counter
@@ -192,6 +195,7 @@ function InstantDropContent() {
     const rttBufferRef = useRef<number[]>([]); // v02.2.10.9: RTT Smoothing Buffer
     const chunksSentSinceScaleRef = useRef(0);
     const rollbackTriggerRef = useRef<number | null>(null); // v02.2.46: HSFC Rollback Signal
+    const lastRollbackAtRef = useRef<number>(0); // v02.2.58: Debounce — suppress cascade rollbacks within 3s
     const gpeBlockedSinceRef = useRef<number | null>(null); // v02.1.56: Deadlock Safety
     const lastProgressTimeRef = useRef<number>(Date.now()); // v02.1.77: Deadlock Buster
     const diagnosticMetricsRef = useRef({
@@ -1442,10 +1446,18 @@ ${capturedLogsRef.current.join('\n')}
 
                         pc.restartIce(); 
                         // v02.2.62 Prompt001: RESTORED HSFC ROLLBACK
+                        // v02.2.58: Debounce — if a rollback already fired within 3s, suppress this one.
+                        // Without debounce, 8 simultaneously hung pipes fire 8 rollbacks to byte 0.
                         if (modeRef.current === 'send') {
-                            const lastCleared = diagnosticMetricsRef.current.bytesCleared || 0;
-                            logDebug(`🛡️ HSFC ROLLBACK: Signaling rollback to last known-good byte: ${lastCleared}`);
-                            rollbackTriggerRef.current = lastCleared;
+                            const now = Date.now();
+                            if (now - lastRollbackAtRef.current > 3000) {
+                                const lastCleared = diagnosticMetricsRef.current.bytesCleared || 0;
+                                logDebug(`🛡️ HSFC ROLLBACK: Signaling rollback to last known-good byte: ${lastCleared}`);
+                                rollbackTriggerRef.current = lastCleared;
+                                lastRollbackAtRef.current = now;
+                            } else {
+                                logDebug(`🛡️ HSFC ROLLBACK suppressed (debounce): Pipe-${pipeIdx} within 3s window`);
+                            }
                         }
                     } catch (e) {}
                 }
@@ -1525,10 +1537,13 @@ ${capturedLogsRef.current.join('\n')}
                 logDebug(`Pipe-${pipeIdx} ICE State: ${peer.iceConnectionState}`);
                 // v02.2.28: STOP the resuscitator if we are connected or finished
                 if (peer.iceConnectionState === 'connected' || peer.iceConnectionState === 'completed') {
+                    // v02.2.58: Record pipe connection time for Migration Guard
+                    pipeConnectedAtRef.current[pipeIdx] = Date.now();
+                    
                     if (resuscitatorTimersRef.current[pipeIdx]) {
                         clearTimeout(resuscitatorTimersRef.current[pipeIdx]);
                         resuscitatorTimersRef.current[pipeIdx] = null;
-                        logDebug(`Γ£à Pipe-${pipeIdx} Resuscitator Stand-down.`);
+                        logDebug(`✅ Pipe-${pipeIdx} Resuscitator Stand-down.`);
                         
                         // v02.2.29: Piston-Gated Metadata Catch-up (Async)
                         // Send metadata ONCE per successful pipe open to minimize noise.
@@ -1814,7 +1829,19 @@ ${capturedLogsRef.current.join('\n')}
                 if (nackQueueRef.current.size > 0 && isActive.current) {
                     const openChannels = dataChannelsRef.current.filter(dc => dc && dc.readyState === 'open');
                     if (openChannels.length === 0) return;
-                    
+
+                    // v02.2.58: Backoff NACK drain rate based on healthy active pipe count.
+                    // Under rollback-storm conditions (< 4 good pipes), slowing to 50ms
+                    // prevents ~1600 signals/sec from backing up the flow-control WS channel.
+                    const goodPipes = Array.from({ length: PIPES }, (_, i) =>
+                        (diagnosticMetricsRef.current.pistonStats[i]?.health !== 'red' &&
+                         pipeSentBytesRef.current[i] > 0) ? 1 : 0
+                    ).reduce((acc: number, val: number) => acc + val, 0);
+                    // Throttle: only drain on this tick if we win the lottery based on health
+                    const drainRoll = Math.random();
+                    if (goodPipes < 4 && drainRoll > 0.25) return;
+                    if (goodPipes < 8 && drainRoll > 0.6) return;
+
                     for(let i=0; i < openChannels.length; i++) {
                         if (nackQueueRef.current.size === 0) break;
                         const nextEntry = nackQueueRef.current.entries().next().value;
@@ -1932,8 +1959,15 @@ ${capturedLogsRef.current.join('\n')}
             const config = getEngineConfig(activeEngine);
             
             // v02.2.62 Prompt001 Fix 1: M2M GPE Gate (4x BDP / 32MB floor)
+            // v02.2.58: Per-Active-Pipe BDP Gate (8–64MB adaptive burst)
+            const activePipeCountOuter = Math.max(1, Array.from({ length: PIPES }, (_, i) => {
+                const h = diagnosticMetricsRef.current.pistonStats[i]?.health || 'green';
+                const msAlive = Date.now() - (pipeConnectedAtRef.current[i] || 0);
+                return (h !== 'red' && pipeSentBytesRef.current[i] > 0 && msAlive >= 200) ? 1 : 0
+            }).reduce((acc: number, val: number) => acc + val, 0));
+            const perPipeBDPOuter = smoothedRTT * (10 * 1024 * 1024 / activePipeCountOuter);
             const dynamicGate = isM2M 
-                ? Math.max(32 * 1024 * 1024, smoothedRTT * 10 * 1024 * 1024 * 4) 
+                ? Math.max(8 * 1024 * 1024, Math.min(64 * 1024 * 1024, perPipeBDPOuter * 6 * activePipeCountOuter)) 
                 : 512 * 1024 * 1024;
 
             const isGPEBlocked = gpeInFlightBytesRef.current > dynamicGate; 
@@ -2036,8 +2070,16 @@ ${capturedLogsRef.current.join('\n')}
                     const pipeIdx = Math.floor(testIdx / CHANNELS_PER_PIPE);
                     const health = diagnosticMetricsRef.current.pistonStats[pipeIdx]?.health || 'green';
                     
-                    // If pipe is red, we only use it 10% of the time to avoid clog
-                    if (health === 'red' && Math.random() > 0.1) continue;
+                    // v02.2.58: Migration Readiness Guard — only route to a pipe that has
+                    // confirmed at least one packet sent AND has been connected for ≥200ms.
+                    const pipeMsAlive = Date.now() - (pipeConnectedAtRef.current[pipeIdx] || 0);
+                    const pipeHasSentData = pipeSentBytesRef.current[pipeIdx] > 0;
+                    const pipeIsReady = pipeHasSentData && pipeMsAlive >= 200;
+
+                    // If pipe is red or not yet ready, skip it entirely (Pipes 0–3 exempted)
+                    if (health === 'red' || !pipeIsReady) {
+                        if (pipeIdx > 3) continue;
+                    }
                     // If pipe is amber, we only use it 50% of the time
                     if (health === 'amber' && Math.random() > 0.5) continue;
 
@@ -2088,8 +2130,15 @@ ${capturedLogsRef.current.join('\n')}
                     // v02.2.46: M2M HSFC Gate Enforcement
                     // v02.2.56: M2M Zenith Gate (32MB Floor for 10MB/s Saturation)
                     // v02.2.62 Prompt001 Fix 1: Unified M2M GPE Gate (4x BDP / 32MB floor)
+                    // v02.2.58: Per-Active-Pipe BDP Gate (8–64MB adaptive burst)
+                    const activePipeCount = Math.max(1, Array.from({ length: PIPES }, (_, i) => {
+                        const h = diagnosticMetricsRef.current.pistonStats[i]?.health || 'green';
+                        const msAlive = Date.now() - (pipeConnectedAtRef.current[i] || 0);
+                        return (h !== 'red' && pipeSentBytesRef.current[i] > 0 && msAlive >= 200) ? 1 : 0
+                    }).reduce((acc: number, val: number) => acc + val, 0));
+                    const perPipeBDP = smoothedRTT * (10 * 1024 * 1024 / activePipeCount);
                     const currentGate = isM2M 
-                        ? Math.max(32 * 1024 * 1024, smoothedRTT * 10 * 1024 * 1024 * 4) 
+                        ? Math.max(8 * 1024 * 1024, Math.min(64 * 1024 * 1024, perPipeBDP * 6 * activePipeCount)) 
                         : BDP_GPE_GATE;
                     const canSend = (gpeInFlightBytesRef.current < currentGate);
                     
@@ -2185,14 +2234,16 @@ ${capturedLogsRef.current.join('\n')}
                         const rtt = Math.min(...rttBufferRef.current.filter(r => r > 0), 1.0);
                         const speed = currentMBpsRef.current || 0;
                         
-                        // v02.2.29: Mobile MTU Survival Floor (Hard-Cap 32KB to survive carrier buffers)
+                        // v02.2.58: MTU Probe — ceiling 32KB, no hard floor (min 8KB).
+                        // Removing the floor lets the probe adapt down on congested mobile links.
                         const currentLimit = isMobileDevice() ? Math.min(32768, config.mtuLimit) : config.mtuLimit;
+                        const mtuFloor = 8192; // 8KB minimum — avoids fragmentation storms
 
                         if (rtt < 0.200 && speed > 1.0 && dynamicChunkSizeRef.current < currentLimit) {
                             dynamicChunkSizeRef.current = Math.min(currentLimit, dynamicChunkSizeRef.current + 4 * 1024);
-                            logDebug(`≡ƒÜÇ TACHYON BOOST: Scaling MTU to ${Math.round(dynamicChunkSizeRef.current/1024)}KB (${isM2M ? 'M2M GOLD' : 'NITRO GOLD'})`);
-                        } else if ((rtt > 0.600 || speed < 0.5) && dynamicChunkSizeRef.current > 16384) {
-                            dynamicChunkSizeRef.current = Math.max(16384, dynamicChunkSizeRef.current - 8 * 1024);
+                            logDebug(`≡ƒÜÇ TACHYON BOOST: Scaling MTU to ${Math.round(dynamicChunkSizeRef.current/1024)}KB`);
+                        } else if ((rtt > 0.600 || speed < 0.5) && dynamicChunkSizeRef.current > mtuFloor) {
+                            dynamicChunkSizeRef.current = Math.max(mtuFloor, dynamicChunkSizeRef.current - 8 * 1024);
                             logDebug(`≡ƒôë JITTER BACKOFF: Restoring Survival MTU (${Math.round(dynamicChunkSizeRef.current/1024)}KB)`);
                         }
                     }
