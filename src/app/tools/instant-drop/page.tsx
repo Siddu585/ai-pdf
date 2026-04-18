@@ -39,7 +39,8 @@ import { PaywallModal } from "@/components/layout/PaywallModal";
 // v02.2.60 (Tachyon Omega - Fixed Stable) - v02.2.56 Core + Vanguard Guarded Migration + Batch-ACK Patch
 // v02.2.62 (Tachyon Omega - Prompt001) - GPE 32MB Gate + 50ms Cooldown + 1.5s Resuscitator + Dead STUN Strip + Gen Guard
 // v02.2.63 (Tachyon Omega - Zenith Surgical) - 5 Surgical Patches (Rollback Debounce, Migration Guard, Active BDP Gate, MTU Floor Removal, NACK Throttling)
-const VERSION = "v02.2.63 (Tachyon Omega - Zenith Surgical)";
+// v02.2.64 (Tachyon Omega - Gate Unblocker) - GPE 8MB Floor Removal + ICE-based activePipeCount + Unified BDP Formula
+const VERSION = "v02.2.64 (Tachyon Omega - Gate Unblocker)";
 
 
 function getEngineConfig(engine: 'M2M' | 'HYBRID' | 'NITRO') {
@@ -1958,16 +1959,24 @@ ${capturedLogsRef.current.join('\n')}
             const activeEngine = isM2M ? 'M2M' : (isSelfMobile || remoteCapabilityRef.current.isMobile) ? 'HYBRID' : 'NITRO';
             const config = getEngineConfig(activeEngine);
             
-            // v02.2.62 Prompt001 Fix 1: M2M GPE Gate (4x BDP / 32MB floor)
-            // v02.2.58: Per-Active-Pipe BDP Gate (8–64MB adaptive burst)
+            // v02.2.64: Unified GPE Gate — no static floor, scales with RTT + active pipes
+            // Fix 3: ICE-based activePipeCount (Pipes 0–3 use connection state, 4–11 use migration guard)
             const activePipeCountOuter = Math.max(1, Array.from({ length: PIPES }, (_, i) => {
-                const h = diagnosticMetricsRef.current.pistonStats[i]?.health || 'green';
+                const peer = peersRef.current[i];
+                const connected = peer && 
+                    (peer.iceConnectionState === 'connected' || peer.iceConnectionState === 'completed');
+                if (i <= 3) return connected ? 1 : 0;  // Pipes 0–3: ICE state directly
+                // Pipes 4–11: require confirmed bytes + 200ms grace (migration guard)
                 const msAlive = Date.now() - (pipeConnectedAtRef.current[i] || 0);
-                return (h !== 'red' && pipeSentBytesRef.current[i] > 0 && msAlive >= 200) ? 1 : 0
+                return (connected && pipeSentBytesRef.current[i] > 0 && msAlive >= 200) ? 1 : 0;
             }).reduce((acc: number, val: number) => acc + val, 0));
-            const perPipeBDPOuter = smoothedRTT * (10 * 1024 * 1024 / activePipeCountOuter);
+            // Fix 2: Dynamic gate — max(RTT×speed×8, activePipes×4MB), capped at 64MB
+            const targetSpeedBps = 10 * 1024 * 1024;
             const dynamicGate = isM2M 
-                ? Math.max(8 * 1024 * 1024, Math.min(64 * 1024 * 1024, perPipeBDPOuter * 6 * activePipeCountOuter)) 
+                ? Math.min(64 * 1024 * 1024, Math.max(
+                    smoothedRTT * targetSpeedBps * 8,              // 8x BDP of full target speed
+                    activePipeCountOuter * 4 * 1024 * 1024         // minimum 4MB per active pipe
+                  ))
                 : 512 * 1024 * 1024;
 
             const isGPEBlocked = gpeInFlightBytesRef.current > dynamicGate; 
@@ -2127,18 +2136,23 @@ ${capturedLogsRef.current.join('\n')}
                         flowPulseLastTsRef.current = Date.now(); // Reset to avoid constant halving
                     }
 
-                    // v02.2.46: M2M HSFC Gate Enforcement
-                    // v02.2.56: M2M Zenith Gate (32MB Floor for 10MB/s Saturation)
-                    // v02.2.62 Prompt001 Fix 1: Unified M2M GPE Gate (4x BDP / 32MB floor)
-                    // v02.2.58: Per-Active-Pipe BDP Gate (8–64MB adaptive burst)
+                    // v02.2.64: Unified GPE Gate — no static floor, dynamic BDP scaling
+                    // Fix 3: ICE-based activePipeCount (Pipes 0–3 bypass migration guard)
                     const activePipeCount = Math.max(1, Array.from({ length: PIPES }, (_, i) => {
-                        const h = diagnosticMetricsRef.current.pistonStats[i]?.health || 'green';
+                        const peer = peersRef.current[i];
+                        const connected = peer && 
+                            (peer.iceConnectionState === 'connected' || peer.iceConnectionState === 'completed');
+                        if (i <= 3) return connected ? 1 : 0;  // Pipes 0–3: ICE state directly
                         const msAlive = Date.now() - (pipeConnectedAtRef.current[i] || 0);
-                        return (h !== 'red' && pipeSentBytesRef.current[i] > 0 && msAlive >= 200) ? 1 : 0
+                        return (connected && pipeSentBytesRef.current[i] > 0 && msAlive >= 200) ? 1 : 0;
                     }).reduce((acc: number, val: number) => acc + val, 0));
-                    const perPipeBDP = smoothedRTT * (10 * 1024 * 1024 / activePipeCount);
+                    // Fix 1: Remove 8MB hard floor — use max(RTT×speed×8, activePipes×4MB), cap 64MB
+                    const targetSpeed = 10 * 1024 * 1024;
                     const currentGate = isM2M 
-                        ? Math.max(8 * 1024 * 1024, Math.min(64 * 1024 * 1024, perPipeBDP * 6 * activePipeCount)) 
+                        ? Math.min(64 * 1024 * 1024, Math.max(
+                            smoothedRTT * targetSpeed * 8,             // 8x BDP of full target speed
+                            activePipeCount * 4 * 1024 * 1024         // minimum 4MB per active pipe
+                          ))
                         : BDP_GPE_GATE;
                     const canSend = (gpeInFlightBytesRef.current < currentGate);
                     
