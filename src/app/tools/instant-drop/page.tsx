@@ -1983,17 +1983,19 @@ ${capturedLogsRef.current.join('\n')}
                     byteOffset = targetOffset;
                     pendingChunk = null;
                     currentChunkResidual = null;
-                    // Re-initialize reader to seek to targetOffset
-                    try { reader.cancel(); } catch(e) {}
-                    const newStream = file.stream();
-                    const newReader = newStream.getReader();
-                    let skipped = 0;
-                    while (skipped < byteOffset) {
-                        const { value, done } = await newReader.read();
-                        if (done) break;
-                        skipped += value.byteLength;
+                    // Re-initialize reader to seek to targetOffset (only if not using memory buffer)
+                    if (reader) {
+                        try { reader.cancel(); } catch(e) {}
+                        const newStream = file.stream();
+                        const newReader = newStream.getReader();
+                        let skipped = 0;
+                        while (skipped < byteOffset) {
+                            const { value, done } = await newReader.read();
+                            if (done) break;
+                            skipped += value.byteLength;
+                        }
+                        reader = newReader;
                     }
-                    reader = newReader;
                 }
             }
 
