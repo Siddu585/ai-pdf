@@ -41,7 +41,7 @@ import { PaywallModal } from "@/components/layout/PaywallModal";
 // v02.2.63 (Tachyon Omega - Zenith Surgical) - 5 Surgical Patches (Rollback Debounce, Migration Guard, Active BDP Gate, MTU Floor Removal, NACK Throttling)
 // v02.2.64 (Tachyon Omega - Gate Unblocker) - GPE 8MB Floor Removal + ICE-based activePipeCount + Unified BDP Formula
 // v02.2.65 (Tachyon Omega - MTU Shield) - File-start MTU grace period + Permanent pipe retirement + Dispatch rate telemetry
-const VERSION = "v02.2.66 (Tachyon Pulse - Dead MTU Escape)";
+const VERSION = "v02.2.67 (Tachyon Flood - 10MB/s Push)";
 
 
 function getEngineConfig(engine: 'M2M' | 'HYBRID' | 'NITRO') {
@@ -61,7 +61,7 @@ function getEngineConfig(engine: 'M2M' | 'HYBRID' | 'NITRO') {
     };
 }
 const PIPES = 12; // v02.2.56: 12-Pipe Architecture (Restored)
-const CHANNELS_PER_PIPE = 8;
+const CHANNELS_PER_PIPE = 24; // v02.2.67: Hyper-concurrency (96 streams on 4 pipes)
 const CHANNELS = 96; // 12 pipes x 8 channels = 96 logical streams
 const CHUNK_SIZE = 32 * 1024; // 32KB - Velocity Max (Mobile Resilient)
 const HIGH_WATER_MARK_MAX = 32 * 1024 * 1024; // 32MB Jumbo Window
@@ -2116,12 +2116,11 @@ ${capturedLogsRef.current.join('\n')}
                     if (health === 'red' || !pipeIsReady) {
                         if (pipeIdx > 3) continue;
                     }
-                    // If pipe is amber, we only use it 50% of the time
-                    if (health === 'amber' && Math.random() > 0.5) continue;
+                    // v02.2.67: Removed 'amber' skip to ensure 100% duty cycle on 4G M2M
 
-                    // v02.2.16: SCTP Saturation Tuning - 16MB is the reliable ceiling for libwebrtc buffers.
+                    // v02.2.67: SCTP Saturation Flood - Increase ceiling to 32MB for 4G jitter damping
                     const rttMs = (smoothedRTT || 0.1) * 1000;
-                    const saturationThreshold = Math.min(16 * 1024 * 1024, Math.max(4 * 1024 * 1024, (rttMs / 50) * 4 * 1024 * 1024));
+                    const saturationThreshold = Math.min(32 * 1024 * 1024, Math.max(8 * 1024 * 1024, (rttMs / 50) * 8 * 1024 * 1024));
                     
                     if (dc.bufferedAmount <= saturationThreshold) { 
                         selectedDC = dc;
@@ -2268,16 +2267,16 @@ ${capturedLogsRef.current.join('\n')}
 
                     const { data: chunkData, seq: currentSeq, offset: currentOffset } = pendingChunk;
 
-                    // Scaling Logic (v02.2.28: Isolationist - driven by fastest pipe only)
+                    // Scaling Logic (v02.2.67: 25-chunk interval for faster 4G recovery)
                     chunksSentSinceScaleRef.current++;
-                    if (chunksSentSinceScaleRef.current > 50) {
+                    if (chunksSentSinceScaleRef.current > 25) {
                         chunksSentSinceScaleRef.current = 0;
                         const rtt = Math.min(...rttBufferRef.current.filter(r => r > 0), 1.0);
                         const speed = currentMBpsRef.current || 0;
                         
-                        // v02.2.58: MTU Probe — ceiling 32KB, no hard floor (min 8KB).
-                        const currentLimit = isMobileDevice() ? Math.min(32768, config.mtuLimit) : config.mtuLimit;
-                        const mtuFloor = 8192; // 8KB minimum — avoids fragmentation storms
+                        // v02.2.67: MTU 64KB Probe — ceiling 64KB, floor 16KB (eliminate framing overhead).
+                        const currentLimit = isMobileDevice() ? Math.min(65536, config.mtuLimit * 2) : config.mtuLimit;
+                        const mtuFloor = 16384; // 16KB floor — safe on modern 4G
 
                         // v02.2.66: File-start MTU grace period — prevents crash at file boundaries
                         // Extended to 3s to allow 5s speed monitor to populate.
