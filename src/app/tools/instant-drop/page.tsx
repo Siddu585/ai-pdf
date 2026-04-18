@@ -40,7 +40,8 @@ import { PaywallModal } from "@/components/layout/PaywallModal";
 // v02.2.62 (Tachyon Omega - Prompt001) - GPE 32MB Gate + 50ms Cooldown + 1.5s Resuscitator + Dead STUN Strip + Gen Guard
 // v02.2.63 (Tachyon Omega - Zenith Surgical) - 5 Surgical Patches (Rollback Debounce, Migration Guard, Active BDP Gate, MTU Floor Removal, NACK Throttling)
 // v02.2.64 (Tachyon Omega - Gate Unblocker) - GPE 8MB Floor Removal + ICE-based activePipeCount + Unified BDP Formula
-const VERSION = "v02.2.64 (Tachyon Omega - Gate Unblocker)";
+// v02.2.65 (Tachyon Omega - MTU Shield) - File-start MTU grace period + Permanent pipe retirement + Dispatch rate telemetry
+const VERSION = "v02.2.65 (Tachyon Omega - MTU Shield)";
 
 
 function getEngineConfig(engine: 'M2M' | 'HYBRID' | 'NITRO') {
@@ -197,6 +198,8 @@ function InstantDropContent() {
     const chunksSentSinceScaleRef = useRef(0);
     const rollbackTriggerRef = useRef<number | null>(null); // v02.2.46: HSFC Rollback Signal
     const lastRollbackAtRef = useRef<number>(0); // v02.2.58: Debounce — suppress cascade rollbacks within 3s
+    const currentFileStartTimeRef = useRef<number>(Date.now()); // v02.2.65: MTU startup grace timestamp
+    const lastChunkSeqRef = useRef<number>(0); // v02.2.65: Dispatch rate telemetry
     const gpeBlockedSinceRef = useRef<number | null>(null); // v02.1.56: Deadlock Safety
     const lastProgressTimeRef = useRef<number>(Date.now()); // v02.1.77: Deadlock Buster
     const diagnosticMetricsRef = useRef({
@@ -1439,6 +1442,15 @@ ${capturedLogsRef.current.join('\n')}
                     const hangTimeout = isM2M ? 1500 : 4000;
                     logDebug(`⚠️ Pipe-${pipeIdx} HANG [Carrier Black-Hole] detected. Resuscitating after ${hangTimeout}ms...`);
                     try { 
+                        // v02.2.65: Permanent retirement for Pipes 4+ after Gen 2 failure
+                        // Stops wasteful signaling churn — these pipes never connect on cross-carrier 4G
+                        if (pipeIdx >= 4 && pipeGenerationRef.current[pipeIdx] >= 2) {
+                            logDebug(`🪦 Pipe-${pipeIdx} permanently retired [Carrier Black-Hole, Gen ${pipeGenerationRef.current[pipeIdx]}]`);
+                            resuscitatorTimersRef.current[pipeIdx] = null;
+                            diagnosticMetricsRef.current.pistonStats[pipeIdx] = { speed: 0, health: 'red' };
+                            return; // do not call setupWebRTC again
+                        }
+
                         // v02.2.60: Use the Guard to prevent rollback loops on unstable pipes
                         if (isM2M && !isPipeReadyForMigration()) {
                             logDebug(`🛡️ Guarded Migration: Pipe-${pipeIdx} unstable. Delaying resuscitation...`);
@@ -1659,6 +1671,12 @@ ${capturedLogsRef.current.join('\n')}
                         }
 
                         console.log(`%c [HYDRA MONITOR] INSTANT SPEED: ${speed} MB/s`, "color: #00ff00; font-weight: bold;");
+                        
+                        // v02.2.65: Chunk Dispatch Rate Telemetry (ceiling diagnostic)
+                        const chunksThisCycle = chunksSentSinceScaleRef.current;
+                        const effectiveMBps = (chunksThisCycle * dynamicChunkSizeRef.current / 5 / 1024 / 1024).toFixed(2);
+                        logDebug(`📊 Dispatch: ~${chunksThisCycle} chunks/5s (${effectiveMBps} MB/s effective), MTU=${Math.round(dynamicChunkSizeRef.current/1024)}KB, Gate=${(gpeInFlightBytesRef.current/1024/1024).toFixed(1)}MB in-flight`);
+
                         prevBytes = currentTotal;
                     }, 5000);
 
@@ -1905,6 +1923,8 @@ ${capturedLogsRef.current.join('\n')}
         
         // v02.1.52 (Patch 25.2): GPE Counter Reset
         gpeInFlightBytesRef.current = 0;
+        // v02.2.65: Stamp file start time for MTU startup grace
+        currentFileStartTimeRef.current = Date.now();
 
         // Skip to offset if resuming
         if (byteOffset > 0) {
@@ -2249,16 +2269,22 @@ ${capturedLogsRef.current.join('\n')}
                         const speed = currentMBpsRef.current || 0;
                         
                         // v02.2.58: MTU Probe — ceiling 32KB, no hard floor (min 8KB).
-                        // Removing the floor lets the probe adapt down on congested mobile links.
                         const currentLimit = isMobileDevice() ? Math.min(32768, config.mtuLimit) : config.mtuLimit;
                         const mtuFloor = 8192; // 8KB minimum — avoids fragmentation storms
 
+                        // v02.2.65: File-start MTU grace period — prevents crash at file boundaries
+                        // At file start, stale RTT/speed samples from previous file trigger false JITTER BACKOFF.
+                        // Grace window suppresses backoff for 500ms, allowing fresh measurements to populate.
+                        const msSinceFileStart = Date.now() - currentFileStartTimeRef.current;
+                        const inStartupGrace = msSinceFileStart < 500;
+
                         if (rtt < 0.200 && speed > 1.0 && dynamicChunkSizeRef.current < currentLimit) {
                             dynamicChunkSizeRef.current = Math.min(currentLimit, dynamicChunkSizeRef.current + 4 * 1024);
-                            logDebug(`≡ƒÜÇ TACHYON BOOST: Scaling MTU to ${Math.round(dynamicChunkSizeRef.current/1024)}KB`);
-                        } else if ((rtt > 0.600 || speed < 0.5) && dynamicChunkSizeRef.current > mtuFloor) {
-                            dynamicChunkSizeRef.current = Math.max(mtuFloor, dynamicChunkSizeRef.current - 8 * 1024);
-                            logDebug(`≡ƒôë JITTER BACKOFF: Restoring Survival MTU (${Math.round(dynamicChunkSizeRef.current/1024)}KB)`);
+                            logDebug(`🚀 TACHYON BOOST: Scaling MTU to ${Math.round(dynamicChunkSizeRef.current/1024)}KB`);
+                        } else if (!inStartupGrace && (rtt > 0.600 || speed < 0.5) && dynamicChunkSizeRef.current > mtuFloor) {
+                            // v02.2.65: Reduced backoff step from 8KB to 4KB — slows crash from 3 steps to 6
+                            dynamicChunkSizeRef.current = Math.max(mtuFloor, dynamicChunkSizeRef.current - 4 * 1024);
+                            logDebug(`📉 JITTER BACKOFF: Restoring Survival MTU (${Math.round(dynamicChunkSizeRef.current/1024)}KB)`);
                         }
                     }
                     
