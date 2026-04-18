@@ -41,7 +41,7 @@ import { PaywallModal } from "@/components/layout/PaywallModal";
 // v02.2.63 (Tachyon Omega - Zenith Surgical) - 5 Surgical Patches (Rollback Debounce, Migration Guard, Active BDP Gate, MTU Floor Removal, NACK Throttling)
 // v02.2.64 (Tachyon Omega - Gate Unblocker) - GPE 8MB Floor Removal + ICE-based activePipeCount + Unified BDP Formula
 // v02.2.65 (Tachyon Omega - MTU Shield) - File-start MTU grace period + Permanent pipe retirement + Dispatch rate telemetry
-const VERSION = "v02.2.65 (Tachyon Omega - MTU Shield)";
+const VERSION = "v02.2.66 (Tachyon Pulse - Dead MTU Escape)";
 
 
 function getEngineConfig(engine: 'M2M' | 'HYBRID' | 'NITRO') {
@@ -196,6 +196,8 @@ function InstantDropContent() {
     const dynamicChunkSizeRef = useRef(CHUNK_SIZE); // v02.1.50: Adaptive MTU
     const rttBufferRef = useRef<number[]>([]); // v02.2.10.9: RTT Smoothing Buffer
     const chunksSentSinceScaleRef = useRef(0);
+    const chunksAtFloorRef = useRef(0); // v02.2.66: Counter to break the MTU floor trap
+    const lastPulseSentAtRef = useRef(0); // v02.2.66: Gating redundant pulses
     const rollbackTriggerRef = useRef<number | null>(null); // v02.2.46: HSFC Rollback Signal
     const lastRollbackAtRef = useRef<number>(0); // v02.2.58: Debounce — suppress cascade rollbacks within 3s
     const currentFileStartTimeRef = useRef<number>(Date.now()); // v02.2.65: MTU startup grace timestamp
@@ -590,10 +592,15 @@ function InstantDropContent() {
                             clearInterval(ackInterval);
                             return;
                         }
-                        logDebug("Receiver: Pulsing Batch-ACK to sender...");
-                        sendControlMsg({ type: 'batch-ack', totalFiles: msg.totalFiles });
-                        // Also pulse flow ready to unblock any stuck pacer
-                        wsRef.current?.send(JSON.stringify({ type: 'flow', status: 'ready' }));
+                        // v02.2.66: Gate redundant pulses (max 1 per 2s)
+                        const now = Date.now();
+                        if (now - lastPulseSentAtRef.current > 2000) {
+                            logDebug("Receiver: Pulsing Batch-ACK to sender...");
+                            lastPulseSentAtRef.current = now;
+                            sendControlMsg({ type: 'batch-ack', totalFiles: msg.totalFiles });
+                            // Also pulse flow ready to unblock any stuck pacer
+                            wsRef.current?.send(JSON.stringify({ type: 'flow', status: 'ready' }));
+                        }
                     }, 500);
                     // Absolute safety net to stop pulsar after 10s
                     setTimeout(() => clearInterval(ackInterval), 10000);
@@ -2272,19 +2279,32 @@ ${capturedLogsRef.current.join('\n')}
                         const currentLimit = isMobileDevice() ? Math.min(32768, config.mtuLimit) : config.mtuLimit;
                         const mtuFloor = 8192; // 8KB minimum — avoids fragmentation storms
 
-                        // v02.2.65: File-start MTU grace period — prevents crash at file boundaries
-                        // At file start, stale RTT/speed samples from previous file trigger false JITTER BACKOFF.
-                        // Grace window suppresses backoff for 500ms, allowing fresh measurements to populate.
+                        // v02.2.66: File-start MTU grace period — prevents crash at file boundaries
+                        // Extended to 3s to allow 5s speed monitor to populate.
                         const msSinceFileStart = Date.now() - currentFileStartTimeRef.current;
-                        const inStartupGrace = msSinceFileStart < 500;
+                        const inStartupGrace = msSinceFileStart < 3000;
 
-                        if (rtt < 0.200 && speed > 1.0 && dynamicChunkSizeRef.current < currentLimit) {
+                        if (rtt < 0.200 && dynamicChunkSizeRef.current < currentLimit) {
+                            // v02.2.66: Removed 'speed > 1.0' dependency (it lags too much)
                             dynamicChunkSizeRef.current = Math.min(currentLimit, dynamicChunkSizeRef.current + 4 * 1024);
+                            chunksAtFloorRef.current = 0;
                             logDebug(`🚀 TACHYON BOOST: Scaling MTU to ${Math.round(dynamicChunkSizeRef.current/1024)}KB`);
                         } else if (!inStartupGrace && (rtt > 0.600 || speed < 0.5) && dynamicChunkSizeRef.current > mtuFloor) {
-                            // v02.2.65: Reduced backoff step from 8KB to 4KB — slows crash from 3 steps to 6
                             dynamicChunkSizeRef.current = Math.max(mtuFloor, dynamicChunkSizeRef.current - 4 * 1024);
                             logDebug(`📉 JITTER BACKOFF: Restoring Survival MTU (${Math.round(dynamicChunkSizeRef.current/1024)}KB)`);
+                        }
+
+                        // v02.2.66: Dead MTU Trap Breaker
+                        // If we are at the floor and RTT is healthy, force a step-up probe.
+                        if (dynamicChunkSizeRef.current <= mtuFloor && rtt < 0.300) {
+                            chunksAtFloorRef.current++;
+                            if (chunksAtFloorRef.current >= 50) {
+                                chunksAtFloorRef.current = 0;
+                                dynamicChunkSizeRef.current = Math.min(currentLimit, dynamicChunkSizeRef.current + 4 * 1024);
+                                logDebug(`🔄 MTU ESCAPE: Forcing step-up to ${Math.round(dynamicChunkSizeRef.current/1024)}KB (RTT healthy)`);
+                            }
+                        } else {
+                            chunksAtFloorRef.current = 0;
                         }
                     }
                     
