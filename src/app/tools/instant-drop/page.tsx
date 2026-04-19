@@ -41,13 +41,14 @@ import { PaywallModal } from "@/components/layout/PaywallModal";
 // v02.2.63 (Tachyon Omega - Zenith Surgical) - 5 Surgical Patches (Rollback Debounce, Migration Guard, Active BDP Gate, MTU Floor Removal, NACK Throttling)
 // v02.2.64 (Tachyon Omega - Gate Unblocker) - GPE 8MB Floor Removal + ICE-based activePipeCount + Unified BDP Formula
 // v02.2.65 (Tachyon Omega - MTU Shield) - File-start MTU grace period + Permanent pipe retirement + Dispatch rate telemetry
-const VERSION = "v02.2.75 (Tachyon RTC-ACK â‰¡Æ’Ã´â•‘ BDP-XL)"; // v02.2.75: 16-Pipe saturation + Telemetry Fix
+const VERSION = "v02.2.76 (Tachyon RTC-ACK â‰¡Æ’Ã´â•‘ BDP-XL)"; // v02.2.76: Syntax Fix + Fresh LPM Trigger
 
 
 function getEngineConfig(engine: 'M2M' | 'HYBRID' | 'NITRO') {
     if (engine === 'M2M') {
         return {
-            pipes: 16, // v02.2.75: Expanded BDP saturation for High-RTT mobile links (600ms)            pacerThreshold: 64 * 1024 * 1024, // v02.2.73: 64MB window for high-latency cellular (600ms RTT)
+            pipes: 16, // v02.2.76: Expanded BDP saturation for High-RTT mobile links (600ms)
+            pacerThreshold: 64 * 1024 * 1024, // v02.2.73: 64MB window for high-latency cellular (600ms RTT)
             mtuLimit: 32 * 1024, 
             nackBackoff: 500 
         };
@@ -59,9 +60,9 @@ function getEngineConfig(engine: 'M2M' | 'HYBRID' | 'NITRO') {
         nackBackoff: 1000
     };
 }
-const PIPES = 8; // v02.2.71: Optimized 8-Pipe Dense Architecture
-const CHANNELS_PER_PIPE = 8; // v02.2.71: 8 channels per pipe (64 total)
-const CHANNELS = 64; 
+const PIPES = 16; // v02.2.75: Expanded 16-Pipe BDP-XL Architecture
+const CHANNELS_PER_PIPE = 8; 
+const CHANNELS = 128; // PIPES * CHANNELS_PER_PIPE 
 const CHUNK_SIZE = 32 * 1024; // 32KB Base MTU
 const HIGH_WATER_MARK_MAX = 32 * 1024 * 1024; // 32MB Jumbo Window
 const BASE_PACER_THRESHOLD = 16 * 1024 * 1024; // 16MB Pacer Threshold
@@ -184,11 +185,11 @@ function InstantDropContent() {
     const totalReceivedBytesRef = useRef(0);
     const lastSuccessfulChunkIdxRef = useRef(0);
     const isResumingRef = useRef(false);
-    const pipeGenerationRef = useRef<number[]>(new Array(12).fill(0)); // v02.2.23: Fixed Memory Capacity (12-Pipe context)
+    const pipeGenerationRef = useRef<number[]>(new Array(PIPES).fill(0)); // v02.2.76: Scalable Pipe Context
     const stallWatchdogRef = useRef<any>(null);
-    const resuscitatorTimersRef = useRef<any[]>(new Array(12).fill(null)); // v02.2.26: Per-pipe health watchdog
-    const pipeConnectedAtRef = useRef<number[]>(new Array(12).fill(0)); // v02.2.58: Pipe ready timestamp
-    const pipeSentBytesRef = useRef<number[]>(new Array(12).fill(0)); // v02.2.58: Confirmed bytes sent per pipe
+    const resuscitatorTimersRef = useRef<any[]>(new Array(PIPES).fill(null)); // v02.2.76: Per-pipe health watchdog
+    const pipeConnectedAtRef = useRef<number[]>(new Array(PIPES).fill(0)); // v02.2.76: Pipe ready timestamp
+    const pipeSentBytesRef = useRef<number[]>(new Array(PIPES).fill(0)); // v02.2.76: Confirmed bytes sent per pipe
     const wakeLockRef = useRef<any>(null);
     const gpeInFlightBytesRef = useRef(0); // v02.1.50: GPE Gated In-Flight Tracking
     const gpePullRequestsRef = useRef(0); // v02.1.50: GPE Pull Request Counter
@@ -228,7 +229,7 @@ function InstantDropContent() {
         protocol: "udp" as "udp" | "tcp",
         workerLag: 0,
         bdp: 0,
-        pistonStats: Array(12).fill({ speed: 0, health: 'green' }),
+        pistonStats: Array(PIPES).fill({ speed: 0, health: 'green' }),
         isChaosMode: false
     });
     const [diagnosticMetrics, setDiagnosticMetrics] = useState(diagnosticMetricsRef.current); // v02.2.29: Corrected Init Order
