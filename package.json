@@ -1,6 +1,6 @@
 {
   "name": "ai-pdf",
-  "version": "0.2.2-61",
+  "version": "0.2.2-70",
   "private": true,
   "scripts": {
     "dev": "next dev --turbopack",

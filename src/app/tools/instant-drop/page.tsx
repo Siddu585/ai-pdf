@@ -41,7 +41,7 @@ import { PaywallModal } from "@/components/layout/PaywallModal";
 // v02.2.63 (Tachyon Omega - Zenith Surgical) - 5 Surgical Patches (Rollback Debounce, Migration Guard, Active BDP Gate, MTU Floor Removal, NACK Throttling)
 // v02.2.64 (Tachyon Omega - Gate Unblocker) - GPE 8MB Floor Removal + ICE-based activePipeCount + Unified BDP Formula
 // v02.2.65 (Tachyon Omega - MTU Shield) - File-start MTU grace period + Permanent pipe retirement + Dispatch rate telemetry
-const VERSION = "v02.2.69 (Tachyon Fix - 10MB/s Push)";
+const VERSION = "v02.2.70 (Sovereign Engine - 10MB/s Final)";
 
 
 function getEngineConfig(engine: 'M2M' | 'HYBRID' | 'NITRO') {
@@ -2101,11 +2101,14 @@ ${capturedLogsRef.current.join('\n')}
                                 resolve(null);
                             };
                             dc.addEventListener('bufferedamountlow', handler);
-                            const m2mSafety = config.pipes > 4 ? 500 : 100; // v02.2.44: Relax timeout for M2M to reduce CPU pressure
+                            const m2mSafety = config.pipes > 4 ? 500 : 100;
                             setTimeout(handler, m2mSafety); 
                         });
                     }
-                } else {
+                }
+                
+                if (blockedLoopCount.current > 50) {
+                    // v02.2.70: Anti-Spin Yield to prevent CPU starvation
                     await new Promise(resolve => setTimeout(resolve, 10)); 
                 }
                 continue; 
@@ -2130,7 +2133,7 @@ ${capturedLogsRef.current.join('\n')}
                 let selectedDC: RTCDataChannel | null = null;
                 const baseIdx = (pendingChunk?.seq || chunkSeqIdx) % openChannels.length;
                 
-                // v02.2.69: Tuned Saturation Ceiling (16MB) to prevent 4G buffer-bloat
+                // v02.2.70: Tuned Saturation Ceiling (16MB) to prevent 4G buffer-bloat
                 const rttMs = (smoothedRTT || 0.1) * 1000;
                 const saturationThreshold = Math.min(16 * 1024 * 1024, Math.max(8 * 1024 * 1024, (rttMs / 50) * 8 * 1024 * 1024));
 
@@ -2176,6 +2179,8 @@ ${capturedLogsRef.current.join('\n')}
                             }, 100); 
                         });
                     }
+                    // v02.2.70: Anti-Spin Yield when ALL pipes are full
+                    await new Promise(resolve => setTimeout(resolve, 10)); 
                     continue; 
                 }
 
@@ -2191,8 +2196,8 @@ ${capturedLogsRef.current.join('\n')}
                     }
 
                     // v02.2.68: Fix 4 — MTU Stability Lock (Permanent 32KB for M2M)
-                    if (isM2M) {
-                        dynamicChunkSizeRef.current = 32768; // Lock at 32KB to eliminate framing overhead
+                    if (isM2M && false) { // v02.2.70: Release static lock for adaptive probing
+                        dynamicChunkSizeRef.current = 32768; // Removed lock
                     } else {
                         const rtt = Math.min(...rttBufferRef.current.filter(r => r > 0), 1.0);
                         const speed = currentMBpsRef.current || 0;
@@ -2224,7 +2229,8 @@ ${capturedLogsRef.current.join('\n')}
                     let burstSent = 0;
 
                     while (burstSent < BURST_SIZE && (byteOffset < file.size || pendingChunk)) {
-                        if (gpeInFlightBytesRef.current >= currentGate) break;
+                        // v02.2.70: Tightened Gate (1.2x) for smoother 4G flow
+                        if (gpeInFlightBytesRef.current >= saturationThreshold * 1.2) break;
                         if (dc.bufferedAmount > saturationThreshold) break;
                         if (dc.readyState !== 'open') break;
 
@@ -2294,7 +2300,7 @@ ${capturedLogsRef.current.join('\n')}
                         headerViewRef.current.setUint16(2, currentGen, true);
                         headerViewRef.current.setUint32(4, currentSeq, true); 
                         try {
-                            // v02.2.69: Fix Fix 5 — Re-Unify Packet Atomicity
+                            // v02.2.70: Sovereign-Unify Packet Atomicity
                             // Use unified cachePacket for primary send to ensure receiver compatibility
                             const unifiedPacket = new Uint8Array(12 + chunkData.byteLength);
                             unifiedPacket.set(headerBufRef.current);
