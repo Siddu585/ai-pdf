@@ -1,9 +1,9 @@
 Vercel Deployment Manifest
 -------------------------
-Version: v02.2.74
+Version: v02.2.75
 Build: LPM (Live Production Mode)
-Engine: Tachyon RTC-ACK ║ Leak-Fix
-Optimizer: Cumulative Byte Accounting (Ensures 100% Gate Clearance)
+Engine: Tachyon BDP-XL ║ 16-Pipe
+Optimizer: High-RTT Mobile Saturation (16 Pipes)
 Status: PUSH_TRIGGERED
-Timestamp: 1776597200
+Timestamp: 1776597230
 -------------------------
