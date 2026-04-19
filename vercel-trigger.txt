@@ -1,7 +1,9 @@
-v02.2.72 (Tachyon Sovereign + RTC-ACK - 10MB/s Sustained) Deployment Trigger at 2026-04-19T15:45:00Z.
-Fix: P2P RTC-ACK Signal (Sub-20ms flow control) - Bypassing Signaling Server Latency.
-Fix: Atomic Batch Sync Gate - Eliminates multi-file reassembly race conditions.
-Fix: hasReceivedFileDoneRef gating (Ensures receiver ready before metadata blast).
-Architecture: Nitro standard 8-Pipe Dense Core with RTC-ACK flow control.
-Live Production Mode (LPM) Active.
-Target: 10/10 File Success at 10 MB/s.
+Vercel Deployment Manifest
+-------------------------
+Version: v02.2.73
+Build: LPM (Live Production Mode)
+Engine: Tachyon RTC-ACK ≡ƒô║ P2P Sync
+Optimizer: Batch Sync Hardening (Eliminates 10s Delay)
+Status: PUSH_TRIGGERED
+Timestamp: 1776596180
+-------------------------
