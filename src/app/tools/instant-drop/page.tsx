@@ -41,7 +41,7 @@ import { PaywallModal } from "@/components/layout/PaywallModal";
 // v02.2.63 (Tachyon Omega - Zenith Surgical) - 5 Surgical Patches (Rollback Debounce, Migration Guard, Active BDP Gate, MTU Floor Removal, NACK Throttling)
 // v02.2.64 (Tachyon Omega - Gate Unblocker) - GPE 8MB Floor Removal + ICE-based activePipeCount + Unified BDP Formula
 // v02.2.65 (Tachyon Omega - MTU Shield) - File-start MTU grace period + Permanent pipe retirement + Dispatch rate telemetry
-const VERSION = "v02.2.70 (Sovereign Engine - 10MB/s Final)";
+const VERSION = "v02.2.71 (Tachyon Sovereign - 10MB/s Unshackled)";
 
 
 function getEngineConfig(engine: 'M2M' | 'HYBRID' | 'NITRO') {
@@ -60,10 +60,10 @@ function getEngineConfig(engine: 'M2M' | 'HYBRID' | 'NITRO') {
         nackBackoff: 1000
     };
 }
-const PIPES = 12; // v02.2.56: 12-Pipe Architecture (Restored)
-const CHANNELS_PER_PIPE = 24; // v02.2.67: Hyper-concurrency (96 streams on 4 pipes)
-const CHANNELS = 96; // 12 pipes x 8 channels = 96 logical streams
-const CHUNK_SIZE = 32 * 1024; // 32KB - Velocity Max (Mobile Resilient)
+const PIPES = 8; // v02.2.71: Optimized 8-Pipe Dense Architecture
+const CHANNELS_PER_PIPE = 8; // v02.2.71: 8 channels per pipe (64 total)
+const CHANNELS = 64; 
+const CHUNK_SIZE = 32 * 1024; // 32KB Base MTU
 const HIGH_WATER_MARK_MAX = 32 * 1024 * 1024; // 32MB Jumbo Window
 const BASE_PACER_THRESHOLD = 16 * 1024 * 1024; // 16MB Pacer Threshold
 const MAX_IN_FLIGHT = 4096; // 4096 chunks (x32KB = 128MB ceiling)
@@ -204,6 +204,7 @@ function InstantDropContent() {
     const lastChunkSeqRef = useRef<number>(0); // v02.2.65: Dispatch rate telemetry
     const gpeBlockedSinceRef = useRef<number | null>(null); // v02.1.56: Deadlock Safety
     const lastProgressTimeRef = useRef<number>(Date.now()); // v02.1.77: Deadlock Buster
+    const lastChannelIndexRef = useRef(0); // v02.2.71: Persistent Round Robin
     
     // v02.2.68: Fix 3 & 5 — Performance Caching Refs
     const cachedOpenChannelsRef = useRef<RTCDataChannel[] | null>(null);
@@ -2022,14 +2023,20 @@ ${capturedLogsRef.current.join('\n')}
                 const msAlive = Date.now() - (pipeConnectedAtRef.current[i] || 0);
                 return (connected && pipeSentBytesRef.current[i] > 0 && msAlive >= 200) ? 1 : 0;
             }).reduce((acc: number, val: number) => acc + val, 0));
-            // Fix 2: Dynamic gate — max(RTT×speed×8, activePipes×4MB), capped at 64MB
+            // v02.2.71: Tachyon Sovereign GPE Window (Fix 1, 8, & 4)
+            const MAX_GPE_WINDOW = 128 * 1024 * 1024; // 128MB Cap
+            const MIN_GPE_WINDOW = 16 * 1024 * 1024;  // 16MB Floor
             const targetSpeedBps = 10 * 1024 * 1024;
-            const currentGate = isM2M 
-                ? Math.min(64 * 1024 * 1024, Math.max(
-                    smoothedRTT * targetSpeedBps * 8,              // 8x BDP of full target speed
-                    activePipeCountOuter * 4 * 1024 * 1024         // minimum 4MB per active pipe
-                  ))
-                : 512 * 1024 * 1024;
+            
+            const dynamicWindow = smoothedRTT * targetSpeedBps * 32; // 🔥 32x BDP Inflation
+            const pipeFloor = activePipeCountOuter * 8 * 1024 * 1024; // 8MB per pipe floor
+            
+            let currentGate = Math.max(MIN_GPE_WINDOW, Math.min(MAX_GPE_WINDOW, Math.max(dynamicWindow, pipeFloor)));
+            
+            // Startup Boost: +4MB gate headroom for the first 2 seconds
+            if (Date.now() - currentFileStartTimeRef.current < 2000) {
+                currentGate += 4 * 1024 * 1024;
+            }
 
             const isGPEBlocked = gpeInFlightBytesRef.current > currentGate; 
             
@@ -2108,8 +2115,8 @@ ${capturedLogsRef.current.join('\n')}
                 }
                 
                 if (blockedLoopCount.current > 50) {
-                    // v02.2.70: Anti-Spin Yield to prevent CPU starvation
-                    await new Promise(resolve => setTimeout(resolve, 10)); 
+                    // v02.2.71: Reduction to 5ms yield for higher goodput
+                    await new Promise(resolve => setTimeout(resolve, 5)); 
                 }
                 continue; 
             } else {
@@ -2131,11 +2138,12 @@ ${capturedLogsRef.current.join('\n')}
 
             if (!isGPEBlocked && openChannels.length > 0) {
                 let selectedDC: RTCDataChannel | null = null;
-                const baseIdx = (pendingChunk?.seq || chunkSeqIdx) % openChannels.length;
+                const baseIdx = lastChannelIndexRef.current;
+                lastChannelIndexRef.current = (lastChannelIndexRef.current + 1) % openChannels.length;
                 
-                // v02.2.70: Tuned Saturation Ceiling (16MB) to prevent 4G buffer-bloat
+                // v02.2.71: Buffer Threshold Fix (Fix 5) — 32MB Max
                 const rttMs = (smoothedRTT || 0.1) * 1000;
-                const saturationThreshold = Math.min(16 * 1024 * 1024, Math.max(8 * 1024 * 1024, (rttMs / 50) * 8 * 1024 * 1024));
+                const saturationThreshold = Math.min(32 * 1024 * 1024, Math.max(8 * 1024 * 1024, (rttMs / 50) * 8 * 1024 * 1024));
 
                 for (let i = 0; i < openChannels.length; i++) {
                     const testIdx = (baseIdx + i) % openChannels.length;
@@ -2179,8 +2187,8 @@ ${capturedLogsRef.current.join('\n')}
                             }, 100); 
                         });
                     }
-                    // v02.2.70: Anti-Spin Yield when ALL pipes are full
-                    await new Promise(resolve => setTimeout(resolve, 10)); 
+                    // v02.2.71: Reduced yield when ALL pipes are full
+                    await new Promise(resolve => setTimeout(resolve, 5)); 
                     continue; 
                 }
 
@@ -2200,28 +2208,14 @@ ${capturedLogsRef.current.join('\n')}
                         dynamicChunkSizeRef.current = 32768; // Removed lock
                     } else {
                         const rtt = Math.min(...rttBufferRef.current.filter(r => r > 0), 1.0);
-                        const speed = currentMBpsRef.current || 0;
-                        const currentLimit = isMobileDevice() ? Math.min(65536, config.mtuLimit * 2) : config.mtuLimit;
-                        const mtuFloor = 16384; 
-                        const msSinceFileStart = Date.now() - currentFileStartTimeRef.current;
-                        const inStartupGrace = msSinceFileStart < 3000;
-
-                        if (rtt < 0.200 && dynamicChunkSizeRef.current < currentLimit) {
-                            dynamicChunkSizeRef.current = Math.min(currentLimit, dynamicChunkSizeRef.current + 4 * 1024);
-                            chunksAtFloorRef.current = 0;
-                        } else if (!inStartupGrace && (rtt > 0.600 || speed < 0.5) && dynamicChunkSizeRef.current > mtuFloor) {
-                            dynamicChunkSizeRef.current = Math.max(mtuFloor, dynamicChunkSizeRef.current - 4 * 1024);
-                        }
-
-                        if (dynamicChunkSizeRef.current <= mtuFloor && rtt < 0.300) {
-                            chunksAtFloorRef.current++;
-                            if (chunksAtFloorRef.current >= 50) {
-                                chunksAtFloorRef.current = 0;
-                                dynamicChunkSizeRef.current = Math.min(currentLimit, dynamicChunkSizeRef.current + 4 * 1024);
-                            }
-                        } else {
-                            chunksAtFloorRef.current = 0;
-                        }
+                        const rttMs = rtt * 1000;
+                        
+                        // v02.2.71: MTU FIX (Fix 3) — Dynamic Scaling Based on RTT
+                        let targetMTU = 32768; // Safe fallback
+                        if (rttMs < 50) targetMTU = 65536; // 64KB (Fast Network)
+                        else if (rttMs < 120) targetMTU = 49152; // 48KB (Medium)
+                        
+                        dynamicChunkSizeRef.current = targetMTU;
                     }
                     
                     // v02.2.68: Fix 2 — Burst-Send Multiple Chunks Per Loop Iteration
