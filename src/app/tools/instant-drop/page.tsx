@@ -41,7 +41,7 @@ import { PaywallModal } from "@/components/layout/PaywallModal";
 // v02.2.63 (Tachyon Omega - Zenith Surgical) - 5 Surgical Patches (Rollback Debounce, Migration Guard, Active BDP Gate, MTU Floor Removal, NACK Throttling)
 // v02.2.64 (Tachyon Omega - Gate Unblocker) - GPE 8MB Floor Removal + ICE-based activePipeCount + Unified BDP Formula
 // v02.2.65 (Tachyon Omega - MTU Shield) - File-start MTU grace period + Permanent pipe retirement + Dispatch rate telemetry
-const VERSION = "v02.2.71 (Tachyon Sovereign - 10MB/s Unshackled)";
+const VERSION = "v02.2.72 (Tachyon RTC-ACK - 10MB/s Sustained)"; // v02.2.72: Peer-to-Peer Flow Control (Fixes signaling latency)
 
 
 function getEngineConfig(engine: 'M2M' | 'HYBRID' | 'NITRO') {
@@ -212,6 +212,8 @@ function InstantDropContent() {
     const channelCacheTsRef = useRef<number>(0);
     const headerBufRef = useRef<Uint8Array>(new Uint8Array(12));
     const headerViewRef = useRef<DataView>(new DataView(headerBufRef.current.buffer));
+    const rtcAckBufRef = useRef<Uint8Array>(new Uint8Array(8)); // v02.2.72: P2P ACK Packet
+    const rtcAckViewRef = useRef<DataView>(new DataView(rtcAckBufRef.current.buffer));
     const diagnosticMetricsRef = useRef({
         retransmissions: 0,
         packetsSent: 0,
@@ -255,6 +257,7 @@ function InstantDropContent() {
     const heartbeatIntervalRef = useRef<any>(null);
     const workerRef = useRef<Worker | null>(null);
     const totalReceivedChunksCountRef = useRef(0); // v02.1.39 (Patch 12): Lightweight Flow Control
+    const hasReceivedFileDoneRef = useRef(false); // v02.2.72: Atomic Batch Sync Flag
 
     // v02.2.23: Full Context Matrix (12 Pipe Capacity)
     const remoteDescriptionSetsRef = useRef<boolean[]>(new Array(12).fill(false));
@@ -1114,12 +1117,19 @@ ${capturedLogsRef.current.join('\n')}
                 const cleared = e.data.bytesCleared || 0;
                 diagnosticMetricsRef.current.bytesCleared += cleared;
                 gpeInFlightBytesRef.current = Math.max(0, gpeInFlightBytesRef.current - cleared);
+            } else if (e.data.type === 'file-done') {
+                 // v02.2.72: Atomic Sync Pulse
+                 const fIdx = e.data.fileIdx;
+                 if (modeRef.current === 'receive') {
+                     logDebug(`Receiver: File-${fIdx} Processed. Signaling Sender.`);
+                     sendControlMsg({ type: 'file-done', fileIdx: fIdx });
+                 } else {
+                     logDebug(`Sender: Confirmed File-${fIdx} reassembled on receiver.`);
+                     hasReceivedFileDoneRef.current = true;
+                 }
             } else if (e.data.type === 'all-done') {
                  logDebug("Receiver: Data fully reassembled. Verifying...");
                  if (doneWaitingTimeoutRef.current) { clearTimeout(doneWaitingTimeoutRef.current); doneWaitingTimeoutRef.current = null; }
-                 
-                 // v02.1.39 (Patch 23): Reactive Handshake Trigger
-                 // Instead of sending handshake here, we set a flag that the effect watches
                  setStatus('done-waiting');
             }
         };
@@ -1641,8 +1651,6 @@ ${capturedLogsRef.current.join('\n')}
         dc.onopen = () => {
             logDebug(`Γ£à DataChannel ${channelIdx} OPEN (Mode: ${modeRef.current})`);
             
-            // v02.2.27: Late-Joiner Metadata Catch-up
-            // If we are already transferring, this new channel needs the current file info!
             if (modeRef.current === 'send' && currentTransferRef.current) {
                 logDebug(`--- [SYNC] Catch-up Metadata for Channel-${channelIdx} ---`);
                 try {
@@ -1653,18 +1661,16 @@ ${capturedLogsRef.current.join('\n')}
                 } catch(e) {}
             }
 
-            // v02.0.8: Start transfer as soon as ANY channel is open (resilient to slow index-0)
             const openCount = dataChannelsRef.current.filter(c => c && c.readyState === 'open').length;
             if (openCount >= 1 && modeRef.current === 'send' && !isActive.current) {
                 logDebug(`DataChannel(s) OPEN (${openCount}/${CHANNELS}) - Tachyon Start Triggered (v10.5)`);
-                isActive.current = true; // Guard immediately to prevent double-trigger
+                isActive.current = true;
                 setTimeout(() => {
                     logDebug("Starting Ultimate-Gold parallel transfer...");
                     setStatus('transferring');
-                    // Start speed timer
                     lastBytesRef.current = 0;
                     if (speedTimerRef.current) clearInterval(speedTimerRef.current);
-                    // v02.1.32: Performance Monitor (5s Interval)
+                    
                     let prevBytes = 0;
                     setInterval(async () => {
                         const currentTotal = totalSentBytesRef.current + totalReceivedBytesRef.current;
@@ -1673,7 +1679,6 @@ ${capturedLogsRef.current.join('\n')}
                         currentMBpsRef.current = speedNum;
                         setTransferSpeed(speedNum); 
                         
-                        // v02.1.70: Deep Peer Stats Pulse (GPE-7)
                         const statsLogs: string[] = [];
                         for (let i = 0; i < peersRef.current.length; i++) {
                             const peer = peersRef.current[i];
@@ -1695,7 +1700,6 @@ ${capturedLogsRef.current.join('\n')}
 
                         console.log(`%c [HYDRA MONITOR] INSTANT SPEED: ${speed} MB/s`, "color: #00ff00; font-weight: bold;");
                         
-                        // v02.2.65: Chunk Dispatch Rate Telemetry (ceiling diagnostic)
                         const chunksThisCycle = chunksSentSinceScaleRef.current;
                         const effectiveMBps = (chunksThisCycle * dynamicChunkSizeRef.current / 5 / 1024 / 1024).toFixed(2);
                         logDebug(`📊 Dispatch: ~${chunksThisCycle} chunks/5s (${effectiveMBps} MB/s effective), MTU=${Math.round(dynamicChunkSizeRef.current/1024)}KB, Gate=${(gpeInFlightBytesRef.current/1024/1024).toFixed(1)}MB in-flight`);
@@ -1707,29 +1711,42 @@ ${capturedLogsRef.current.join('\n')}
                 }, 500);
             }
         };
+
         dc.onmessage = (e) => {
             if (modeRef.current === 'receive') {
                 handleIncomingData(e.data, channelIdx);
             } else {
-                // v02.1.37: Binary-Speed Handshake
-                if (e.data instanceof ArrayBuffer && e.data.byteLength >= 8) {
+                // v02.2.72: Binary Signal Parser (Nitro-RTC)
+                if (e.data instanceof ArrayBuffer) {
                     const view = new DataView(e.data);
-                    const chunkIdx = view.getUint32(4, true);
-                    const fileIdx = view.getUint32(0, true);
-                    if (chunkIdx === 0xFFFFFFFB) { // Batch-ACK Pulsar
-                        logDebug("Sender: Tachyon Handshake received! Closing loop.");
-                        setStatus('done');
+                    
+                    // Tachyon RTC-ACK (P2P Flow Control)
+                    if (view.byteLength === 8 && view.getUint16(0) === 0xFFFF && view.getUint16(2) === 0xEEEE) {
+                        const cleared = view.getUint32(4, true);
+                        gpeInFlightBytesRef.current = Math.max(0, gpeInFlightBytesRef.current - cleared);
                         return;
                     }
-                }
-                    if (typeof e.data === 'string') {
-                        try {
-                            const msg = JSON.parse(e.data);
-                            handleControlMessage(msg);
-                        } catch(e) {}
+
+                    // Legacy Handshake / Generation Checks
+                    if (view.byteLength >= 8) {
+                        const chunkIdx = view.getUint32(4, true);
+                        const fileIdx = view.getUint32(0, true);
+                        if (chunkIdx === 0xFFFFFFFB) { // Batch-ACK Pulsar
+                            logDebug("Sender: Tachyon Handshake received! Closing loop.");
+                            setStatus('done');
+                            return;
+                        }
                     }
                 }
-            };
+                
+                if (typeof e.data === 'string') {
+                    try {
+                        const msg = JSON.parse(e.data);
+                        handleControlMessage(msg);
+                    } catch(e) {}
+                }
+            }
+        };
         dc.onclose = () => {
             console.log("DataChannel Closed");
             // v02.1.39 (Patch 3): Do NOT set isActive=false on channel close.
@@ -1803,11 +1820,25 @@ ${capturedLogsRef.current.join('\n')}
             };
             lastMetadataRef.current = meta;
 
-            // v02.0.22 Pipeline: Send Metadata then immediately stream chunks
+            // v02.2.0.22 Pipeline: Send Metadata then immediately stream chunks
             logDebug(`Sender: Sending Pipelined Metadata for ${file.name}`);
             sendControlMsg(meta);
 
+            // v02.2.72: Reset sync flag before transfer
+            hasReceivedFileDoneRef.current = false;
             await transferFileP2PParallel(currentFiles[i], i);
+
+            // v02.2.72: Tachyon Atomic Sync Gate (fixes 1/10 file issue)
+            // We wait up to 10 seconds for the receiver to signal 'file-done' via Mumbai relay.
+            // If we don't wait, the next file's metadata can collide with previous chunks.
+            const syncStart = Date.now();
+            logDebug(`Sender: Awaiting File-${i} completion confirmation from receiver...`);
+            while (!hasReceivedFileDoneRef.current && (Date.now() - syncStart < 10000)) {
+                await new Promise(resolve => setTimeout(resolve, 50));
+                if (!isActive.current) break;
+            }
+            logDebug(`Sender: Proceeding to next file (Confirmed: ${hasReceivedFileDoneRef.current})`);
+
             if (!isActive.current && statusRef.current !== 'done' && statusRef.current !== 'done-waiting') {
                 logDebug("Sender: Transfer loop interrupted by Sentinel reset. Aborting finalization chain.");
                 return;
@@ -2547,17 +2578,28 @@ ${capturedLogsRef.current.join('\n')}
                 handleControlMessage(msg);
             } catch (e) {}
         } else if (data instanceof ArrayBuffer) {
-            const packetLen = data.byteLength; // [NITRO: v02.2.15] - Capture BEFORE postMessage transfer
+            const packetLen = data.byteLength;
             const view = new DataView(data);
-            // v02.2.10.9: Handle 12-byte Nitro Header
             const fileIdx = view.getUint16(0, true);
             const gen = view.getUint16(2, true);
             const chunkIdx = view.getUint32(4, true);
             const byteOffset = view.getUint32(8, true);
             
-            if (chunkIdx === 0xFFFFFFFF) return; // Nitro Warmup
+            // v02.2.72: Tachyon RTC-ACK Pulse (Sub-20ms Flow Control)
+            if (chunkIdx < 0xFFFFFFF0) {
+                const dc = dataChannelsRef.current[_channelIdx];
+                if (dc && dc.readyState === 'open') {
+                    const ackView = rtcAckViewRef.current;
+                    ackView.setUint16(0, 0xFFFF);
+                    ackView.setUint16(2, 0xEEEE);
+                    ackView.setUint32(4, packetLen, true);
+                    // v02.2.72: Explicit cast to ArrayBuffer to avoid SharedArrayBuffer type mismatch in strict TS
+                    try { dc.send(rtcAckBufRef.current.buffer as ArrayBuffer); } catch(e) {}
+                }
+            }
+
+            if (chunkIdx === 0xFFFFFFFF) return; 
             
-            // v02.2.10.9: Drop stale generation packets immediately
             if (modeRef.current === 'receive') {
                 const pipeIdx = Math.floor(_channelIdx / CHANNELS_PER_PIPE);
                 if (gen !== pipeGenerationRef.current[pipeIdx]) return;
@@ -2572,37 +2614,10 @@ ${capturedLogsRef.current.join('\n')}
                     
                     if (doneWaitingTimeoutRef.current) clearTimeout(doneWaitingTimeoutRef.current);
                     doneWaitingTimeoutRef.current = setTimeout(() => {
-                        if (statusRef.current === 'done-waiting') {
-                            setStatus('done');
-                            // v02.2.43: Sentinel Flight Report (Receiver)
-                            if (typeof window !== 'undefined') {
-                                (window as any).__TACHYON_FLIGHT_REPORTS__ = (window as any).__TACHYON_FLIGHT_REPORTS__ || [];
-                                (window as any).__TACHYON_FLIGHT_REPORTS__.push({
-                                    type: 'receiver',
-                                    room: roomId,
-                                    time: Date.now(),
-                                    files: receivedFiles.length,
-                                    tunnel: useEmergencyTunnel,
-                                    logs: capturedLogsRef.current.slice(-20)
-                                });
-                                // v02.2.43: Auto-Navigation Hook for Trial gauntlet
-                                if (roomId.startsWith('0000')) {
-                                    const roomNum = parseInt(roomId);
-                                    if (roomNum > 0 && roomNum < 20) {
-                                        const nextRoom = (roomNum + 1).toString().padStart(6, '0');
-                                        logDebug(`≡ƒÜÇ TRIAL ${roomNum} SUCCESS. Auto-navigating to Room ${nextRoom} in 5s...`);
-                                        setTimeout(() => {
-                                            window.location.href = `${window.location.origin}${window.location.pathname}?room=${nextRoom}&v=sentinel&trial=${roomNum+1}`;
-                                        }, 5000);
-                                    }
-                                }
-                            }
-                        }
+                        if (statusRef.current === 'done-waiting') setStatus('done');
                     }, 10000); 
                 } else if (chunkIdx === 0xFFFFFFFE) {
                     expectedChunksMapRef.current.set(fileIdx, payloadCount);
-                    logDebug(`Receiver: File-${fileIdx} EOF Signal. Total Chunks expected: ${payloadCount}. Checking Symmetry Pulse...`);
-                    // v02.2.10.6b: Trigger Immediate Pulse Check for Late-EOF arrival
                     triggerFileCompletion(fileIdx);
                 }
                 workerRef.current?.postMessage({
@@ -2626,60 +2641,25 @@ ${capturedLogsRef.current.join('\n')}
                     sendControlMsg({ type: 'chunk-ack', ts: Number(senderTs), pipeIdx: _channelIdx });
                 }
             } else {
+                // v02.2.10.8: Primary Data Dispatch
                 const incomingMeta = fileMetas.current.get(fileIdx);
-                if (incomingMeta?.isMobile) remoteCapabilityRef.current.isMobile = true; // Update from metadata if missed in handshake
-                
-                const byteOffset = (data.byteLength >= 12) ? view.getUint32(8, true) : undefined;
-                const packetGen = (data.byteLength >= 16) ? view.getUint32(12, true) : 0;
-                
-                const currentPipeGen = pipeGenerationRef.current[Math.floor(_channelIdx / CHANNELS_PER_PIPE)] || 0;
-                if (packetGen !== 0 && packetGen < currentPipeGen) {
-                    return; 
-                }
+                if (incomingMeta?.isMobile) remoteCapabilityRef.current.isMobile = true;
 
                 if (!reassemblyMapRef.current.has(fileIdx)) {
                     reassemblyMapRef.current.set(fileIdx, new Set());
                 }
-                const fileBitset = reassemblyMapRef.current.get(fileIdx)!;
-                fileBitset.add(chunkIdx);
+                reassemblyMapRef.current.get(fileIdx)!.add(chunkIdx);
                 
                 workerRef.current.postMessage({
                     type: 'chunk',
                     fileIdx,
                     chunkIdx,
-                    byteOffset, 
-                    payloadCount: byteOffset, 
+                    byteOffset,
                     originalBuffer: data,
-                    offset: 12 // v02.2.10.9: Nitro 12-byte header
+                    offset: 12
                 }, [data]);
-
-                // v02.2.10.6b: Use triggerFileCompletion for Chunk arrival
+                
                 triggerFileCompletion(fileIdx);
-                
-                const currentChunksReceived = fileBitset.size;
-                totalReceivedChunksCountRef.current++; 
-                
-                if (currentChunksReceived % 10 === 0) {
-                    if (incomingMeta && incomingMeta.size) {
-                        const totalChunksExpected = Math.ceil(incomingMeta.size / CHUNK_SIZE);
-                        const fileProgress = Math.floor((currentChunksReceived / totalChunksExpected) * 100);
-                        setProgress(fileProgress);
-                    } else {
-                        setProgress(p => Math.min(99, p + 2)); 
-                    }
-                    // v02.2.46: M2M Synchronous ACKing (ACK every chunk to prevent gate stalls)
-                    const isM2M = remoteCapabilityRef.current.isMobile && isMobileDevice();
-                    const pullInterval = isM2M ? 1 : (currentChunksReceived < 5 ? 1 : 2);
-                    if (currentChunksReceived % pullInterval === 0) {
-                        // v02.2.15: Explicit Length Signal using pre-transfer packetLen
-                        const bytesToClear = pullInterval * packetLen;
-                        sendControlMsg({ 
-                            type: 'gpe-pull', 
-                            bytesCleared: bytesToClear, 
-                            pipeIdx: _channelIdx 
-                        }, true);
-                    }
-                }
             }
         }
     };
