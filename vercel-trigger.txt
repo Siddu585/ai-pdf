@@ -1,7 +1,7 @@
-v02.2.71 (Tachyon Sovereign - 10MB/s Unshackled) Deployment Trigger at 2026-04-19T11:05:00Z.
-Fix: 32x BDP Window Inflation (128MB Cap) for cellular jitter.
-Fix: Pacer Yield compressed to 5ms (doubled dispatch rate).
-Fix: Tiered MTU (64KB/48KB/32KB) based on real-time RTT.
-Architecture: Optimized 8-Pipe Dense Core.
+v02.2.72 (Tachyon Sovereign + RTC-ACK - 10MB/s Sustained) Deployment Trigger at 2026-04-19T15:45:00Z.
+Fix: P2P RTC-ACK Signal (Sub-20ms flow control) - Bypassing Signaling Server Latency.
+Fix: Atomic Batch Sync Gate - Eliminates multi-file reassembly race conditions.
+Fix: hasReceivedFileDoneRef gating (Ensures receiver ready before metadata blast).
+Architecture: Nitro standard 8-Pipe Dense Core with RTC-ACK flow control.
 Live Production Mode (LPM) Active.
-Symmetry Verified.
+Target: 10/10 File Success at 10 MB/s.
