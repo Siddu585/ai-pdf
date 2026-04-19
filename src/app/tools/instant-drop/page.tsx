@@ -41,14 +41,13 @@ import { PaywallModal } from "@/components/layout/PaywallModal";
 // v02.2.63 (Tachyon Omega - Zenith Surgical) - 5 Surgical Patches (Rollback Debounce, Migration Guard, Active BDP Gate, MTU Floor Removal, NACK Throttling)
 // v02.2.64 (Tachyon Omega - Gate Unblocker) - GPE 8MB Floor Removal + ICE-based activePipeCount + Unified BDP Formula
 // v02.2.65 (Tachyon Omega - MTU Shield) - File-start MTU grace period + Permanent pipe retirement + Dispatch rate telemetry
-const VERSION = "v02.2.74 (Tachyon RTC-ACK â‰¡Æ’Ã´â•‘ Leak-Fix)"; // v02.2.74: Cumulative byte accounting + Atomic Sync Guard
+const VERSION = "v02.2.75 (Tachyon RTC-ACK â‰¡Æ’Ã´â•‘ BDP-XL)"; // v02.2.75: 16-Pipe saturation + Telemetry Fix
 
 
 function getEngineConfig(engine: 'M2M' | 'HYBRID' | 'NITRO') {
     if (engine === 'M2M') {
         return {
-            pipes: 12, 
-            pacerThreshold: 64 * 1024 * 1024, // v02.2.73: 64MB window for high-latency cellular (600ms RTT)
+            pipes: 16, // v02.2.75: Expanded BDP saturation for High-RTT mobile links (600ms)            pacerThreshold: 64 * 1024 * 1024, // v02.2.73: 64MB window for high-latency cellular (600ms RTT)
             mtuLimit: 32 * 1024, 
             nackBackoff: 500 
         };
@@ -1980,6 +1979,7 @@ ${capturedLogsRef.current.join('\n')}
         // v02.2.68: Fix 1 â€” Pre-read Entire File for M2M (Zero-Yield Hot Path)
         const isSelfMobile = isMobileDevice();
         const isM2M = isSelfMobile && remoteCapabilityRef.current.isMobile;
+        const config = getEngineConfig(isM2M ? 'M2M' : 'NITRO');
         let fileBuffer: Uint8Array | null = null;
         if (isM2M && file.size <= 150 * 1024 * 1024) {
              const ab = await file.arrayBuffer();
@@ -2345,6 +2345,7 @@ ${capturedLogsRef.current.join('\n')}
                             unifiedPacket.set(chunkData, 12);
 
                             dc.send(unifiedPacket as any);
+                            lastChunkSeqRef.current = currentSeq; // v02.2.75: Telemetry Recovery
                             
                             // Cache for NACK recovery
                             const cacheKey = `${index}_${currentSeq}`;
@@ -2654,6 +2655,13 @@ ${capturedLogsRef.current.join('\n')}
                 } else if (chunkIdx === 0xFFFFFFFE) {
                     expectedChunksMapRef.current.set(fileIdx, payloadCount);
                     triggerFileCompletion(fileIdx);
+                } else if (chunkIdx === 0xFFFFFFFB) {
+                    // v02.2.75: Nitro-Completion Trigger
+                    if (modeRef.current === 'send' && statusRef.current === 'done-waiting') {
+                        logDebug("Sender: Received P2P Batch-ACK! Closing Session.");
+                        setStatus('done');
+                        isActive.current = false;
+                    }
                 }
                 workerRef.current?.postMessage({
                     type: 'chunk',
