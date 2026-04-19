@@ -1,5 +1,5 @@
-v02.2.47 (Tachyon Omega - Solar Flare) Deployment Trigger at 2026-04-07T14:45:00Z.
-Critical WebRTC Stability Fix: ReferenceError & STUN Cleanup.
-Backend Health Root Implementation.
+v02.2.70 (Sovereign Engine - 10MB/s Final) Deployment Trigger at 2026-04-19T10:45:00Z.
+Fix: Resolved CPU Saturation Starvation (v02.2.69) with Anti-Spin Yields.
+Performance: Adaptive Flow Control & 1.2x Tightened Gate for 10MB/s M2M.
 Live Production Mode (LPM) Active.
 Symmetry Verified.
