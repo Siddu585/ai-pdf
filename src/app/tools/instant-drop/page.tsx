@@ -41,7 +41,7 @@ import { PaywallModal } from "@/components/layout/PaywallModal";
 // v02.2.63 (Tachyon Omega - Zenith Surgical) - 5 Surgical Patches (Rollback Debounce, Migration Guard, Active BDP Gate, MTU Floor Removal, NACK Throttling)
 // v02.2.64 (Tachyon Omega - Gate Unblocker) - GPE 8MB Floor Removal + ICE-based activePipeCount + Unified BDP Formula
 // v02.2.65 (Tachyon Omega - MTU Shield) - File-start MTU grace period + Permanent pipe retirement + Dispatch rate telemetry
-const VERSION = "v02.2.73 (Tachyon RTC-ACK â‰¡Æ’Ã´â•‘ P2P Sync)"; // v02.2.73: Eliminates 10s sync gap, throttles return noise
+const VERSION = "v02.2.74 (Tachyon RTC-ACK â‰¡Æ’Ã´â•‘ Leak-Fix)"; // v02.2.74: Cumulative byte accounting + Atomic Sync Guard
 
 
 function getEngineConfig(engine: 'M2M' | 'HYBRID' | 'NITRO') {
@@ -239,6 +239,8 @@ function InstantDropContent() {
     const reassembledCount = useRef(0);
     const reassemblyMapRef = useRef<Map<number, Set<number>>>(new Map()); // v02.2.10.6a: Per-File Reassembly Bitsets
     const rtcAckCounterRef = useRef<number>(0); // v02.2.73: 1:4 RTC-ACK Compression Counter
+    const pendingAckBytesRef = useRef<number>(0); // v02.2.74: Cumulative Byte Accounting
+    const hasSentDoneForFileRef = useRef<Record<number, boolean>>({}); // v02.2.74: Atomic SYNC Guard
     const expectedChunksMapRef = useRef<Map<number, number>>(new Map()); // v02.2.10.6a: Multi-File Target Tracking
     const nextExpectedChunkRef = useRef<number>(0); 
     const expectedTotalFiles = useRef(-1);
@@ -2596,31 +2598,37 @@ ${capturedLogsRef.current.join('\n')}
             const chunkIdx = view.getUint32(4, true);
             const byteOffset = view.getUint32(8, true);
             
-            // v02.2.73: Tachyon RTC-ACK â‰¡Æ’Ã´â•‘ P2P Sync (Eliminates 10s Signaling Wait)
+            // v02.2.74: Tachyon Leak-Fix (Full-Sum Byte Accounting)
             const isDataChunk = chunkIdx < 0xFFFFFFF0;
             const isFileEOF = chunkIdx === 0xFFFFFFFE;
             
             if (isDataChunk || isFileEOF) {
+                pendingAckBytesRef.current += packetLen;
                 const dc = dataChannelsRef.current[_channelIdx];
                 if (dc && dc.readyState === 'open') {
                     rtcAckCounterRef.current++;
                     
-                    // Throttle: Send ACK every 4 packets OR immediately if File is Done
-                    if (rtcAckCounterRef.current % 4 === 0 || isFileEOF) {
+                    // Throttle: Send ACK every 2 packets OR immediately if File is Done
+                    const shouldSyncP2P = isFileEOF && !hasSentDoneForFileRef.current[fileIdx];
+                    if (rtcAckCounterRef.current % 2 === 0 || shouldSyncP2P) {
                         const ackView = rtcAckViewRef.current;
                         ackView.setUint16(0, 0xFFFF);
                         ackView.setUint16(2, 0xEEEE);
                         
-                        // Payload: [31: DONE_FLAG] [30-16: fileIdx] [15-0: bytesToClear]
-                        let payload = (packetLen & 0xFFFF);
-                        if (isFileEOF) {
+                        // Payload: [31: DONE_FLAG] [30-16: fileIdx] [15-0: totalBytesToClear]
+                        let payload = (pendingAckBytesRef.current & 0xFFFF);
+                        if (shouldSyncP2P) {
                             payload |= 0x80000000; // DONE_FLAG
                             payload |= ((fileIdx & 0x7FFF) << 16); // File Index
-                            logDebug(`Receiver: P2P-SYNC dispatched for File-${fileIdx}`);
+                            hasSentDoneForFileRef.current[fileIdx] = true;
+                            logDebug(`[HYDRA] Receiver: P2P-SYNC dispatched for File-${fileIdx}`);
                         }
 
                         ackView.setUint32(4, payload, true);
-                        try { dc.send(rtcAckBufRef.current.buffer as ArrayBuffer); } catch(e) {}
+                        try { 
+                            dc.send(rtcAckBufRef.current.buffer as ArrayBuffer); 
+                            pendingAckBytesRef.current = 0; // Reset sum after successful dispatch
+                        } catch(e) {}
                     }
                 }
             }
