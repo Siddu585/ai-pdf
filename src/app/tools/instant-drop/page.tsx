@@ -41,16 +41,16 @@ import { PaywallModal } from "@/components/layout/PaywallModal";
 // v02.2.63 (Tachyon Omega - Zenith Surgical) - 5 Surgical Patches (Rollback Debounce, Migration Guard, Active BDP Gate, MTU Floor Removal, NACK Throttling)
 // v02.2.64 (Tachyon Omega - Gate Unblocker) - GPE 8MB Floor Removal + ICE-based activePipeCount + Unified BDP Formula
 // v02.2.65 (Tachyon Omega - MTU Shield) - File-start MTU grace period + Permanent pipe retirement + Dispatch rate telemetry
-const VERSION = "v02.2.72 (Tachyon RTC-ACK - 10MB/s Sustained)"; // v02.2.72: Peer-to-Peer Flow Control (Fixes signaling latency)
+const VERSION = "v02.2.73 (Tachyon RTC-ACK â‰¡Æ’Ã´â•‘ P2P Sync)"; // v02.2.73: Eliminates 10s sync gap, throttles return noise
 
 
 function getEngineConfig(engine: 'M2M' | 'HYBRID' | 'NITRO') {
     if (engine === 'M2M') {
         return {
-            pipes: 12, // Extreme Concurrency for Mobile Carriers
-            pacerThreshold: 32 * 1024 * 1024, // 32MB Deep Buffer for Jitter
-            mtuLimit: 32 * 1024, // Survival MTU (Carrier-Tested)
-            nackBackoff: 500 // Faster re-send recovery
+            pipes: 12, 
+            pacerThreshold: 64 * 1024 * 1024, // v02.2.73: 64MB window for high-latency cellular (600ms RTT)
+            mtuLimit: 32 * 1024, 
+            nackBackoff: 500 
         };
     }
     return {
@@ -199,14 +199,14 @@ function InstantDropContent() {
     const chunksAtFloorRef = useRef(0); // v02.2.66: Counter to break the MTU floor trap
     const lastPulseSentAtRef = useRef(0); // v02.2.66: Gating redundant pulses
     const rollbackTriggerRef = useRef<number | null>(null); // v02.2.46: HSFC Rollback Signal
-    const lastRollbackAtRef = useRef<number>(0); // v02.2.58: Debounce — suppress cascade rollbacks within 3s
+    const lastRollbackAtRef = useRef<number>(0); // v02.2.58: Debounce â€” suppress cascade rollbacks within 3s
     const currentFileStartTimeRef = useRef<number>(Date.now()); // v02.2.65: MTU startup grace timestamp
     const lastChunkSeqRef = useRef<number>(0); // v02.2.65: Dispatch rate telemetry
     const gpeBlockedSinceRef = useRef<number | null>(null); // v02.1.56: Deadlock Safety
     const lastProgressTimeRef = useRef<number>(Date.now()); // v02.1.77: Deadlock Buster
     const lastChannelIndexRef = useRef(0); // v02.2.71: Persistent Round Robin
     
-    // v02.2.68: Fix 3 & 5 — Performance Caching Refs
+    // v02.2.68: Fix 3 & 5 â€” Performance Caching Refs
     const cachedOpenChannelsRef = useRef<RTCDataChannel[] | null>(null);
     const cachedTotalBufferedRef = useRef<number>(0);
     const channelCacheTsRef = useRef<number>(0);
@@ -238,6 +238,7 @@ function InstantDropContent() {
     const workerHeartbeatRef = useRef<number>(Date.now()); // v02.2.08: Worker Pulse
     const reassembledCount = useRef(0);
     const reassemblyMapRef = useRef<Map<number, Set<number>>>(new Map()); // v02.2.10.6a: Per-File Reassembly Bitsets
+    const rtcAckCounterRef = useRef<number>(0); // v02.2.73: 1:4 RTC-ACK Compression Counter
     const expectedChunksMapRef = useRef<Map<number, number>>(new Map()); // v02.2.10.6a: Multi-File Target Tracking
     const nextExpectedChunkRef = useRef<number>(0); 
     const expectedTotalFiles = useRef(-1);
@@ -257,7 +258,7 @@ function InstantDropContent() {
     const heartbeatIntervalRef = useRef<any>(null);
     const workerRef = useRef<Worker | null>(null);
     const totalReceivedChunksCountRef = useRef(0); // v02.1.39 (Patch 12): Lightweight Flow Control
-    const hasReceivedFileDoneRef = useRef(false); // v02.2.72: Atomic Batch Sync Flag
+    const hasReceivedFileDoneRef = useRef<Record<number, boolean>>({}); // v02.2.73: Atomic Per-File P2P Sync Map
 
     // v02.2.23: Full Context Matrix (12 Pipe Capacity)
     const remoteDescriptionSetsRef = useRef<boolean[]>(new Array(12).fill(false));
@@ -267,14 +268,14 @@ function InstantDropContent() {
     useEffect(() => {
         (window as any).__CHAOS_MODE__ = (active: boolean) => {
             diagnosticMetricsRef.current.isChaosMode = active;
-            logDebug(`≡ƒÜ¿ Chaos Mode: ${active ? 'ACTIVE (Injecting 100ms Jitter)' : 'OFF'}`);
+            logDebug(`â‰¡Æ’ÃœÂ¿ Chaos Mode: ${active ? 'ACTIVE (Injecting 100ms Jitter)' : 'OFF'}`);
         };
         (window as any).__SET_PIPE_LATENCY__ = (pipeIdx: number, ms: number) => {
             logDebug(`[OMEGA] CHAOS: Throttling Pipe-${pipeIdx} to ${ms}ms latency.`);
             pipeLatenciesRef.current[pipeIdx] = ms;
         };
         (window as any).__FORCE_RELAY__ = () => {
-            logDebug("≡ƒ¢í∩╕Å FORCING RELAY: Stripping STUN/Host candidates...");
+            logDebug("â‰¡Æ’Â¢Ã­âˆ©â••Ã… FORCING RELAY: Stripping STUN/Host candidates...");
             relayServersRef.current = relayServersRef.current.filter(s => s.urls.includes("turn:"));
         };
         (window as any).__GET_OMEGA_HEALTH__ = () => ({
@@ -344,13 +345,13 @@ function InstantDropContent() {
             try {
                 const res = await fetch(url);
                 if (res.status < 500) {
-                    logDebug(`Γ£à [PRE-FLIGHT] Backend REACHABLE (Status: ${res.status}). Signal GREEN.`);
+                    logDebug(`Î“Â£Ã  [PRE-FLIGHT] Backend REACHABLE (Status: ${res.status}). Signal GREEN.`);
                     setWsConnected(true);
                 } else {
-                    logDebug(`ΓÜá∩╕Å [PRE-FLIGHT] Backend Server Error: ${res.status}`);
+                    logDebug(`Î“ÃœÃ¡âˆ©â••Ã… [PRE-FLIGHT] Backend Server Error: ${res.status}`);
                 }
             } catch (e: any) {
-                logDebug(`Γ¥î [PRE-FLIGHT] Backend UNREACHABLE: ${e.message}`);
+                logDebug(`Î“Â¥Ã® [PRE-FLIGHT] Backend UNREACHABLE: ${e.message}`);
                 setWsConnected(false);
             }
         };
@@ -414,17 +415,17 @@ function InstantDropContent() {
                 })
             });
             if (res.ok) {
-                logDebug(`Γ£à [DIAGNOSTICS] Upload Successful (${mode}). Forensic ID: ${roomId}`);
+                logDebug(`Î“Â£Ã  [DIAGNOSTICS] Upload Successful (${mode}). Forensic ID: ${roomId}`);
             } else {
-                logDebug(`Γ¥î [DIAGNOSTICS] Upload Failed (Status: ${res.status})`);
+                logDebug(`Î“Â¥Ã® [DIAGNOSTICS] Upload Failed (Status: ${res.status})`);
             }
         } catch (e: any) {
-            logDebug(`Γ¥î [DIAGNOSTICS] Upload Error: ${e.message}`);
+            logDebug(`Î“Â¥Ã® [DIAGNOSTICS] Upload Error: ${e.message}`);
         }
     }
 
     const reportIssue = () => {
-        logDebug("≡ƒÜ¿ [FORENSIC] Initiating Dual-Peer Sync Diagnostic Upload...");
+        logDebug("â‰¡Æ’ÃœÂ¿ [FORENSIC] Initiating Dual-Peer Sync Diagnostic Upload...");
         uploadDiagnostics(); // Local Upload
         sendControlMsg({ type: 'request-diagnostics' }); // Remote Trigger
         alert("Diagnostics uploaded! Developer notified.");
@@ -525,7 +526,7 @@ function InstantDropContent() {
                     const logDump = capturedLogsRef.current.join('\n');
                     sendControlMsg({ type: 'diagnostic-dump', data: logDump });
                 } else if (msg.cmd === 'switch-to-sender') {
-                    logDebug("≡ƒÜÇ AI-Requested Role Swap: Switching to SENDER");
+                    logDebug("â‰¡Æ’ÃœÃ‡ AI-Requested Role Swap: Switching to SENDER");
                     const currentRoom = roomRef.current;
                     disconnectEverything();
                     setRoomId(currentRoom || "");
@@ -560,7 +561,7 @@ function InstantDropContent() {
                     const safeTotal = Number(msg.totalFiles);
 
                     if (isNaN(safeIdx)) {
-                        logDebug(`ΓÜá∩╕Å CRITICAL: Metadata index corrupt (Value: ${msg.currentIdx}). Ignoring...`);
+                        logDebug(`Î“ÃœÃ¡âˆ©â••Ã… CRITICAL: Metadata index corrupt (Value: ${msg.currentIdx}). Ignoring...`);
                         return;
                     }
 
@@ -580,7 +581,7 @@ function InstantDropContent() {
                     if (!nackQueueRef.current.has(nackKey)) {
                         nackQueueRef.current.set(nackKey, { fileIdx: msg.fileIdx, chunkIdx: msg.chunkIdx, ts: Date.now() });
                         if (nackQueueRef.current.size % 50 === 0) {
-                            logDebug(`≡ƒôÑ NACK Queue Growth: ${nackQueueRef.current.size} unique pending resends.`);
+                            logDebug(`â‰¡Æ’Ã´Ã‘ NACK Queue Growth: ${nackQueueRef.current.size} unique pending resends.`);
                         }
                     }
                 }
@@ -675,7 +676,7 @@ function InstantDropContent() {
                     if (rtt > 1500) {
                         // Emergency Bufferbloat Mode: Drop to 16KB immediately
                         dynamicChunkSizeRef.current = 16 * 1024;
-                        if (msg.ts % 10 === 0) logDebug("≡ƒÜ¿ BUFFERBLOAT DETECTED: Emergency MTU Reset (16KB)");
+                        if (msg.ts % 10 === 0) logDebug("â‰¡Æ’ÃœÂ¿ BUFFERBLOAT DETECTED: Emergency MTU Reset (16KB)");
                     } else if (rtt > 800 && diagnosticMetricsRef.current.retransmissions > 0) {
                         dynamicChunkSizeRef.current = Math.max(16 * 1024, dynamicChunkSizeRef.current - 8 * 1024);
                     } else if (rtt < 300) {
@@ -687,7 +688,7 @@ function InstantDropContent() {
                     }
 
                     if (msg.ts % 100 === 0) { 
-                        logDebug(`≡ƒôè Deep-Insight: OWTT=${diagnosticMetricsRef.current.owtt}ms MTU=${Math.round(dynamicChunkSizeRef.current/1024)}KB GPE=${Math.round(gpeInFlightBytesRef.current/1024)}KB [M2M:${isM2M}]`);
+                        logDebug(`â‰¡Æ’Ã´Ã¨ Deep-Insight: OWTT=${diagnosticMetricsRef.current.owtt}ms MTU=${Math.round(dynamicChunkSizeRef.current/1024)}KB GPE=${Math.round(gpeInFlightBytesRef.current/1024)}KB [M2M:${isM2M}]`);
                     }
                 }
                 break;
@@ -696,7 +697,7 @@ function InstantDropContent() {
                     gpeInFlightBytesRef.current = Math.max(0, gpeInFlightBytesRef.current - msg.bytesCleared);
                     gpePullRequestsRef.current++;
                     if (gpePullRequestsRef.current % 10 === 0) {
-                        logDebug(`≡ƒôÑ GPE Pull [${gpePullRequestsRef.current}]: Cleared ${Math.round(msg.bytesCleared/1024)}KB. In-Flight: ${Math.round(gpeInFlightBytesRef.current/1024)}KB`);
+                        logDebug(`â‰¡Æ’Ã´Ã‘ GPE Pull [${gpePullRequestsRef.current}]: Cleared ${Math.round(msg.bytesCleared/1024)}KB. In-Flight: ${Math.round(gpeInFlightBytesRef.current/1024)}KB`);
                     }
                 }
                 break;
@@ -738,13 +739,13 @@ ${capturedLogsRef.current.join('\n')}
                 break;
             case 'force-tunnel':
                 if (modeRef.current === 'send') {
-                    logDebug("≡ƒÜÇ Remote REQUEST: Forcing Emergency Tunnel Mode.");
+                    logDebug("â‰¡Æ’ÃœÃ‡ Remote REQUEST: Forcing Emergency Tunnel Mode.");
                     setUseEmergencyTunnel(true);
                 }
                 break;
             case 'direct-link':
                 if (msg.targetId === signalIdRef.current) {
-                    logDebug("≡ƒöù MATRIX LINK: Connection request received.");
+                    logDebug("â‰¡Æ’Ã¶Ã¹ MATRIX LINK: Connection request received.");
                     if (modeRef.current === 'receive') {
                         wsRef.current?.send(JSON.stringify({ type: 'receiver-ready', isMobile: isMobileDevice() }));
                     } else if (modeRef.current === 'send') {
@@ -757,7 +758,7 @@ ${capturedLogsRef.current.join('\n')}
                 if (modeRef.current === 'receive') {
                     console.log("%c[REMOTE DIAGNOSTICS RECEIVED]", "color: lime; font-weight: bold; font-size: 14px;");
                     console.log(msg.data);
-                    logDebug("≡ƒôÑ Remote Diagnostic Dump captured in Console.");
+                    logDebug("â‰¡Æ’Ã´Ã‘ Remote Diagnostic Dump captured in Console.");
                 }
                 break;
         }
@@ -798,7 +799,7 @@ ${capturedLogsRef.current.join('\n')}
                     const turnData = await turnRes.json();
                     if (Array.isArray(turnData)) {
                         relayServersRef.current = [...ICE_SERVERS.iceServers, ...turnData];
-                        logDebug(`Γ£à Relays Pre-fetched: ${turnData.length} servers ready.`);
+                        logDebug(`Î“Â£Ã  Relays Pre-fetched: ${turnData.length} servers ready.`);
                     }
                 }
             } catch (e) { console.error("Relay pre-fetch failed", e); }
@@ -1106,7 +1107,7 @@ ${capturedLogsRef.current.join('\n')}
                  logDebug(`Receiver: Worker reassembly complete for ${name}.`);
             } else if (e.data.type === 'nack') {
                 // v02.1.95: Loss Recovery Trigger
-                logDebug(`≡ƒ¢░∩╕Å Hole Detected! Requesting re-send for File-${e.data.fileIdx} Chunk-${e.data.chunkIdx}`);
+                logDebug(`â‰¡Æ’Â¢â–‘âˆ©â••Ã… Hole Detected! Requesting re-send for File-${e.data.fileIdx} Chunk-${e.data.chunkIdx}`);
                 sendControlMsg({ type: 'nack', fileIdx: e.data.fileIdx, chunkIdx: e.data.chunkIdx });
             } else if (e.data.type === 'need-metadata') {
                  const fIdx = e.data.fileIdx;
@@ -1125,7 +1126,7 @@ ${capturedLogsRef.current.join('\n')}
                      sendControlMsg({ type: 'file-done', fileIdx: fIdx });
                  } else {
                      logDebug(`Sender: Confirmed File-${fIdx} reassembled on receiver.`);
-                     hasReceivedFileDoneRef.current = true;
+                     hasReceivedFileDoneRef.current[fIdx] = true;
                  }
             } else if (e.data.type === 'all-done') {
                  logDebug("Receiver: Data fully reassembled. Verifying...");
@@ -1146,9 +1147,9 @@ ${capturedLogsRef.current.join('\n')}
         if (typeof window !== 'undefined' && 'wakeLock' in navigator) {
             try {
                 wakeLockRef.current = await (navigator as any).wakeLock.request('screen');
-                logDebug("Γ£à Screen Wake Lock Active (v02.2.10.7)");
+                logDebug("Î“Â£Ã  Screen Wake Lock Active (v02.2.10.7)");
             } catch (err: any) {
-                logDebug(`ΓÜá∩╕Å Wake Lock failed (Attempt ${retryCount}): ${err.message}`);
+                logDebug(`Î“ÃœÃ¡âˆ©â••Ã… Wake Lock failed (Attempt ${retryCount}): ${err.message}`);
                 if (retryCount < 5) setTimeout(() => requestWakeLock(retryCount + 1), 3000);
             }
         }
@@ -1224,7 +1225,7 @@ ${capturedLogsRef.current.join('\n')}
         if (wakeLockRef.current) {
             wakeLockRef.current.release().then(() => {
                 wakeLockRef.current = null;
-                logDebug("≡ƒöô Screen Wake Lock Released");
+                logDebug("â‰¡Æ’Ã¶Ã´ Screen Wake Lock Released");
             }).catch(() => {});
         }
     };
@@ -1270,7 +1271,7 @@ ${capturedLogsRef.current.join('\n')}
                     setTimeout(connect, 2000);
                 } else if (attempts >= 3) {
                     setStatus('error');
-                    logDebug("Γ¥î Persistent Signaling Failure after 3 attempts.");
+                    logDebug("Î“Â¥Ã® Persistent Signaling Failure after 3 attempts.");
                 }
             };
 
@@ -1294,7 +1295,7 @@ ${capturedLogsRef.current.join('\n')}
                     // v02.2.39: Re-trigger offer if stuck in waiting for 10s
                     const timeSinceStart = Date.now() - (startTimeRef.current || 0);
                     if (statusRef.current === 'waiting' && timeSinceStart > 10000 && timeSinceStart % 5000 < 2000) {
-                        logDebug("≡ƒ¢░∩╕Å Tachyon Glue: Re-broadcasting sender availability...");
+                        logDebug("â‰¡Æ’Â¢â–‘âˆ©â••Ã… Tachyon Glue: Re-broadcasting sender availability...");
                         ws.send(JSON.stringify({ type: 'sender-ready', roomId: finalRoomId, isMobile: true }));
                     }
 
@@ -1317,7 +1318,7 @@ ${capturedLogsRef.current.join('\n')}
                             remoteCapabilityRef.current.isMobile = !!data.isMobile; // Capture Peer Capability
                             // v02.1.68: Added 'connecting' status guard to prevent redundant resets during ICE.
                             if (isActive.current || isInitializingRef.current || statusRef.current === 'connecting') {
-                                logDebug(`ΓÜá∩╕Å Receiver Ready Sig Ignored: status=${statusRef.current} init=${isInitializingRef.current}`);
+                                logDebug(`Î“ÃœÃ¡âˆ©â••Ã… Receiver Ready Sig Ignored: status=${statusRef.current} init=${isInitializingRef.current}`);
                                 return;
                             }
                             const isM2M = isMobileDevice() && !!data.isMobile;
@@ -1333,10 +1334,10 @@ ${capturedLogsRef.current.join('\n')}
                             
                             // v02.2.26: [FINAL-SYNC] Refined Synchronous Handshake
                             // Reverted async handler to prevent mobile event swallow
-                            // v02.2.68: Fix 6 — Pre-retire Pipes 4–11 for Cross-Carrier M2M
+                            // v02.2.68: Fix 6 â€” Pre-retire Pipes 4â€“11 for Cross-Carrier M2M
                             const isLocal = typeof window !== 'undefined' && (window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1');
                             if (isM2M && !isLocal) {
-                                logDebug('M2M Cross-Carrier: Pre-retiring Pipes 4–11, using 4-pipe configuration');
+                                logDebug('M2M Cross-Carrier: Pre-retiring Pipes 4â€“11, using 4-pipe configuration');
                                 for (let p = 4; p < 12; p++) {
                                     pipeGenerationRef.current[p] = 99; // Mark as permanently retired
                                     diagnosticMetricsRef.current.pistonStats[p] = { speed: 0, health: 'red' };
@@ -1344,7 +1345,7 @@ ${capturedLogsRef.current.join('\n')}
                             }
 
                             const startStaggeredHandshake = async () => {
-                                // For cross-carrier M2M, only initialize Pipes 0–3
+                                // For cross-carrier M2M, only initialize Pipes 0â€“3
                                 const setupCount = (isM2M && !isLocal) ? 4 : config.pipes;
                                 for (let i = 0; i < setupCount; i++) {
                                     setupWebRTC(ws, true, i);
@@ -1373,7 +1374,7 @@ ${capturedLogsRef.current.join('\n')}
                                     try { await peer.addIceCandidate(new RTCIceCandidate(candidate)); } catch (e) {}
                                 }
                                 iceBuffersRef.current[pIdx] = [];
-                            } catch (e: any) { logDebug(`Γ¥î Pipe-${pIdx} Answer Error: ${e.message}`); }
+                            } catch (e: any) { logDebug(`Î“Â¥Ã® Pipe-${pIdx} Answer Error: ${e.message}`); }
                         } else if (data.type === 'ice-candidate') {
                             const pIdx = data.pipeIdx || 0;
                             const rawGen = data.gen;
@@ -1391,7 +1392,7 @@ ${capturedLogsRef.current.join('\n')}
                         
                         handleControlMessage(data);
                     } catch (err: any) {
-                        logDebug("Γ¥î Sender WS Msg Error: " + err.message);
+                        logDebug("Î“Â¥Ã® Sender WS Msg Error: " + err.message);
                     }
                 })();
             };
@@ -1473,12 +1474,12 @@ ${capturedLogsRef.current.join('\n')}
                     };
 
                     const hangTimeout = isM2M ? 1500 : 4000;
-                    logDebug(`⚠️ Pipe-${pipeIdx} HANG [Carrier Black-Hole] detected. Resuscitating after ${hangTimeout}ms...`);
+                    logDebug(`âš ï¸ Pipe-${pipeIdx} HANG [Carrier Black-Hole] detected. Resuscitating after ${hangTimeout}ms...`);
                     try { 
                         // v02.2.65: Permanent retirement for Pipes 4+ after Gen 2 failure
-                        // Stops wasteful signaling churn — these pipes never connect on cross-carrier 4G
+                        // Stops wasteful signaling churn â€” these pipes never connect on cross-carrier 4G
                         if (pipeIdx >= 4 && pipeGenerationRef.current[pipeIdx] >= 2) {
-                            logDebug(`🪦 Pipe-${pipeIdx} permanently retired [Carrier Black-Hole, Gen ${pipeGenerationRef.current[pipeIdx]}]`);
+                            logDebug(`ðŸª¦ Pipe-${pipeIdx} permanently retired [Carrier Black-Hole, Gen ${pipeGenerationRef.current[pipeIdx]}]`);
                             resuscitatorTimersRef.current[pipeIdx] = null;
                             diagnosticMetricsRef.current.pistonStats[pipeIdx] = { speed: 0, health: 'red' };
                             return; // do not call setupWebRTC again
@@ -1486,23 +1487,23 @@ ${capturedLogsRef.current.join('\n')}
 
                         // v02.2.60: Use the Guard to prevent rollback loops on unstable pipes
                         if (isM2M && !isPipeReadyForMigration()) {
-                            logDebug(`🛡️ Guarded Migration: Pipe-${pipeIdx} unstable. Delaying resuscitation...`);
+                            logDebug(`ðŸ›¡ï¸ Guarded Migration: Pipe-${pipeIdx} unstable. Delaying resuscitation...`);
                             return; 
                         }
 
                         pc.restartIce(); 
                         // v02.2.62 Prompt001: RESTORED HSFC ROLLBACK
-                        // v02.2.58: Debounce — if a rollback already fired within 3s, suppress this one.
+                        // v02.2.58: Debounce â€” if a rollback already fired within 3s, suppress this one.
                         // Without debounce, 8 simultaneously hung pipes fire 8 rollbacks to byte 0.
                         if (modeRef.current === 'send') {
                             const now = Date.now();
                             if (now - lastRollbackAtRef.current > 3000) {
                                 const lastCleared = diagnosticMetricsRef.current.bytesCleared || 0;
-                                logDebug(`🛡️ HSFC ROLLBACK: Signaling rollback to last known-good byte: ${lastCleared}`);
+                                logDebug(`ðŸ›¡ï¸ HSFC ROLLBACK: Signaling rollback to last known-good byte: ${lastCleared}`);
                                 rollbackTriggerRef.current = lastCleared;
                                 lastRollbackAtRef.current = now;
                             } else {
-                                logDebug(`🛡️ HSFC ROLLBACK suppressed (debounce): Pipe-${pipeIdx} within 3s window`);
+                                logDebug(`ðŸ›¡ï¸ HSFC ROLLBACK suppressed (debounce): Pipe-${pipeIdx} within 3s window`);
                             }
                         }
                     } catch (e) {}
@@ -1515,13 +1516,13 @@ ${capturedLogsRef.current.join('\n')}
                 setTimeout(() => {
                     const pc = peersRef.current[pipeIdx];
                     if (pc && (pc.iceConnectionState === 'new' || pc.iceConnectionState === 'checking')) {
-                        logDebug(`ΓÜá∩╕Å Pipe-${pipeIdx} Stuck in ${pc.iceConnectionState}. Escalating to Relay Fallback...`);
+                        logDebug(`Î“ÃœÃ¡âˆ©â••Ã… Pipe-${pipeIdx} Stuck in ${pc.iceConnectionState}. Escalating to Relay Fallback...`);
                         pc.close();
                         
                         // v02.2.29: Three-Strikes Pipe Retirement
                         // If we are already generational (Gen 2+), skip and retire the pipe.
                         if (pipeGenerationRef.current[pipeIdx] > 2) {
-                            logDebug(`≡ƒ¢í∩╕Å Pipe-${pipeIdx} Retired [3-Strikes FAIL]`);
+                            logDebug(`â‰¡Æ’Â¢Ã­âˆ©â••Ã… Pipe-${pipeIdx} Retired [3-Strikes FAIL]`);
                             diagnosticMetricsRef.current.pistonStats[pipeIdx] = { speed: 0, health: 'red' };
                             return;
                         }
@@ -1589,7 +1590,7 @@ ${capturedLogsRef.current.join('\n')}
                     if (resuscitatorTimersRef.current[pipeIdx]) {
                         clearTimeout(resuscitatorTimersRef.current[pipeIdx]);
                         resuscitatorTimersRef.current[pipeIdx] = null;
-                        logDebug(`✅ Pipe-${pipeIdx} Resuscitator Stand-down.`);
+                        logDebug(`âœ… Pipe-${pipeIdx} Resuscitator Stand-down.`);
                         
                         // v02.2.29: Piston-Gated Metadata Catch-up (Async)
                         // Send metadata ONCE per successful pipe open to minimize noise.
@@ -1614,7 +1615,7 @@ ${capturedLogsRef.current.join('\n')}
             // v02.2.10: Proactive Dead-Pipe Pruning (Log-Aware 701 Detector)
             peer.onicecandidateerror = (e: any) => {
                 if (e.errorCode === 701) {
-                    logDebug(`≡ƒ¢░∩╕Å ICE Candidate Error (Pipe-${pipeIdx}): ${e.errorCode} - ${e.errorText} [${e.url}]`);
+                    logDebug(`â‰¡Æ’Â¢â–‘âˆ©â••Ã… ICE Candidate Error (Pipe-${pipeIdx}): ${e.errorCode} - ${e.errorText} [${e.url}]`);
                     // Immediate health downgrade to avoid load-balancing onto blocked relay
                     diagnosticMetricsRef.current.pistonStats[pipeIdx] = { speed: 0, health: 'red' };
                 }
@@ -1630,7 +1631,7 @@ ${capturedLogsRef.current.join('\n')}
             // v02.1.70: Deep ICE Error Tracker (NMI Diagnostics)
             // @ts-ignore
             peer.onicecandidateerror = (e: any) => {
-                logDebug(`≡ƒ¢░∩╕Å ICE Candidate Error (Pipe-${pipeIdx}): ${e.errorCode} - ${e.errorText} [${e.url}]`);
+                logDebug(`â‰¡Æ’Â¢â–‘âˆ©â••Ã… ICE Candidate Error (Pipe-${pipeIdx}): ${e.errorCode} - ${e.errorText} [${e.url}]`);
             };
 
             if (isSender) {
@@ -1639,7 +1640,7 @@ ${capturedLogsRef.current.join('\n')}
                 ws.send(JSON.stringify({ type: 'offer', pipeIdx, gen, sdp: peer.localDescription }));
             }
         } catch (err: any) {
-            logDebug(`Γ¥î Pipe-${pipeIdx} Error: ${err.message}`);
+            logDebug(`Î“Â¥Ã® Pipe-${pipeIdx} Error: ${err.message}`);
         }
     };
 
@@ -1649,7 +1650,7 @@ ${capturedLogsRef.current.join('\n')}
         dc.binaryType = 'arraybuffer';
 
         dc.onopen = () => {
-            logDebug(`Γ£à DataChannel ${channelIdx} OPEN (Mode: ${modeRef.current})`);
+            logDebug(`Î“Â£Ã  DataChannel ${channelIdx} OPEN (Mode: ${modeRef.current})`);
             
             if (modeRef.current === 'send' && currentTransferRef.current) {
                 logDebug(`--- [SYNC] Catch-up Metadata for Channel-${channelIdx} ---`);
@@ -1702,7 +1703,7 @@ ${capturedLogsRef.current.join('\n')}
                         
                         const chunksThisCycle = chunksSentSinceScaleRef.current;
                         const effectiveMBps = (chunksThisCycle * dynamicChunkSizeRef.current / 5 / 1024 / 1024).toFixed(2);
-                        logDebug(`📊 Dispatch: ~${chunksThisCycle} chunks/5s (${effectiveMBps} MB/s effective), MTU=${Math.round(dynamicChunkSizeRef.current/1024)}KB, Gate=${(gpeInFlightBytesRef.current/1024/1024).toFixed(1)}MB in-flight`);
+                        logDebug(`ðŸ“Š Dispatch: ~${chunksThisCycle} chunks/5s (${effectiveMBps} MB/s effective), MTU=${Math.round(dynamicChunkSizeRef.current/1024)}KB, Gate=${(gpeInFlightBytesRef.current/1024/1024).toFixed(1)}MB in-flight`);
 
                         prevBytes = currentTotal;
                     }, 5000);
@@ -1720,10 +1721,20 @@ ${capturedLogsRef.current.join('\n')}
                 if (e.data instanceof ArrayBuffer) {
                     const view = new DataView(e.data);
                     
-                    // Tachyon RTC-ACK (P2P Flow Control)
+                    // Tachyon RTC-ACK â‰¡Æ’Ã´â•‘ P2P Sync (v02.2.73)
                     if (view.byteLength === 8 && view.getUint16(0) === 0xFFFF && view.getUint16(2) === 0xEEEE) {
-                        const cleared = view.getUint32(4, true);
+                        const payload = view.getUint32(4, true);
+                        const isDone = (payload & 0x80000000) !== 0;
+                        const cleared = (payload & 0xFFFF);
+                        
+                        // Decrement GPE Gate
                         gpeInFlightBytesRef.current = Math.max(0, gpeInFlightBytesRef.current - cleared);
+                        
+                        if (isDone) {
+                            const ackFileIdx = (payload >> 16) & 0x7FFF;
+                            hasReceivedFileDoneRef.current[ackFileIdx] = true;
+                            logDebug(`[HYDRA MONITOR] P2P-SYNC Confirmed: File-${ackFileIdx}`);
+                        }
                         return;
                     }
 
@@ -1770,10 +1781,10 @@ ${capturedLogsRef.current.join('\n')}
             const testMode = params.get('mode');
             setTimeout(() => {
                 if (testMode === 'receiver') {
-                    logDebug("≡ƒñû NMI: Auto-starting Receiver Mode...");
+                    logDebug("â‰¡Æ’Ã±Ã» NMI: Auto-starting Receiver Mode...");
                     setMode('receive');
                 } else if (testMode === 'sender') {
-                    logDebug("≡ƒñû NMI: Auto-starting Sender Mode...");
+                    logDebug("â‰¡Æ’Ã±Ã» NMI: Auto-starting Sender Mode...");
                     setMode('send');
                 }
             }, 2000);
@@ -1793,7 +1804,7 @@ ${capturedLogsRef.current.join('\n')}
         // v02.2.10.8: NAT Warm-up Pulse (200ms)
         // Ensures the Mumbai relay and client NAT mappings are fully established before the first metadata blast.
         await new Promise(resolve => setTimeout(resolve, 200));
-        logDebug("Γ£à NAT WARMED: Starting High-Speed Batch broadcast.");
+        logDebug("Î“Â£Ã  NAT WARMED: Starting High-Speed Batch broadcast.");
 
         // v02.1.39 (Patch 6): Initial Metadata Sweep (Redundant)
         broadcastMetadata();
@@ -1825,7 +1836,7 @@ ${capturedLogsRef.current.join('\n')}
             sendControlMsg(meta);
 
             // v02.2.72: Reset sync flag before transfer
-            hasReceivedFileDoneRef.current = false;
+            hasReceivedFileDoneRef.current[i] = false;
             await transferFileP2PParallel(currentFiles[i], i);
 
             // v02.2.72: Tachyon Atomic Sync Gate (fixes 1/10 file issue)
@@ -1833,11 +1844,11 @@ ${capturedLogsRef.current.join('\n')}
             // If we don't wait, the next file's metadata can collide with previous chunks.
             const syncStart = Date.now();
             logDebug(`Sender: Awaiting File-${i} completion confirmation from receiver...`);
-            while (!hasReceivedFileDoneRef.current && (Date.now() - syncStart < 10000)) {
+            while (!hasReceivedFileDoneRef.current[i] && (Date.now() - syncStart < 10000)) {
                 await new Promise(resolve => setTimeout(resolve, 50));
                 if (!isActive.current) break;
             }
-            logDebug(`Sender: Proceeding to next file (Confirmed: ${hasReceivedFileDoneRef.current})`);
+            logDebug(`Sender: Proceeding to next file (Confirmed: ${!!hasReceivedFileDoneRef.current[i]})`);
 
             if (!isActive.current && statusRef.current !== 'done' && statusRef.current !== 'done-waiting') {
                 logDebug("Sender: Transfer loop interrupted by Sentinel reset. Aborting finalization chain.");
@@ -1964,7 +1975,7 @@ ${capturedLogsRef.current.join('\n')}
     };
  
     const transferFileP2PParallel = async (file: File, index: number) => {
-        // v02.2.68: Fix 1 — Pre-read Entire File for M2M (Zero-Yield Hot Path)
+        // v02.2.68: Fix 1 â€” Pre-read Entire File for M2M (Zero-Yield Hot Path)
         const isSelfMobile = isMobileDevice();
         const isM2M = isSelfMobile && remoteCapabilityRef.current.isMobile;
         let fileBuffer: Uint8Array | null = null;
@@ -2011,7 +2022,7 @@ ${capturedLogsRef.current.join('\n')}
                 const targetOffset = rollbackTriggerRef.current;
                 rollbackTriggerRef.current = null;
                 if (targetOffset < byteOffset) {
-                    logDebug(`≡ƒöä ROLLBACK IN PROGRESS: ${byteOffset} -> ${targetOffset}`);
+                    logDebug(`â‰¡Æ’Ã¶Ã¤ ROLLBACK IN PROGRESS: ${byteOffset} -> ${targetOffset}`);
                     byteOffset = targetOffset;
                     pendingChunk = null;
                     currentChunkResidual = null;
@@ -2043,14 +2054,14 @@ ${capturedLogsRef.current.join('\n')}
             const activeEngine = isM2M ? 'M2M' : (isSelfMobile || remoteCapabilityRef.current.isMobile) ? 'HYBRID' : 'NITRO';
             const config = getEngineConfig(activeEngine);
             
-            // v02.2.64: Unified GPE Gate — no static floor, scales with RTT + active pipes
-            // Fix 3: ICE-based activePipeCount (Pipes 0–3 use connection state, 4–11 use migration guard)
+            // v02.2.64: Unified GPE Gate â€” no static floor, scales with RTT + active pipes
+            // Fix 3: ICE-based activePipeCount (Pipes 0â€“3 use connection state, 4â€“11 use migration guard)
             const activePipeCountOuter = Math.max(1, Array.from({ length: PIPES }, (_, i) => {
                 const peer = peersRef.current[i];
                 const connected = peer && 
                     (peer.iceConnectionState === 'connected' || peer.iceConnectionState === 'completed');
-                if (i <= 3) return connected ? 1 : 0;  // Pipes 0–3: ICE state directly
-                // Pipes 4–11: require confirmed bytes + 200ms grace (migration guard)
+                if (i <= 3) return connected ? 1 : 0;  // Pipes 0â€“3: ICE state directly
+                // Pipes 4â€“11: require confirmed bytes + 200ms grace (migration guard)
                 const msAlive = Date.now() - (pipeConnectedAtRef.current[i] || 0);
                 return (connected && pipeSentBytesRef.current[i] > 0 && msAlive >= 200) ? 1 : 0;
             }).reduce((acc: number, val: number) => acc + val, 0));
@@ -2059,7 +2070,7 @@ ${capturedLogsRef.current.join('\n')}
             const MIN_GPE_WINDOW = 16 * 1024 * 1024;  // 16MB Floor
             const targetSpeedBps = 10 * 1024 * 1024;
             
-            const dynamicWindow = smoothedRTT * targetSpeedBps * 32; // 🔥 32x BDP Inflation
+            const dynamicWindow = smoothedRTT * targetSpeedBps * 32; // ðŸ”¥ 32x BDP Inflation
             const pipeFloor = activePipeCountOuter * 8 * 1024 * 1024; // 8MB per pipe floor
             
             let currentGate = Math.max(MIN_GPE_WINDOW, Math.min(MAX_GPE_WINDOW, Math.max(dynamicWindow, pipeFloor)));
@@ -2072,17 +2083,17 @@ ${capturedLogsRef.current.join('\n')}
             const isGPEBlocked = gpeInFlightBytesRef.current > currentGate; 
             
             if (isGPEBlocked && chunkSeqIdx % 50 === 0) {
-                logDebug(`🛰️ GPE ENFORCEMENT: Burst Pause. In-Flight: ${(gpeInFlightBytesRef.current / 1024 / 1024).toFixed(2)}MB / Limit: ${(currentGate / 1024 / 1024).toFixed(2)}MB`);
+                logDebug(`ðŸ›°ï¸ GPE ENFORCEMENT: Burst Pause. In-Flight: ${(gpeInFlightBytesRef.current / 1024 / 1024).toFixed(2)}MB / Limit: ${(currentGate / 1024 / 1024).toFixed(2)}MB`);
             }
             let targetPipeCount = Math.min(config.pipes, getAdaptivePipeCount(currentRTT, activeEngine));
             const targetChannelLimit = targetPipeCount * CHANNELS_PER_PIPE;
 
             if (targetPipeCount !== lastScaleRef.current) {
-                logDebug(`≡ƒôí ADAPTIVE SCALE: RTT=${currentRTT.toFixed(3)}s -> Concurrency: ${targetPipeCount} Pipes (${targetChannelLimit} Channels)`);
+                logDebug(`â‰¡Æ’Ã´Ã­ ADAPTIVE SCALE: RTT=${currentRTT.toFixed(3)}s -> Concurrency: ${targetPipeCount} Pipes (${targetChannelLimit} Channels)`);
                 lastScaleRef.current = targetPipeCount;
             }
 
-            // v02.2.68: Fix 3 — Hoist O(96) Computations Out of Hot Path
+            // v02.2.68: Fix 3 â€” Hoist O(96) Computations Out of Hot Path
             if (!cachedOpenChannelsRef.current || Date.now() - channelCacheTsRef.current > 10) {
                 cachedOpenChannelsRef.current = [];
                 cachedTotalBufferedRef.current = 0;
@@ -2111,7 +2122,7 @@ ${capturedLogsRef.current.join('\n')}
                 const estimatedInFlight = totalSentBytesRef.current - receiverCleared;
                 // If there's a massive discrepancy (more than 32MB), we sync to reality.
                 if (Math.abs(gpeInFlightBytesRef.current - estimatedInFlight) > 32 * 1024 * 1024) {
-                    logDebug(`≡ƒôí [SYNC] GPE In-Flight Corrected: ${Math.round(gpeInFlightBytesRef.current/1024)}KB -> ${Math.round(estimatedInFlight/1024)}KB`);
+                    logDebug(`â‰¡Æ’Ã´Ã­ [SYNC] GPE In-Flight Corrected: ${Math.round(gpeInFlightBytesRef.current/1024)}KB -> ${Math.round(estimatedInFlight/1024)}KB`);
                     gpeInFlightBytesRef.current = Math.max(0, estimatedInFlight);
                 }
             }
@@ -2125,7 +2136,7 @@ ${capturedLogsRef.current.join('\n')}
             if (openChannels.length === 0 || hardwareStalled || gpeStalled) {
                 blockedLoopCount.current++;
                 if (blockedLoopCount.current % 5000 === 0 && totalBuffered > NITRO_THRESHOLD) {
-                    logDebug(`≡ƒÜÇ NITRO FLOW HANG: Buffer=${(totalBuffered / 1024 / 1024).toFixed(1)}MB / Threshold=${(NITRO_THRESHOLD / 1024 / 1024).toFixed(1)}MB`);
+                    logDebug(`â‰¡Æ’ÃœÃ‡ NITRO FLOW HANG: Buffer=${(totalBuffered / 1024 / 1024).toFixed(1)}MB / Threshold=${(NITRO_THRESHOLD / 1024 / 1024).toFixed(1)}MB`);
                 }
                 
                 // Use bufferedamountlow for zero-latency wakeup if possible
@@ -2158,7 +2169,7 @@ ${capturedLogsRef.current.join('\n')}
             if (isGPEBlocked) {
                 if (!gpeBlockedSinceRef.current) gpeBlockedSinceRef.current = Date.now();
                 if (Date.now() - gpeBlockedSinceRef.current > 5000) { // 5s ceiling
-                    logDebug("ΓÜá∩╕Å GPE Deadlock detected (5s). Performing Emergency Drain...");
+                    logDebug("Î“ÃœÃ¡âˆ©â••Ã… GPE Deadlock detected (5s). Performing Emergency Drain...");
                     gpeInFlightBytesRef.current = 0; // Complete reset to force stream resumption
                     sendControlMsg({ type: 'heartbeat', ts: Date.now() }); 
                     gpeBlockedSinceRef.current = Date.now();
@@ -2172,7 +2183,7 @@ ${capturedLogsRef.current.join('\n')}
                 const baseIdx = lastChannelIndexRef.current;
                 lastChannelIndexRef.current = (lastChannelIndexRef.current + 1) % openChannels.length;
                 
-                // v02.2.71: Buffer Threshold Fix (Fix 5) — 32MB Max
+                // v02.2.71: Buffer Threshold Fix (Fix 5) â€” 32MB Max
                 const rttMs = (smoothedRTT || 0.1) * 1000;
                 const saturationThreshold = Math.min(32 * 1024 * 1024, Math.max(8 * 1024 * 1024, (rttMs / 50) * 8 * 1024 * 1024));
 
@@ -2230,18 +2241,18 @@ ${capturedLogsRef.current.join('\n')}
                     const timeSinceLastPulse = Date.now() - flowPulseLastTsRef.current;
                     if (timeSinceLastPulse > 2000 && dynamicChunkSizeRef.current > 16384) {
                         dynamicChunkSizeRef.current = Math.floor(dynamicChunkSizeRef.current / 2);
-                        logDebug(`≡ƒôí BACKPRESSURE: No flow pulse for 2s. Throttling MTU to ${Math.round(dynamicChunkSizeRef.current/1024)}KB`);
+                        logDebug(`â‰¡Æ’Ã´Ã­ BACKPRESSURE: No flow pulse for 2s. Throttling MTU to ${Math.round(dynamicChunkSizeRef.current/1024)}KB`);
                         flowPulseLastTsRef.current = Date.now(); // Reset to avoid constant halving
                     }
 
-                    // v02.2.68: Fix 4 — MTU Stability Lock (Permanent 32KB for M2M)
+                    // v02.2.68: Fix 4 â€” MTU Stability Lock (Permanent 32KB for M2M)
                     if (isM2M && false) { // v02.2.70: Release static lock for adaptive probing
                         dynamicChunkSizeRef.current = 32768; // Removed lock
                     } else {
                         const rtt = Math.min(...rttBufferRef.current.filter(r => r > 0), 1.0);
                         const rttMs = rtt * 1000;
                         
-                        // v02.2.71: MTU FIX (Fix 3) — Dynamic Scaling Based on RTT
+                        // v02.2.71: MTU FIX (Fix 3) â€” Dynamic Scaling Based on RTT
                         let targetMTU = 32768; // Safe fallback
                         if (rttMs < 50) targetMTU = 65536; // 64KB (Fast Network)
                         else if (rttMs < 120) targetMTU = 49152; // 48KB (Medium)
@@ -2249,7 +2260,7 @@ ${capturedLogsRef.current.join('\n')}
                         dynamicChunkSizeRef.current = targetMTU;
                     }
                     
-                    // v02.2.68: Fix 2 — Burst-Send Multiple Chunks Per Loop Iteration
+                    // v02.2.68: Fix 2 â€” Burst-Send Multiple Chunks Per Loop Iteration
                     const BURST_SIZE = isM2M ? 8 : 1;
                     let burstSent = 0;
 
@@ -2316,7 +2327,7 @@ ${capturedLogsRef.current.join('\n')}
                         if (!currentChunk) break;
                         const { data: chunkData, seq: currentSeq, offset: currentOffset } = currentChunk;
 
-                        // v02.2.68: Fix 5 — No-Allocation Packet Construction
+                        // v02.2.68: Fix 5 â€” No-Allocation Packet Construction
                         const dcIdx = dataChannelsRef.current.indexOf(dc);
                         const pipeIdx = Math.floor(dcIdx / CHANNELS_PER_PIPE);
                         const currentGen = pipeGenerationRef.current[pipeIdx] || 1;
@@ -2349,7 +2360,7 @@ ${capturedLogsRef.current.join('\n')}
                             chunkSeqIdx++;
                             burstSent++;
                         } catch (e: any) {
-                            logDebug(`Γ¥î DataChannel Send Error: ${e.message}. Retrying chunk ${currentSeq}...`);
+                            logDebug(`Î“Â¥Ã® DataChannel Send Error: ${e.message}. Retrying chunk ${currentSeq}...`);
                             pendingChunk = currentChunk; // Re-queue for next iteration
                             break; 
                         }
@@ -2387,7 +2398,7 @@ ${capturedLogsRef.current.join('\n')}
                             chunkSeqIdx++;
                             pendingChunk = null;
                             if (!useEmergencyTunnel) setUseEmergencyTunnel(true);
-                            if (currentSeq % 10 === 0) logDebug(`≡ƒ¢í∩╕Å Emergency Tunnel Sent: Chunk-${currentSeq}`);
+                            if (currentSeq % 10 === 0) logDebug(`â‰¡Æ’Â¢Ã­âˆ©â••Ã… Emergency Tunnel Sent: Chunk-${currentSeq}`);
                             
                             // v02.2.41: Rate-Limit Tunnel (15ms delay per 16KB)
                             await new Promise(resolve => setTimeout(resolve, 15));
@@ -2473,7 +2484,7 @@ ${capturedLogsRef.current.join('\n')}
                     setTimeout(connect, 2000);
                 } else if (attempts >= 3) {
                     setStatus('error');
-                    logDebug("Γ¥î Persistent Signaling Failure after 3 attempts.");
+                    logDebug("Î“Â¥Ã® Persistent Signaling Failure after 3 attempts.");
                 }
             };
 
@@ -2496,7 +2507,7 @@ ${capturedLogsRef.current.join('\n')}
                     // v02.2.38: Receiver Auto-Wake (8s stall monitor)
                     const timeSinceLastMsg = Date.now() - flowPulseLastTsRef.current;
                     if (statusRef.current === 'connecting' && timeSinceLastMsg > 8000) {
-                        logDebug("≡ƒÜæ Receiver Stall Detected: Auto-Refreshing signaling...");
+                        logDebug("â‰¡Æ’ÃœÃ¦ Receiver Stall Detected: Auto-Refreshing signaling...");
                         ws.send(JSON.stringify({ type: 'receiver-ready', isMobile: isMobileDevice(), urgent: true }));
                         flowPulseLastTsRef.current = Date.now(); // Reset
                     }
@@ -2539,7 +2550,7 @@ ${capturedLogsRef.current.join('\n')}
                     }
                     handleControlMessage(data);
                 } catch (err: any) {
-                    logDebug("Γ¥î Receiver WS Error: " + err.message);
+                    logDebug("Î“Â¥Ã® Receiver WS Error: " + err.message);
                 }
             };
         };
@@ -2552,7 +2563,7 @@ ${capturedLogsRef.current.join('\n')}
         const targetBlocks = expectedChunksMapRef.current.get(fileIdx);
         
         if (targetBlocks && fileBitset && fileBitset.size >= targetBlocks) {
-            logDebug(`Γ£à File ${fileIdx} fully reassembled asynchronously (${fileBitset.size} chunks). Symmetry Verified.`);
+            logDebug(`Î“Â£Ã  File ${fileIdx} fully reassembled asynchronously (${fileBitset.size} chunks). Symmetry Verified.`);
             
             // v02.2.10.6b: Don't increment reassembledCount here. 
             // We wait for the Worker to finish 'reassembled' for an accurate file list.
@@ -2585,16 +2596,32 @@ ${capturedLogsRef.current.join('\n')}
             const chunkIdx = view.getUint32(4, true);
             const byteOffset = view.getUint32(8, true);
             
-            // v02.2.72: Tachyon RTC-ACK Pulse (Sub-20ms Flow Control)
-            if (chunkIdx < 0xFFFFFFF0) {
+            // v02.2.73: Tachyon RTC-ACK â‰¡Æ’Ã´â•‘ P2P Sync (Eliminates 10s Signaling Wait)
+            const isDataChunk = chunkIdx < 0xFFFFFFF0;
+            const isFileEOF = chunkIdx === 0xFFFFFFFE;
+            
+            if (isDataChunk || isFileEOF) {
                 const dc = dataChannelsRef.current[_channelIdx];
                 if (dc && dc.readyState === 'open') {
-                    const ackView = rtcAckViewRef.current;
-                    ackView.setUint16(0, 0xFFFF);
-                    ackView.setUint16(2, 0xEEEE);
-                    ackView.setUint32(4, packetLen, true);
-                    // v02.2.72: Explicit cast to ArrayBuffer to avoid SharedArrayBuffer type mismatch in strict TS
-                    try { dc.send(rtcAckBufRef.current.buffer as ArrayBuffer); } catch(e) {}
+                    rtcAckCounterRef.current++;
+                    
+                    // Throttle: Send ACK every 4 packets OR immediately if File is Done
+                    if (rtcAckCounterRef.current % 4 === 0 || isFileEOF) {
+                        const ackView = rtcAckViewRef.current;
+                        ackView.setUint16(0, 0xFFFF);
+                        ackView.setUint16(2, 0xEEEE);
+                        
+                        // Payload: [31: DONE_FLAG] [30-16: fileIdx] [15-0: bytesToClear]
+                        let payload = (packetLen & 0xFFFF);
+                        if (isFileEOF) {
+                            payload |= 0x80000000; // DONE_FLAG
+                            payload |= ((fileIdx & 0x7FFF) << 16); // File Index
+                            logDebug(`Receiver: P2P-SYNC dispatched for File-${fileIdx}`);
+                        }
+
+                        ackView.setUint32(4, payload, true);
+                        try { dc.send(rtcAckBufRef.current.buffer as ArrayBuffer); } catch(e) {}
+                    }
                 }
             }
 
@@ -2773,14 +2800,14 @@ ${capturedLogsRef.current.join('\n')}
         const images = receivedFiles.filter(rf => rf.blob && isImageFile(rf.blob, rf.name));
         const docs = receivedFiles.filter(rf => rf.blob && !isImageFile(rf.blob, rf.name));
 
-        // Batch-share 3+ images in one native share sheet (one tap ╬ô├Ñ├å Save to Photos/Google Photos)
+        // Batch-share 3+ images in one native share sheet (one tap â•¬Ã´â”œÃ‘â”œÃ¥ Save to Photos/Google Photos)
         if (images.length >= 3 && navigator.canShare) {
             const imageFiles = images.map(rf => new File([rf.blob!], rf.name, { type: (rf.blob && rf.blob.type) || 'image/jpeg' }));
             if (navigator.canShare({ files: imageFiles })) {
                 try {
                     await navigator.share({ files: imageFiles, title: `${images.length} Photos` });
                 } catch (_) {
-                    // Cancelled or failed ╬ô├ç├╢ fall back to per-image downloads
+                    // Cancelled or failed â•¬Ã´â”œÃ§â”œâ•¢ fall back to per-image downloads
                     for (const rf of images) {
                         if (rf.blob) await smartSaveFile(rf.blob, rf.name);
                         await new Promise(res => setTimeout(res, 400));
@@ -2888,14 +2915,14 @@ Buffer-Bloat Grade: ${d.bufferBloatGrade}
                 window.open(url, '_blank');
             }
 
-            logDebug(`≡ƒÆ╛ Diagnostic Download Triggered: ${fileName}`);
+            logDebug(`â‰¡Æ’Ã†â•› Diagnostic Download Triggered: ${fileName}`);
 
             setTimeout(() => {
                 if (document.body.contains(a)) document.body.removeChild(a);
                 URL.revokeObjectURL(url);
             }, 3000); // 3s buffer for mobile OS
         } catch (e: any) {
-            logDebug(`Γ¥î Download Failed: ${e.message}`);
+            logDebug(`Î“Â¥Ã® Download Failed: ${e.message}`);
             alert("Download failed. Copy logs manually from console if possible.");
         }
     };
@@ -3191,7 +3218,7 @@ Buffer-Bloat Grade: ${d.bufferBloatGrade}
                                             </p>
                                             <p className="text-xs text-muted-foreground flex items-center mt-1">
                                                 <span className="bg-indigo-100 text-indigo-700 dark:bg-indigo-900/40 dark:text-indigo-300 px-2 py-0.5 rounded-full font-bold inline-flex items-center gap-1 mr-2">
-                                                    ΓÜí OOBS Engine
+                                                    Î“ÃœÃ­ OOBS Engine
                                                 </span>
                                                 Batch size: {mode === 'send'
                                                     ? (files.reduce((acc, f) => acc + f.size, 0) / 1024 / 1024).toFixed(2)
@@ -3245,18 +3272,18 @@ Buffer-Bloat Grade: ${d.bufferBloatGrade}
                                         <div className="flex flex-col gap-2">
                                             {diagnosticMetricsRef.current.transportType === 'relay' && (
                                                 <div className="text-[10px] font-bold bg-amber-100 text-amber-700 dark:bg-amber-900/30 dark:text-amber-400 px-3 py-1 rounded-md border border-amber-200/50 flex items-center justify-between">
-                                                    <span>≡ƒÜ¿ TRANSPORT: TURN RELAY (Throttled Path)</span>
+                                                    <span>â‰¡Æ’ÃœÂ¿ TRANSPORT: TURN RELAY (Throttled Path)</span>
                                                     <span className="uppercase text-[8px] opacity-70">{diagnosticMetricsRef.current.protocol}</span>
                                                 </div>
                                             )}
                                             {diagnosticMetricsRef.current.workerLag > 50 && (
                                                 <div className="text-[10px] font-bold bg-red-100 text-red-700 dark:bg-red-900/30 dark:text-red-400 px-3 py-1 rounded-md border border-red-200/50">
-                                                    ≡ƒöÑ CPU PRESSURE: Worker Lag {diagnosticMetricsRef.current.workerLag}ms
+                                                    â‰¡Æ’Ã¶Ã‘ CPU PRESSURE: Worker Lag {diagnosticMetricsRef.current.workerLag}ms
                                                 </div>
                                             )}
                                             {diagnosticMetricsRef.current.retransmissions > 100 && (
                                                 <div className="text-[10px] font-bold bg-indigo-100 text-indigo-700 dark:bg-indigo-900/30 dark:text-indigo-400 px-3 py-1 rounded-md border border-indigo-200/50">
-                                                    ≡ƒôí LOSS DETECTED: Application NACK Recovery Active
+                                                    â‰¡Æ’Ã´Ã­ LOSS DETECTED: Application NACK Recovery Active
                                                 </div>
                                             )}
                                         </div>
@@ -3286,7 +3313,7 @@ Buffer-Bloat Grade: ${d.bufferBloatGrade}
                                                             : transferSpeed >= 1 ? 'bg-amber-100 text-amber-700 dark:bg-amber-900/40 dark:text-amber-300'
                                                                 : 'bg-red-100 text-red-700 dark:bg-red-900/40 dark:text-red-300'
                                                             }`}>
-                                                            ╬ô├£├¡ {transferSpeed} MB/s
+                                                            â•¬Ã´â”œÂ£â”œÂ¡ {transferSpeed} MB/s
                                                         </span>
                                                     )}
                                                     <span>{progress}%</span>
@@ -3392,7 +3419,7 @@ Buffer-Bloat Grade: ${d.bufferBloatGrade}
                                                         onClick={() => {
                                                             const input = document.getElementById('peerSignalIdInput') as HTMLInputElement;
                                                             if (input?.value.length === 6) {
-                                                                logDebug(`≡ƒöù MATRIX SYNC: Linking to peer ${input.value}`);
+                                                                logDebug(`â‰¡Æ’Ã¶Ã¹ MATRIX SYNC: Linking to peer ${input.value}`);
                                                                 sendControlMsg({ type: 'direct-link', targetId: input.value });
                                                             }
                                                         }}
@@ -3423,7 +3450,7 @@ Buffer-Bloat Grade: ${d.bufferBloatGrade}
                                                         size="sm"
                                                         className="w-full text-indigo-600 dark:text-indigo-400 font-black h-12 uppercase tracking-widest text-[9px] border-2 border-dashed border-indigo-200"
                                                         onClick={() => {
-                                                            logDebug("≡ƒ¢æ Manual Override: FORCING WebSocket Tunnel.");
+                                                            logDebug("â‰¡Æ’Â¢Ã¦ Manual Override: FORCING WebSocket Tunnel.");
                                                             sendControlMsg({ type: 'force-tunnel' });
                                                             setUseEmergencyTunnel(true);
                                                         }}
@@ -3492,7 +3519,7 @@ Buffer-Bloat Grade: ${d.bufferBloatGrade}
                                             <div key={idx} className="flex items-center justify-between p-3 bg-card border rounded-lg">
                                                 <p className="text-xs font-semibold text-left truncate flex-1 mr-2">{rf.name}</p>
                                                 <Button size="sm" variant="secondary" onClick={() => rf.blob && smartSaveFile(rf.blob, rf.name)} disabled={!rf.blob}>
-                                                    {(rf.blob && isImageFile(rf.blob, rf.name)) ? '≡ƒô╖ Save' : '≡ƒÆ╛ Save'}
+                                                    {(rf.blob && isImageFile(rf.blob, rf.name)) ? 'â‰¡Æ’Ã´â•– Save' : 'â‰¡Æ’Ã†â•› Save'}
                                                 </Button>
                                             </div>
                                         ))}
@@ -3523,7 +3550,7 @@ Buffer-Bloat Grade: ${d.bufferBloatGrade}
                         </p>
                         <div className="flex gap-2">
                             <Button variant="outline" size="sm" onClick={downloadDiagnostics} className="text-indigo-600 border-indigo-200 hover:bg-indigo-50">
-                                ≡ƒôè Download Meta Diagnostics
+                                â‰¡Æ’Ã´Ã¨ Download Meta Diagnostics
                             </Button>
                             <Button size="sm" onClick={reportIssue} className="bg-indigo-600 hover:bg-indigo-700 text-white font-bold gap-2">
                                 <Activity className="w-4 h-4" />
