@@ -1,5 +1,7 @@
-v02.2.70 (Sovereign Engine - 10MB/s Final) Deployment Trigger at 2026-04-19T10:45:00Z.
-Fix: Resolved CPU Saturation Starvation (v02.2.69) with Anti-Spin Yields.
-Performance: Adaptive Flow Control & 1.2x Tightened Gate for 10MB/s M2M.
+v02.2.71 (Tachyon Sovereign - 10MB/s Unshackled) Deployment Trigger at 2026-04-19T11:05:00Z.
+Fix: 32x BDP Window Inflation (128MB Cap) for cellular jitter.
+Fix: Pacer Yield compressed to 5ms (doubled dispatch rate).
+Fix: Tiered MTU (64KB/48KB/32KB) based on real-time RTT.
+Architecture: Optimized 8-Pipe Dense Core.
 Live Production Mode (LPM) Active.
 Symmetry Verified.
