@@ -41,13 +41,13 @@ import { PaywallModal } from "@/components/layout/PaywallModal";
 // v02.2.63 (Tachyon Omega - Zenith Surgical) - 5 Surgical Patches (Rollback Debounce, Migration Guard, Active BDP Gate, MTU Floor Removal, NACK Throttling)
 // v02.2.64 (Tachyon Omega - Gate Unblocker) - GPE 8MB Floor Removal + ICE-based activePipeCount + Unified BDP Formula
 // v02.2.65 (Tachyon Omega - MTU Shield) - File-start MTU grace period + Permanent pipe retirement + Dispatch rate telemetry
-const VERSION = "v02.2.76 (Tachyon RTC-ACK â‰¡Æ’Ã´â•‘ BDP-XL)"; // v02.2.76: Syntax Fix + Fresh LPM Trigger
+const VERSION = "v02.2.77 (Tachyon RTC-ACK â‰¡Æ’Ã´â•º Quasar Stable)"; // v02.2.77: Prompt 06 Fixes (Pacer Bypass + Header Fix)
 
 
 function getEngineConfig(engine: 'M2M' | 'HYBRID' | 'NITRO') {
     if (engine === 'M2M') {
         return {
-            pipes: 16, // v02.2.76: Expanded BDP saturation for High-RTT mobile links (600ms)
+            pipes: 4, // v02.2.77: De-escalated from 16 to avoid 500ms safety timeout penalty
             pacerThreshold: 64 * 1024 * 1024, // v02.2.73: 64MB window for high-latency cellular (600ms RTT)
             mtuLimit: 32 * 1024, 
             nackBackoff: 500 
@@ -2133,7 +2133,7 @@ ${capturedLogsRef.current.join('\n')}
             // v02.2.19: [PACER_GUARD] Hardware-First Override (Deadlock Buster)
             // If totalBuffered is extremely low (< 1MB), we NEVER block, even if GPE says 64MB in-flight.
             // This rescues the engine from desynced counters which previously froze the transfer.
-            const hardwareStalled = totalBuffered > NITRO_THRESHOLD;
+            const hardwareStalled = isM2M ? false : (totalBuffered > NITRO_THRESHOLD);
             const gpeStalled = isGPEBlocked && totalBuffered > 2048 * 1024;
             
             if (openChannels.length === 0 || hardwareStalled || gpeStalled) {
@@ -2338,6 +2338,7 @@ ${capturedLogsRef.current.join('\n')}
                         headerViewRef.current.setUint16(0, index, true);
                         headerViewRef.current.setUint16(2, currentGen, true);
                         headerViewRef.current.setUint32(4, currentSeq, true); 
+                        headerViewRef.current.setUint32(8, currentOffset, true); // v02.2.77: Restore missing offset for reassembly
                         try {
                             // v02.2.70: Sovereign-Unify Packet Atomicity
                             // Use unified cachePacket for primary send to ensure receiver compatibility
