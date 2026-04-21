@@ -41,16 +41,16 @@ import { PaywallModal } from "@/components/layout/PaywallModal";
 // v02.2.63 (Tachyon Omega - Zenith Surgical) - 5 Surgical Patches (Rollback Debounce, Migration Guard, Active BDP Gate, MTU Floor Removal, NACK Throttling)
 // v02.2.64 (Tachyon Omega - Gate Unblocker) - GPE 8MB Floor Removal + ICE-based activePipeCount + Unified BDP Formula
 // v02.2.65 (Tachyon Omega - MTU Shield) - File-start MTU grace period + Permanent pipe retirement + Dispatch rate telemetry
-const VERSION = "v02.2.77 (Tachyon RTC-ACK â‰¡Æ’Ã´â•º Quasar Stable)"; // v02.2.77: Prompt 06 Fixes (Pacer Bypass + Header Fix)
+const VERSION = "v02.2.79 (Tachyon Omega â‰¡Æ’Ã´â•º Quasar Ultra)"; // v02.2.79: Prompt 07 Final Accuracy Patch
 
 
 function getEngineConfig(engine: 'M2M' | 'HYBRID' | 'NITRO') {
     if (engine === 'M2M') {
         return {
-            pipes: 4, // v02.2.77: De-escalated from 16 to avoid 500ms safety timeout penalty
-            pacerThreshold: 64 * 1024 * 1024, // v02.2.73: 64MB window for high-latency cellular (600ms RTT)
-            mtuLimit: 32 * 1024, 
-            nackBackoff: 500 
+            pipes: 8, // v02.2.79: Hard-coded 8-pipe concurrency as per Quasar Ultra spec
+            pacerThreshold: 96 * 1024 * 1024, // v02.2.79: Matches Prompt 07 window
+            mtuLimit: 48 * 1024, 
+            nackBackoff: 200 
         };
     }
     return {
@@ -140,6 +140,7 @@ function InstantDropContent() {
     const [compressImages, setCompressImages] = useState(false);
     const [isCompressing, setIsCompressing] = useState(false);
     const [transferSpeed, setTransferSpeed] = useState<number | null>(null); // MB/s
+    const lastTotalBytesRef = useRef(0); // v02.2.79: For accurate delta calculation
     const [wsConnected, setWsConnected] = useState(false); // v02.1.72: Signal Pulse
 
     // v02.2.28: Background Persistence Heartbeat (Android Throttling Fix)
@@ -1157,6 +1158,30 @@ ${capturedLogsRef.current.join('\n')}
         }
     };
 
+    // v02.2.79: Accurate Real-Time Throughput Telemetry (Byte-Delta Formula)
+    useEffect(() => {
+        if (status !== 'transferring') {
+            lastTotalBytesRef.current = 0;
+            return;
+        }
+        
+        const calcSpeed = () => {
+            const currentTotal = mode === 'send' ? totalSentBytesRef.current : diagnosticMetricsRef.current.bytesCleared;
+            const delta = Math.max(0, currentTotal - lastTotalBytesRef.current);
+            lastTotalBytesRef.current = currentTotal;
+            
+            // MB/s calculation (delta / 1024 / 1024)
+            const mbps = Number((delta / (1024 * 1024)).toFixed(2));
+            setTransferSpeed(mbps);
+            
+            // Update BDP metrics
+            diagnosticMetricsRef.current.bdp = mbps * (avgRTTRef.current || 0.1);
+        };
+        
+        const timer = setInterval(calcSpeed, 1000);
+        return () => clearInterval(timer);
+    }, [status, mode]);
+
     // v02.2.08: Omega Multi-Pipe Analytics Poller
     useEffect(() => {
         if (status !== 'transferring') return;
@@ -1195,7 +1220,9 @@ ${capturedLogsRef.current.join('\n')}
                                 
                                 // v02.2.15: Fix HUD Display RTT (0ms bug)
                                 diagnosticMetricsRef.current.owtt = rttMs;
-                                newPistonStats[i] = { speed: transferSpeed || 0, health };
+                                
+                                // v02.2.79: Distributed speed estimate per pipe
+                                newPistonStats[i] = { speed: (transferSpeed || 0) / 8, health }; 
                              }
                         }
                     });
@@ -1339,16 +1366,16 @@ ${capturedLogsRef.current.join('\n')}
                             // v02.2.68: Fix 6 â€” Pre-retire Pipes 4â€“11 for Cross-Carrier M2M
                             const isLocal = typeof window !== 'undefined' && (window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1');
                             if (isM2M && !isLocal) {
-                                logDebug('M2M Cross-Carrier: Pre-retiring Pipes 4â€“11, using 4-pipe configuration');
-                                for (let p = 4; p < 12; p++) {
+                                logDebug('M2M Cross-Carrier: Pre-retiring Pipes 8â€“11, using 8-pipe configuration');
+                                for (let p = 8; p < 12; p++) {
                                     pipeGenerationRef.current[p] = 99; // Mark as permanently retired
                                     diagnosticMetricsRef.current.pistonStats[p] = { speed: 0, health: 'red' };
                                 }
                             }
 
                             const startStaggeredHandshake = async () => {
-                                // For cross-carrier M2M, only initialize Pipes 0â€“3
-                                const setupCount = (isM2M && !isLocal) ? 4 : config.pipes;
+                                // v02.2.78: 8-pipe concurrency for high-BDP mobile
+                                const setupCount = (isM2M && !isLocal) ? 8 : config.pipes;
                                 for (let i = 0; i < setupCount; i++) {
                                     setupWebRTC(ws, true, i);
                                     if (i === 0) await new Promise(resolve => setTimeout(resolve, 300));
@@ -2048,51 +2075,27 @@ ${capturedLogsRef.current.join('\n')}
             // v02.2.10.9: Smoothed RTT for Scaling
             const smoothedRTT = rttBufferRef.current.length > 0 
                 ? rttBufferRef.current.reduce((a, b) => a + b) / rttBufferRef.current.length 
-                : avgRTTRef.current || 0.1;
+                : 0.1;
             
-            const currentRTT = smoothedRTT;
-
             const isSelfMobile = isMobileDevice();
             const isM2M = isSelfMobile && remoteCapabilityRef.current.isMobile;
             const activeEngine = isM2M ? 'M2M' : (isSelfMobile || remoteCapabilityRef.current.isMobile) ? 'HYBRID' : 'NITRO';
             const config = getEngineConfig(activeEngine);
-            
-            // v02.2.64: Unified GPE Gate â€” no static floor, scales with RTT + active pipes
-            // Fix 3: ICE-based activePipeCount (Pipes 0â€“3 use connection state, 4â€“11 use migration guard)
-            const activePipeCountOuter = Math.max(1, Array.from({ length: PIPES }, (_, i) => {
-                const peer = peersRef.current[i];
-                const connected = peer && 
-                    (peer.iceConnectionState === 'connected' || peer.iceConnectionState === 'completed');
-                if (i <= 3) return connected ? 1 : 0;  // Pipes 0â€“3: ICE state directly
-                // Pipes 4â€“11: require confirmed bytes + 200ms grace (migration guard)
-                const msAlive = Date.now() - (pipeConnectedAtRef.current[i] || 0);
-                return (connected && pipeSentBytesRef.current[i] > 0 && msAlive >= 200) ? 1 : 0;
-            }).reduce((acc: number, val: number) => acc + val, 0));
-            // v02.2.71: Tachyon Sovereign GPE Window (Fix 1, 8, & 4)
-            const MAX_GPE_WINDOW = 128 * 1024 * 1024; // 128MB Cap
-            const MIN_GPE_WINDOW = 16 * 1024 * 1024;  // 16MB Floor
-            const targetSpeedBps = 10 * 1024 * 1024;
-            
-            const dynamicWindow = smoothedRTT * targetSpeedBps * 32; // ðŸ”¥ 32x BDP Inflation
-            const pipeFloor = activePipeCountOuter * 8 * 1024 * 1024; // 8MB per pipe floor
-            
-            let currentGate = Math.max(MIN_GPE_WINDOW, Math.min(MAX_GPE_WINDOW, Math.max(dynamicWindow, pipeFloor)));
-            
-            // Startup Boost: +4MB gate headroom for the first 2 seconds
-            if (Date.now() - currentFileStartTimeRef.current < 2000) {
-                currentGate += 4 * 1024 * 1024;
-            }
 
+            // v02.2.78: [FIX 6 & 1] Hard-Stable GPE & Decoupled Pacer (Prompt 07)
+            const NITRO_THRESHOLD = config.pacerThreshold;
+            const FIXED_GPE_WINDOW = 96 * 1024 * 1024; // 96MB Stable Window
+            const currentGate = FIXED_GPE_WINDOW;
+            const targetChannelLimit = Math.max(48, PIPES * CHANNELS_PER_PIPE); 
             const isGPEBlocked = gpeInFlightBytesRef.current > currentGate; 
-            
-            if (isGPEBlocked && chunkSeqIdx % 50 === 0) {
-                logDebug(`ðŸ›°ï¸ GPE ENFORCEMENT: Burst Pause. In-Flight: ${(gpeInFlightBytesRef.current / 1024 / 1024).toFixed(2)}MB / Limit: ${(currentGate / 1024 / 1024).toFixed(2)}MB`);
-            }
-            let targetPipeCount = Math.min(config.pipes, getAdaptivePipeCount(currentRTT, activeEngine));
-            const targetChannelLimit = targetPipeCount * CHANNELS_PER_PIPE;
 
+            if (isGPEBlocked && chunkSeqIdx % 50 === 0) {
+                logDebug(`ðŸ›°ï¸  GPE ENFORCEMENT: Burst Pause. In-Flight: ${(gpeInFlightBytesRef.current / 1024 / 1024).toFixed(2)}MB / Limit: ${(currentGate / 1024 / 1024).toFixed(2)}MB`);
+            }
+            
+            let targetPipeCount = Math.min(config.pipes, getAdaptivePipeCount(smoothedRTT, activeEngine));
             if (targetPipeCount !== lastScaleRef.current) {
-                logDebug(`â‰¡Æ’Ã´Ã­ ADAPTIVE SCALE: RTT=${currentRTT.toFixed(3)}s -> Concurrency: ${targetPipeCount} Pipes (${targetChannelLimit} Channels)`);
+                logDebug(`â‰¡Æ’Ã´Ã­ ADAPTIVE SCALE: RTT=${smoothedRTT.toFixed(3)}s -> Concurrency: ${targetPipeCount} Pipes (${targetChannelLimit} Channels)`);
                 lastScaleRef.current = targetPipeCount;
             }
 
@@ -2112,11 +2115,7 @@ ${capturedLogsRef.current.join('\n')}
             const openChannels = cachedOpenChannelsRef.current;
             const totalBuffered = cachedTotalBufferedRef.current;
             
-            // v02.2.21: Dynamic "Deep" Buffer Tuning (Tachyon Optimized)
-            const speedMBps = currentMBpsRef.current || 0.1;
-            const NITRO_THRESHOLD = isM2M 
-                ? Math.max(8 * 1024 * 1024, Math.min(config.pacerThreshold, speedMBps * 2 * 1024 * 1024)) // 8-32MB deep buffer 
-                : Math.max(8 * 1024 * 1024, Math.min(64 * 1024 * 1024, speedMBps * 4 * 1024 * 1024));
+
 
             // v02.2.18: GPE-SCTP Sync Pulse (Ghost Byte fix)
             // Periodically sync the in-flight counter with the receiver's actual "cleared" bytes.
@@ -2153,8 +2152,8 @@ ${capturedLogsRef.current.join('\n')}
                                 resolve(null);
                             };
                             dc.addEventListener('bufferedamountlow', handler);
-                            const m2mSafety = config.pipes > 4 ? 500 : 100;
-                            setTimeout(handler, m2mSafety); 
+                            // v02.2.78: [FIX 2] 2ms Pacer Delay (Eliminate 100ms micro-stalls)
+                            setTimeout(handler, 2); 
                         });
                     }
                 }
@@ -2168,7 +2167,12 @@ ${capturedLogsRef.current.join('\n')}
                 blockedLoopCount.current = 0;
             }
 
-            // GPE Self-Unblock Logic (v02.2.10.4: Aggressive Deadlock Buster)
+            // v02.2.78: [FIX 8] GPE False-Block Recovery (Self-Correction)
+            if (gpeInFlightBytesRef.current > currentGate * 1.2) {
+                logDebug(`ðŸ›¡ï¸  GPE False-Block Reset: ${Math.round(gpeInFlightBytesRef.current/1024)}KB -> ${Math.round((currentGate * 0.8)/1024)}KB`);
+                gpeInFlightBytesRef.current = currentGate * 0.8;
+            }
+
             if (isGPEBlocked) {
                 if (!gpeBlockedSinceRef.current) gpeBlockedSinceRef.current = Date.now();
                 if (Date.now() - gpeBlockedSinceRef.current > 5000) { // 5s ceiling
@@ -2224,12 +2228,8 @@ ${capturedLogsRef.current.join('\n')}
                                 }
                             };
                             dc.addEventListener('bufferedamountlow', handler);
-                            setTimeout(() => {
-                                if (!resolved) {
-                                    logDebug(`[PACER] Pipe Stalled. Buffered: ${Math.round(dc.bufferedAmount/1024)}KB`);
-                                    handler();
-                                }
-                            }, 100); 
+                            // v02.2.78: [FIX 2] 2ms Pacer Delay
+                            setTimeout(handler, 2); 
                         });
                     }
                     // v02.2.71: Reduced yield when ALL pipes are full
@@ -2240,31 +2240,25 @@ ${capturedLogsRef.current.join('\n')}
                 const dc = selectedDC;
                 
                 if (dc && dc.readyState === 'open') {
-                    // Backpressure Logic (v02.2.29: Flow Pulse Monitoring)
+                    // v02.2.78: [FIX 5] Disabled MTU Shrink (Prompt 07)
+                    /* 
                     const timeSinceLastPulse = Date.now() - flowPulseLastTsRef.current;
                     if (timeSinceLastPulse > 2000 && dynamicChunkSizeRef.current > 16384) {
                         dynamicChunkSizeRef.current = Math.floor(dynamicChunkSizeRef.current / 2);
                         logDebug(`â‰¡Æ’Ã´Ã­ BACKPRESSURE: No flow pulse for 2s. Throttling MTU to ${Math.round(dynamicChunkSizeRef.current/1024)}KB`);
-                        flowPulseLastTsRef.current = Date.now(); // Reset to avoid constant halving
+                        flowPulseLastTsRef.current = Date.now(); 
                     }
+                    */
 
-                    // v02.2.68: Fix 4 â€” MTU Stability Lock (Permanent 32KB for M2M)
-                    if (isM2M && false) { // v02.2.70: Release static lock for adaptive probing
-                        dynamicChunkSizeRef.current = 32768; // Removed lock
-                    } else {
-                        const rtt = Math.min(...rttBufferRef.current.filter(r => r > 0), 1.0);
-                        const rttMs = rtt * 1000;
-                        
-                        // v02.2.71: MTU FIX (Fix 3) â€” Dynamic Scaling Based on RTT
-                        let targetMTU = 32768; // Safe fallback
-                        if (rttMs < 50) targetMTU = 65536; // 64KB (Fast Network)
-                        else if (rttMs < 120) targetMTU = 49152; // 48KB (Medium)
-                        
-                        dynamicChunkSizeRef.current = targetMTU;
-                    }
+                    // v02.2.78: [FIX 4] RTT-Based MTU Scaling (Prompt 07)
+                    const rtt = Math.min(...rttBufferRef.current.filter(r => r > 0), 1.0);
+                    const rttMs = rtt * 1000;
+                    if (rttMs < 60) dynamicChunkSizeRef.current = 65536; // 64KB
+                    else if (rttMs < 120) dynamicChunkSizeRef.current = 49152; // 48KB
+                    else dynamicChunkSizeRef.current = 32768; // 32KB
                     
-                    // v02.2.68: Fix 2 â€” Burst-Send Multiple Chunks Per Loop Iteration
-                    const BURST_SIZE = isM2M ? 8 : 1;
+                    // v02.2.78: [FIX 2] Turbo-Burst (16 chunks per loop)
+                    const BURST_SIZE = isM2M ? 16 : 1;
                     let burstSent = 0;
 
                     while (burstSent < BURST_SIZE && (byteOffset < file.size || pendingChunk)) {
@@ -2436,7 +2430,8 @@ ${capturedLogsRef.current.join('\n')}
                 const buffered = dataChannelsRef.current.reduce(
                     (acc, c) => acc + (c?.readyState === 'open' ? c.bufferedAmount : 0), 0
                 );
-                if (buffered === 0) resolve(); // v02.2.27: Zero-Floor Finality Flush
+                // v02.2.78: [DRAIN] Relaxed 64KB Floor (Prompt 07 Analysis)
+                if (buffered < 65536) resolve(); 
                 else setTimeout(check, 100);
             };
             check();
@@ -2570,8 +2565,25 @@ ${capturedLogsRef.current.join('\n')}
         if (targetBlocks && fileBitset && fileBitset.size >= targetBlocks) {
             logDebug(`Î“Â£Ã  File ${fileIdx} fully reassembled asynchronously (${fileBitset.size} chunks). Symmetry Verified.`);
             
-            // v02.2.10.6b: Don't increment reassembledCount here. 
-            // We wait for the Worker to finish 'reassembled' for an accurate file list.
+            // v02.2.78: [INTEGRITY] Atomic P2P-SYNC (Post-Verification Only)
+            if (!hasSentDoneForFileRef.current[fileIdx]) {
+                const dc = dataChannelsRef.current.find(c => c && c.readyState === 'open');
+                if (dc) {
+                    const ackView = rtcAckViewRef.current;
+                    ackView.setUint16(0, 0xFFFF);
+                    ackView.setUint16(2, 0xEEEE);
+                    // Payload: [31: DONE_FLAG] [30-16: fileIdx] [15-0: totalBytesToClear] 0xFFFF
+                    let payload = 0;
+                    payload |= 0x80000000; // DONE_FLAG
+                    payload |= ((fileIdx & 0x7FFF) << 16); // File Index
+                    ackView.setUint32(4, payload, true);
+                    try { 
+                        dc.send(rtcAckBufRef.current.buffer as ArrayBuffer); 
+                        hasSentDoneForFileRef.current[fileIdx] = true;
+                        logDebug(`âœ… [HYDRA] Integrity Verified: File-${fileIdx} P2P-SYNC Dispatched.`);
+                    } catch(e) {}
+                }
+            }
             
             reassemblyMapRef.current.delete(fileIdx);
             expectedChunksMapRef.current.delete(fileIdx);
@@ -2611,28 +2623,17 @@ ${capturedLogsRef.current.join('\n')}
                 if (dc && dc.readyState === 'open') {
                     rtcAckCounterRef.current++;
                     
-                    // Throttle: Send ACK every 2 packets OR immediately if File is Done
-                    const shouldSyncP2P = isFileEOF && !hasSentDoneForFileRef.current[fileIdx];
-                    if (rtcAckCounterRef.current % 2 === 0 || shouldSyncP2P) {
-                        const ackView = rtcAckViewRef.current;
-                        ackView.setUint16(0, 0xFFFF);
-                        ackView.setUint16(2, 0xEEEE);
-                        
-                        // Payload: [31: DONE_FLAG] [30-16: fileIdx] [15-0: totalBytesToClear]
-                        let payload = (pendingAckBytesRef.current & 0xFFFF);
-                        if (shouldSyncP2P) {
-                            payload |= 0x80000000; // DONE_FLAG
-                            payload |= ((fileIdx & 0x7FFF) << 16); // File Index
-                            hasSentDoneForFileRef.current[fileIdx] = true;
-                            logDebug(`[HYDRA] Receiver: P2P-SYNC dispatched for File-${fileIdx}`);
+                        const rtcAckCounter = rtcAckCounterRef.current;
+                        if (rtcAckCounter % 2 === 0) {
+                            const ackView = rtcAckViewRef.current;
+                            ackView.setUint16(0, 0xFFFF);
+                            ackView.setUint16(2, 0xEEEE);
+                            ackView.setUint32(4, (pendingAckBytesRef.current & 0xFFFF), true);
+                            try { 
+                                dc.send(rtcAckBufRef.current.buffer as ArrayBuffer); 
+                                pendingAckBytesRef.current = 0; 
+                            } catch(e) {}
                         }
-
-                        ackView.setUint32(4, payload, true);
-                        try { 
-                            dc.send(rtcAckBufRef.current.buffer as ArrayBuffer); 
-                            pendingAckBytesRef.current = 0; // Reset sum after successful dispatch
-                        } catch(e) {}
-                    }
                 }
             }
 

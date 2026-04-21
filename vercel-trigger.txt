@@ -1,9 +1,9 @@
 Vercel Deployment Manifest
 -------------------------
-Version: v02.2.76
+Version: v02.2.79
 Build: LPM (Live Production Mode)
-Engine: Tachyon BDP-XL ║ 16-Pipe
-Optimizer: High-RTT Mobile Saturation (16 Pipes)
+Engine: Quasar Ultra ║ 8-Pipe (High-BDP Mobile)
+Optimizer: Prompt 07 Fixed-Gate (96MB Window, 2ms Pacer)
 Status: PUSH_TRIGGERED
-Timestamp: 1776610338
+Timestamp: 1776742141
 -------------------------
