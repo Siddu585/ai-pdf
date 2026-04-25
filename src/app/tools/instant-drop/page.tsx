@@ -41,7 +41,7 @@ import { PaywallModal } from "@/components/layout/PaywallModal";
 // v02.2.63 (Tachyon Omega - Zenith Surgical) - 5 Surgical Patches (Rollback Debounce, Migration Guard, Active BDP Gate, MTU Floor Removal, NACK Throttling)
 // v02.2.64 (Tachyon Omega - Gate Unblocker) - GPE 8MB Floor Removal + ICE-based activePipeCount + Unified BDP Formula
 // v02.2.65 (Tachyon Omega - MTU Shield) - File-start MTU grace period + Permanent pipe retirement + Dispatch rate telemetry
-const VERSION = "v02.2.81 (Tachyon Omega ≡ƒô║ Quasar Sync)"; // v02.2.81: Atomic Handover + Net-Progress Sync
+const VERSION = "v02.2.82 (Tachyon Omega ≡ƒô║ Quasar Core)"; // v02.2.82: Dynamic Channel-Aware GPE Gate
 
 
 function getEngineConfig(engine: 'M2M' | 'HYBRID' | 'NITRO') {
@@ -2197,8 +2197,11 @@ ${capturedLogsRef.current.join('\n')}
                 else if (rttMs < 120) dynamicChunkSizeRef.current = 49152; // 48KB
                 else dynamicChunkSizeRef.current = 32768; // 32KB Stable
 
-                // v02.2.81: Tightened Saturation (1MB Floor) to prevent Buffer-Bloat Handover Hijack
-                const saturationThreshold = isM2M ? (1024 * 1024) : Math.min(32 * 1024 * 1024, Math.max(8 * 1024 * 1024, (rttMs / 50) * 8 * 1024 * 1024));
+                // v02.2.82: [QUASAR CORE] Dynamic Channel-Aware GPE Gate
+                // Per-channel saturation determines local pressure; Global gate (per-channel * count) determines loop ceiling.
+                const M2M_FLOOR = 2 * 1024 * 1024; // 2MB Per-channel M2M floor
+                const saturationThreshold = isM2M ? M2M_FLOOR : Math.min(32 * 1024 * 1024, Math.max(8 * 1024 * 1024, (rttMs / 50) * 8 * 1024 * 1024));
+                const globalGateCeiling = saturationThreshold * openChannels.length * 1.25; // 1.25x Buffer Slack
 
                 for (let b = 0; b < BURST_SIZE && (byteOffset < file.size || pendingChunk); b++) {
                     const testIdx = (lastChannelIndexRef.current + b) % openChannels.length;
@@ -2218,8 +2221,8 @@ ${capturedLogsRef.current.join('\n')}
                     if (isM2M && dc.bufferedAmount > saturationThreshold) continue;
                     if (!isM2M && dc.bufferedAmount > saturationThreshold) continue;
                     
-                    // v02.2.80: GPE Gate Enforcement
-                    if (gpeInFlightBytesRef.current >= saturationThreshold * 1.5) break;
+                    // v02.2.82: GPE Gate Enforcement (Global Perspective)
+                    if (gpeInFlightBytesRef.current >= globalGateCeiling) break;
 
                     // --- CHUNK ACQUISITION ---
                     let currentChunk: { data: Uint8Array, seq: number, offset: number } | null = null;
