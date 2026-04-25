@@ -41,7 +41,7 @@ import { PaywallModal } from "@/components/layout/PaywallModal";
 // v02.2.63 (Tachyon Omega - Zenith Surgical) - 5 Surgical Patches (Rollback Debounce, Migration Guard, Active BDP Gate, MTU Floor Removal, NACK Throttling)
 // v02.2.64 (Tachyon Omega - Gate Unblocker) - GPE 8MB Floor Removal + ICE-based activePipeCount + Unified BDP Formula
 // v02.2.65 (Tachyon Omega - MTU Shield) - File-start MTU grace period + Permanent pipe retirement + Dispatch rate telemetry
-const VERSION = "v02.2.80 (Tachyon Omega ≡ƒô║ Quasar Ultra Plus)"; // v02.2.80: Multi-Channel Round-Robin + GPE Drain Fix
+const VERSION = "v02.2.81 (Tachyon Omega ≡ƒô║ Quasar Sync)"; // v02.2.81: Atomic Handover + Net-Progress Sync
 
 
 function getEngineConfig(engine: 'M2M' | 'HYBRID' | 'NITRO') {
@@ -1731,6 +1731,7 @@ ${capturedLogsRef.current.join('\n')}
                         console.log(`%c [HYDRA MONITOR] INSTANT SPEED: ${speed} MB/s`, "color: #00ff00; font-weight: bold;");
                         
                         const chunksThisCycle = chunksSentSinceScaleRef.current;
+                        chunksSentSinceScaleRef.current = 0; // v02.2.81: Reset after sampling
                         const effectiveMBps = (chunksThisCycle * dynamicChunkSizeRef.current / 5 / 1024 / 1024).toFixed(2);
                         logDebug(`ðŸ“Š Dispatch: ~${chunksThisCycle} chunks/5s (${effectiveMBps} MB/s effective), MTU=${Math.round(dynamicChunkSizeRef.current/1024)}KB, Gate=${(gpeInFlightBytesRef.current/1024/1024).toFixed(1)}MB in-flight`);
 
@@ -2173,9 +2174,8 @@ ${capturedLogsRef.current.join('\n')}
 
             if (isGPEBlocked) {
                 if (!gpeBlockedSinceRef.current) gpeBlockedSinceRef.current = Date.now();
-                if (Date.now() - gpeBlockedSinceRef.current > 5000) { // 5s ceiling
-                    logDebug("Î“ÃœÃ¡âˆ©â••Ã… GPE Deadlock detected (5s). Performing Emergency Drain...");
-                    gpeInFlightBytesRef.current = 0; // Complete reset to force stream resumption
+                if (Date.now() - gpeBlockedSinceRef.current > 15000) { // v02.2.81: Increased to 15s to respect high-latency M2M ACKs
+                    logDebug("Î“ÃœÃ¡âˆ©â••Ã… GPE Deadlock detected (15s). Performing Emergency Heartbeat...");
                     sendControlMsg({ type: 'heartbeat', ts: Date.now() }); 
                     gpeBlockedSinceRef.current = Date.now();
                 }
@@ -2197,6 +2197,9 @@ ${capturedLogsRef.current.join('\n')}
                 else if (rttMs < 120) dynamicChunkSizeRef.current = 49152; // 48KB
                 else dynamicChunkSizeRef.current = 32768; // 32KB Stable
 
+                // v02.2.81: Tightened Saturation (1MB Floor) to prevent Buffer-Bloat Handover Hijack
+                const saturationThreshold = isM2M ? (1024 * 1024) : Math.min(32 * 1024 * 1024, Math.max(8 * 1024 * 1024, (rttMs / 50) * 8 * 1024 * 1024));
+
                 for (let b = 0; b < BURST_SIZE && (byteOffset < file.size || pendingChunk); b++) {
                     const testIdx = (lastChannelIndexRef.current + b) % openChannels.length;
                     const dc = openChannels[testIdx];
@@ -2212,9 +2215,8 @@ ${capturedLogsRef.current.join('\n')}
                         if (pipeIdx > 3) continue; // Only Pipes 0-3 are allowed unstable/unready sends
                     }
 
-                    // v02.2.80: Channel Saturation Check (32MB Max)
-                    const saturationThreshold = Math.min(32 * 1024 * 1024, Math.max(8 * 1024 * 1024, (rttMs / 50) * 8 * 1024 * 1024));
-                    if (dc.bufferedAmount > saturationThreshold) continue;
+                    if (isM2M && dc.bufferedAmount > saturationThreshold) continue;
+                    if (!isM2M && dc.bufferedAmount > saturationThreshold) continue;
                     
                     // v02.2.80: GPE Gate Enforcement
                     if (gpeInFlightBytesRef.current >= saturationThreshold * 1.5) break;
@@ -2291,8 +2293,15 @@ ${capturedLogsRef.current.join('\n')}
                         byteOffset += chunkData.byteLength; 
                         chunkSeqIdx++;
                         burstSent++;
+                        chunksSentSinceScaleRef.current++; // v02.2.81: Telemetry Fix
                         lastChunkSeqRef.current = currentSeq;
                         lastProgressTimeRef.current = Date.now();
+                        
+                        // v02.2.81: Net-Sent Progress Sync (Sent minus In-Flight)
+                        const netSentBytes = Math.max(0, totalSentBytesRef.current - gpeInFlightBytesRef.current);
+                        const fileBaseSent = totalSentBytesRef.current - byteOffset; // Rough estimate of bytes from previous files
+                        const currentFileNetSent = Math.max(0, netSentBytes - fileBaseSent);
+                        setProgress(Math.min(99, (currentFileNetSent / file.size) * 100));
                     } catch (e: any) {
                         pendingChunk = currentChunk;
                         break; 
@@ -2301,17 +2310,22 @@ ${capturedLogsRef.current.join('\n')}
                 lastChannelIndexRef.current = (lastChannelIndexRef.current + Math.max(1, burstSent)) % openChannels.length;
 
                 if (burstSent === 0) {
-                    // ALL channels full: Yield with 2ms pacer and 5ms event loop breath
-                    const backupDC = openChannels[0];
-                    if (backupDC && backupDC.readyState === 'open') {
-                        backupDC.bufferedAmountLowThreshold = NITRO_THRESHOLD / 4;
-                        await new Promise(resolve => {
-                            const h = () => { backupDC.removeEventListener('bufferedamountlow', h); resolve(null); };
-                            backupDC.addEventListener('bufferedamountlow', h);
-                            setTimeout(h, 2); 
-                        });
+                    // v02.2.81: [PROMPT 08] Winner-Takes-All Multi-Channel Wakeup
+                    // We wait for ANY of the first 4 channels of each pipe to clear.
+                    const wakeupChannels = openChannels.filter((_, idx) => idx % CHANNELS_PER_PIPE < 4).slice(0, 16);
+                    if (wakeupChannels.length > 0) {
+                        await Promise.race([
+                            ...wakeupChannels.map(wdc => new Promise(resolve => {
+                                wdc.bufferedAmountLowThreshold = saturationThreshold / 2;
+                                const h = () => { wdc.removeEventListener('bufferedamountlow', h); resolve(null); };
+                                wdc.addEventListener('bufferedamountlow', h);
+                                setTimeout(h, 15); // Safety floor
+                            })),
+                            new Promise(resolve => setTimeout(resolve, 5)) // Event loop breath
+                        ]);
+                    } else {
+                        await new Promise(resolve => setTimeout(resolve, 10));
                     }
-                    await new Promise(resolve => setTimeout(resolve, 5)); 
                     continue;
                 }
 
@@ -2372,21 +2386,35 @@ ${capturedLogsRef.current.join('\n')}
             }
         });
 
-        // Pipeline Drain Wait
+        // v02.2.81: [ATOMIC HANDOVER] P2P-ACK Lock
+        // Ensures File N is fully reassembled on receiver BEFORE sending Metadata for File N+1.
         await new Promise<void>(resolve => {
+            const startT = Date.now();
             const check = () => {
                 if (!isActive.current) return resolve();
+                const isConfirmed = hasReceivedFileDoneRef.current[index];
                 const buffered = dataChannelsRef.current.reduce(
                     (acc, c) => acc + (c?.readyState === 'open' ? c.bufferedAmount : 0), 0
                 );
-                // v02.2.78: [DRAIN] Relaxed 64KB Floor (Prompt 07 Analysis)
-                if (buffered < 65536) resolve(); 
-                else setTimeout(check, 100);
+                
+                // v02.2.81: Strict 2MB GPE + Receiver ACK + 10s Timeout Safety
+                const gap = Date.now() - startT;
+                if ((isConfirmed && buffered < 65536) || gap > 10000) {
+                    if (gap > 10000) logDebug(`[HYDRA] Handover timeout (10s) triggered for File-${index}`);
+                    resolve();
+                } else {
+                    setTimeout(check, 100);
+                    if (gap % 2000 === 0) {
+                        logDebug(`[HYDRA] Awaiting P2P-ACK for File-${index}... (In-Flight: ${Math.round(gpeInFlightBytesRef.current/1024)}KB)`);
+                        // Send heartbeat to poke receiver if stalled
+                        sendControlMsg({ type: 'heartbeat', ts: Date.now() });
+                    }
+                }
             };
             check();
         });
         
-        logDebug(`Sender: Data pipelined for ${file.name}. Pipe Drained.`);
+        logDebug(`Sender: Data pipelined AND confirmed for ${file.name}. Pipe Drained.`);
     };
 
     // --- RECEIVER LOGIC (Turbo Drop 2.0) ---

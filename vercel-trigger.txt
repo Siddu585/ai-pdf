@@ -1,9 +1,3 @@
-Vercel Deployment Manifest
--------------------------
-Version: v02.2.80
-Build: LPM (Live Production Mode)
-Engine: Quasar Ultra Plus ║ 4-Pipe (Cross-Carrier Hardened)
-Optimizer: Prompt 08 Round-Robin Burst (GPE Drain Sync)
-Status: PUSH_TRIGGERED
-Timestamp: 1776782341
--------------------------
+Release v02.2.81 (Tachyon Omega ≡ƒô║ Quasar Sync)
+Deploying atomic handover fixes and Net-Sent progress sync.
+Timestamp: 1777099300000
