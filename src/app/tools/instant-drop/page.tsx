@@ -41,7 +41,7 @@ import { PaywallModal } from "@/components/layout/PaywallModal";
 // v02.2.63 (Tachyon Omega - Zenith Surgical) - 5 Surgical Patches (Rollback Debounce, Migration Guard, Active BDP Gate, MTU Floor Removal, NACK Throttling)
 // v02.2.64 (Tachyon Omega - Gate Unblocker) - GPE 8MB Floor Removal + ICE-based activePipeCount + Unified BDP Formula
 // v02.2.65 (Tachyon Omega - MTU Shield) - File-start MTU grace period + Permanent pipe retirement + Dispatch rate telemetry
-const VERSION = "v02.2.82 (Tachyon Omega ≡ƒô║ Quasar Core)"; // v02.2.82: Dynamic Channel-Aware GPE Gate
+const VERSION = "v02.2.83 (Tachyon Omega Quasar Sync Ultra)"; // v02.2.83: Metadata Sequencing + 2ms Pacer Tuning
 
 
 function getEngineConfig(engine: 'M2M' | 'HYBRID' | 'NITRO') {
@@ -1028,6 +1028,13 @@ ${capturedLogsRef.current.join('\n')}
                                 const bytesBefore = bytesReceivedMap.get(fileIdx) || 0;
                                 bytesReceivedMap.set(fileIdx, bytesBefore + chunk.length);
                                 
+                                // v02.2.83: Receiver Progress Signal (Main Thread)
+                                self.postMessage({ 
+                                    type: 'chunk-progress', 
+                                    fileIdx, 
+                                    progress: Math.min(99, ( (bytesBefore + chunk.length) / meta.size) * 100) 
+                                });
+                                
                                 // v02.2.10.8: Explicit GPE Pull Primitive (Length-Safe)
                                 self.postMessage({ type: 'gpe-pull', bytesCleared: chunk.length });
                             }
@@ -1121,6 +1128,9 @@ ${capturedLogsRef.current.join('\n')}
                 const cleared = e.data.bytesCleared || 0;
                 diagnosticMetricsRef.current.bytesCleared += cleared;
                 gpeInFlightBytesRef.current = Math.max(0, gpeInFlightBytesRef.current - cleared);
+            } else if (e.data.type === 'chunk-progress') {
+                 // v02.2.83: Synchronize Receiver Progress UI
+                 if (modeRef.current === 'receive') setProgress(e.data.progress);
             } else if (e.data.type === 'file-done') {
                  // v02.2.72: Atomic Sync Pulse
                  const fIdx = e.data.fileIdx;
@@ -1755,9 +1765,8 @@ ${capturedLogsRef.current.join('\n')}
                     if (view.byteLength === 8 && view.getUint16(0) === 0xFFFF && view.getUint16(2) === 0xEEEE) {
                         const payload = view.getUint32(4, true);
                         const isDone = (payload & 0x80000000) !== 0;
-                        const cleared = (payload & 0xFFFF);
-                        
-                        // Decrement GPE Gate
+                        // v02.2.83: 32-bit Drain Pulse (Full Payload Clearance)
+                        const cleared = (payload & 0xFFFFFFFF) & 0x00FFFFFF; // Extract bytes from lower 24-bits
                         gpeInFlightBytesRef.current = Math.max(0, gpeInFlightBytesRef.current - cleared);
                         
                         if (isDone) {
@@ -1837,7 +1846,8 @@ ${capturedLogsRef.current.join('\n')}
         logDebug("Î“Â£Ã  NAT WARMED: Starting High-Speed Batch broadcast.");
 
         // v02.1.39 (Patch 6): Initial Metadata Sweep (Redundant)
-        broadcastMetadata();
+        // v02.2.83: DEPRECATED LEGACY FLOOD - Metadata is now exclusively sequencing-driven
+        // broadcastMetadata();
         
         for (let i = 0; i < currentFiles.length; i++) {
             if (!isActive.current) break;
@@ -2183,25 +2193,23 @@ ${capturedLogsRef.current.join('\n')}
                 gpeBlockedSinceRef.current = null;
             }
 
+            // v02.2.83: Hoisted Metrics for Multi-Path Stability
+            const rttSafe = Math.min(...rttBufferRef.current.filter(r => r > 0), 1.0);
+            const rttMs = rttSafe * 1000;
+            const M2M_FLOOR = 3 * 1024 * 1024; // 3MB Per-channel M2M floor (v02.2.83)
+            const saturationThreshold = isM2M ? M2M_FLOOR : Math.min(32 * 1024 * 1024, Math.max(8 * 1024 * 1024, (rttMs / 50) * 8 * 1024 * 1024));
+            const globalGateCeiling = saturationThreshold * openChannels.length * 1.25;
+
+            let burstSent = 0;
             if (!isGPEBlocked && openChannels.length > 0) {
                 let selectedDC: RTCDataChannel | null = null;
                 // v02.2.80: [PROMPT 08] Multi-Channel Round-Robin Burst (Zero-Congestion Engine)
                 // Instead of saturating ONE channel, we distribute chunks across ALL open channels.
-                const BURST_SIZE = isM2M ? 32 : 1; 
-                let burstSent = 0;
+                const BURST_SIZE = isM2M ? 128 : 1; // v02.2.83: Full-Pipe Burst (128 Channels)
                 
-                // RTT-Based MTU Scaling (v02.2.80)
-                const rttSafe = Math.min(...rttBufferRef.current.filter(r => r > 0), 1.0);
-                const rttMs = rttSafe * 1000;
                 if (rttMs < 60) dynamicChunkSizeRef.current = 65536; // 64KB (Ultra-High Speed)
                 else if (rttMs < 120) dynamicChunkSizeRef.current = 49152; // 48KB
                 else dynamicChunkSizeRef.current = 32768; // 32KB Stable
-
-                // v02.2.82: [QUASAR CORE] Dynamic Channel-Aware GPE Gate
-                // Per-channel saturation determines local pressure; Global gate (per-channel * count) determines loop ceiling.
-                const M2M_FLOOR = 2 * 1024 * 1024; // 2MB Per-channel M2M floor
-                const saturationThreshold = isM2M ? M2M_FLOOR : Math.min(32 * 1024 * 1024, Math.max(8 * 1024 * 1024, (rttMs / 50) * 8 * 1024 * 1024));
-                const globalGateCeiling = saturationThreshold * openChannels.length * 1.25; // 1.25x Buffer Slack
 
                 for (let b = 0; b < BURST_SIZE && (byteOffset < file.size || pendingChunk); b++) {
                     const testIdx = (lastChannelIndexRef.current + b) % openChannels.length;
@@ -2310,7 +2318,8 @@ ${capturedLogsRef.current.join('\n')}
                         break; 
                     }
                 }
-                lastChannelIndexRef.current = (lastChannelIndexRef.current + Math.max(1, burstSent)) % openChannels.length;
+            }
+            lastChannelIndexRef.current = (lastChannelIndexRef.current + Math.max(1, burstSent)) % openChannels.length;
 
                 if (burstSent === 0) {
                     // v02.2.81: [PROMPT 08] Winner-Takes-All Multi-Channel Wakeup
@@ -2322,9 +2331,9 @@ ${capturedLogsRef.current.join('\n')}
                                 wdc.bufferedAmountLowThreshold = saturationThreshold / 2;
                                 const h = () => { wdc.removeEventListener('bufferedamountlow', h); resolve(null); };
                                 wdc.addEventListener('bufferedamountlow', h);
-                                setTimeout(h, 15); // Safety floor
+                                setTimeout(h, isM2M ? 2 : 15); // v02.2.83: Ultra-Low Wait (2ms) for M2M throughput
                             })),
-                            new Promise(resolve => setTimeout(resolve, 5)) // Event loop breath
+                            new Promise(resolve => setTimeout(resolve, isM2M ? 2 : 5)) // Event loop breath (v02.2.83)
                         ]);
                     } else {
                         await new Promise(resolve => setTimeout(resolve, 10));
@@ -2369,9 +2378,7 @@ ${capturedLogsRef.current.join('\n')}
                             await new Promise(resolve => setTimeout(resolve, 15));
                         }
                     } catch (e) {}
-                }
             }
-        }
 
         setProgress(100);
 
@@ -2418,6 +2425,11 @@ ${capturedLogsRef.current.join('\n')}
         });
         
         logDebug(`Sender: Data pipelined AND confirmed for ${file.name}. Pipe Drained.`);
+        }
+        
+        // Multi-File EOF
+        sendControlMsg({ type: 'batch-eof', totalFiles: filesRef.current.length });
+        setStatus('done-waiting');
     };
 
     // --- RECEIVER LOGIC (Turbo Drop 2.0) ---
@@ -2608,7 +2620,9 @@ ${capturedLogsRef.current.join('\n')}
                             const ackView = rtcAckViewRef.current;
                             ackView.setUint16(0, 0xFFFF);
                             ackView.setUint16(2, 0xEEEE);
-                            ackView.setUint32(4, (pendingAckBytesRef.current & 0xFFFF), true);
+                            // v02.2.83: 24-bit Byte Drain Field (Support up to 16MB clearance per ACK)
+                            ackView.setUint32(4, (pendingAckBytesRef.current & 0x00FFFFFF), true); 
+
                             try { 
                                 dc.send(rtcAckBufRef.current.buffer as ArrayBuffer); 
                                 pendingAckBytesRef.current = 0; 
