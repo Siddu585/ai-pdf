@@ -41,13 +41,13 @@ import { PaywallModal } from "@/components/layout/PaywallModal";
 // v02.2.63 (Tachyon Omega - Zenith Surgical) - 5 Surgical Patches (Rollback Debounce, Migration Guard, Active BDP Gate, MTU Floor Removal, NACK Throttling)
 // v02.2.64 (Tachyon Omega - Gate Unblocker) - GPE 8MB Floor Removal + ICE-based activePipeCount + Unified BDP Formula
 // v02.2.65 (Tachyon Omega - MTU Shield) - File-start MTU grace period + Permanent pipe retirement + Dispatch rate telemetry
-const VERSION = "v02.2.79 (Tachyon Omega â‰¡Æ’Ã´â•º Quasar Ultra)"; // v02.2.79: Prompt 07 Final Accuracy Patch
+const VERSION = "v02.2.80 (Tachyon Omega ≡ƒô║ Quasar Ultra Plus)"; // v02.2.80: Multi-Channel Round-Robin + GPE Drain Fix
 
 
 function getEngineConfig(engine: 'M2M' | 'HYBRID' | 'NITRO') {
     if (engine === 'M2M') {
         return {
-            pipes: 8, // v02.2.79: Hard-coded 8-pipe concurrency as per Quasar Ultra spec
+            pipes: 4, // v02.2.80: Stabilized 4-pipe for cross-carrier (retires jitter-prone 8-pipe)
             pacerThreshold: 96 * 1024 * 1024, // v02.2.79: Matches Prompt 07 window
             mtuLimit: 48 * 1024, 
             nackBackoff: 200 
@@ -1366,8 +1366,8 @@ ${capturedLogsRef.current.join('\n')}
                             // v02.2.68: Fix 6 â€” Pre-retire Pipes 4â€“11 for Cross-Carrier M2M
                             const isLocal = typeof window !== 'undefined' && (window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1');
                             if (isM2M && !isLocal) {
-                                logDebug('M2M Cross-Carrier: Pre-retiring Pipes 8â€“11, using 8-pipe configuration');
-                                for (let p = 8; p < 12; p++) {
+                                logDebug('M2M Cross-Carrier: Pre-retiring Pipes 4–11, using 4-pipe configuration');
+                                for (let p = 4; p < 12; p++) {
                                     pipeGenerationRef.current[p] = 99; // Mark as permanently retired
                                     diagnosticMetricsRef.current.pistonStats[p] = { speed: 0, health: 'red' };
                                 }
@@ -1864,20 +1864,18 @@ ${capturedLogsRef.current.join('\n')}
             logDebug(`Sender: Sending Pipelined Metadata for ${file.name}`);
             sendControlMsg(meta);
 
-            // v02.2.72: Reset sync flag before transfer
-            hasReceivedFileDoneRef.current[i] = false;
+            // v02.2.80: [PROMPT 08] GPE Pipeline Drain (Zero-Delay Handover)
             await transferFileP2PParallel(currentFiles[i], i);
 
-            // v02.2.72: Tachyon Atomic Sync Gate (fixes 1/10 file issue)
-            // We wait up to 10 seconds for the receiver to signal 'file-done' via Mumbai relay.
-            // If we don't wait, the next file's metadata can collide with previous chunks.
-            const syncStart = Date.now();
-            logDebug(`Sender: Awaiting File-${i} completion confirmation from receiver...`);
-            while (!hasReceivedFileDoneRef.current[i] && (Date.now() - syncStart < 10000)) {
-                await new Promise(resolve => setTimeout(resolve, 50));
-                if (!isActive.current) break;
+            const drainStart = Date.now();
+            logDebug(`Sender: Awaiting GPE pipeline drain for File-${i}...`);
+            // Wait for in-flight data to drop below 2MB before sending next sync metadata
+            while (gpeInFlightBytesRef.current > 2 * 1024 * 1024 && 
+                   (Date.now() - drainStart < 5000) && 
+                   isActive.current) {
+                await new Promise(resolve => setTimeout(resolve, 20));
             }
-            logDebug(`Sender: Proceeding to next file (Confirmed: ${!!hasReceivedFileDoneRef.current[i]})`);
+            logDebug(`Sender: Pipe cleared (${(gpeInFlightBytesRef.current/1024/1024).toFixed(2)}MB in-flight). Moving to next file.`);
 
             if (!isActive.current && statusRef.current !== 'done' && statusRef.current !== 'done-waiting') {
                 logDebug("Sender: Transfer loop interrupted by Sentinel reset. Aborting finalization chain.");
@@ -2187,183 +2185,134 @@ ${capturedLogsRef.current.join('\n')}
 
             if (!isGPEBlocked && openChannels.length > 0) {
                 let selectedDC: RTCDataChannel | null = null;
-                const baseIdx = lastChannelIndexRef.current;
-                lastChannelIndexRef.current = (lastChannelIndexRef.current + 1) % openChannels.length;
+                // v02.2.80: [PROMPT 08] Multi-Channel Round-Robin Burst (Zero-Congestion Engine)
+                // Instead of saturating ONE channel, we distribute chunks across ALL open channels.
+                const BURST_SIZE = isM2M ? 32 : 1; 
+                let burstSent = 0;
                 
-                // v02.2.71: Buffer Threshold Fix (Fix 5) â€” 32MB Max
-                const rttMs = (smoothedRTT || 0.1) * 1000;
-                const saturationThreshold = Math.min(32 * 1024 * 1024, Math.max(8 * 1024 * 1024, (rttMs / 50) * 8 * 1024 * 1024));
+                // RTT-Based MTU Scaling (v02.2.80)
+                const rttSafe = Math.min(...rttBufferRef.current.filter(r => r > 0), 1.0);
+                const rttMs = rttSafe * 1000;
+                if (rttMs < 60) dynamicChunkSizeRef.current = 65536; // 64KB (Ultra-High Speed)
+                else if (rttMs < 120) dynamicChunkSizeRef.current = 49152; // 48KB
+                else dynamicChunkSizeRef.current = 32768; // 32KB Stable
 
-                for (let i = 0; i < openChannels.length; i++) {
-                    const testIdx = (baseIdx + i) % openChannels.length;
+                for (let b = 0; b < BURST_SIZE && (byteOffset < file.size || pendingChunk); b++) {
+                    const testIdx = (lastChannelIndexRef.current + b) % openChannels.length;
                     const dc = openChannels[testIdx];
                     if (!dc || dc.readyState !== 'open') continue;
 
+                    // v02.2.80: Pipe Health & Ready Check
                     const pipeIdx = Math.floor(testIdx / CHANNELS_PER_PIPE);
                     const health = diagnosticMetricsRef.current.pistonStats[pipeIdx]?.health || 'green';
                     const pipeMsAlive = Date.now() - (pipeConnectedAtRef.current[pipeIdx] || 0);
                     const pipeHasSentData = pipeSentBytesRef.current[pipeIdx] > 0;
                     const pipeIsReady = pipeHasSentData && pipeMsAlive >= 200;
-
                     if (health === 'red' || !pipeIsReady) {
-                        if (pipeIdx > 3) continue;
+                        if (pipeIdx > 3) continue; // Only Pipes 0-3 are allowed unstable/unready sends
                     }
 
-                    if (dc.bufferedAmount <= saturationThreshold) { 
-                        selectedDC = dc;
-                        break;
+                    // v02.2.80: Channel Saturation Check (32MB Max)
+                    const saturationThreshold = Math.min(32 * 1024 * 1024, Math.max(8 * 1024 * 1024, (rttMs / 50) * 8 * 1024 * 1024));
+                    if (dc.bufferedAmount > saturationThreshold) continue;
+                    
+                    // v02.2.80: GPE Gate Enforcement
+                    if (gpeInFlightBytesRef.current >= saturationThreshold * 1.5) break;
+
+                    // --- CHUNK ACQUISITION ---
+                    let currentChunk: { data: Uint8Array, seq: number, offset: number } | null = null;
+                    if (pendingChunk) {
+                        currentChunk = pendingChunk;
+                        pendingChunk = null;
+                    } else if (byteOffset < file.size) {
+                        const targetSize = dynamicChunkSizeRef.current;
+                        if (fileBuffer) {
+                            const end = Math.min(byteOffset + targetSize, file.size);
+                            currentChunk = { data: fileBuffer.subarray(byteOffset, end), seq: chunkSeqIdx, offset: byteOffset };
+                        } else if (reader) {
+                            if (currentChunkResidual && currentChunkResidual.length >= targetSize) {
+                                currentChunk = { data: currentChunkResidual.slice(0, targetSize), seq: chunkSeqIdx, offset: byteOffset };
+                                currentChunkResidual = currentChunkResidual.length > targetSize ? currentChunkResidual.slice(targetSize) : null;
+                            } else {
+                                try {
+                                    const { value, done } = await reader.read();
+                                    if (done) {
+                                        if (currentChunkResidual) {
+                                            currentChunk = { data: currentChunkResidual, seq: chunkSeqIdx, offset: byteOffset };
+                                            currentChunkResidual = null;
+                                        }
+                                    } else {
+                                        let combined: Uint8Array;
+                                        if (currentChunkResidual) {
+                                            combined = new Uint8Array(currentChunkResidual.length + value.length);
+                                            combined.set(currentChunkResidual);
+                                            combined.set(value, currentChunkResidual.length);
+                                        } else {
+                                            combined = value;
+                                        }
+                                        currentChunkResidual = combined;
+                                        if (currentChunkResidual.length >= targetSize) {
+                                            currentChunk = { data: currentChunkResidual.slice(0, targetSize), seq: chunkSeqIdx, offset: byteOffset };
+                                            currentChunkResidual = currentChunkResidual.length > targetSize ? currentChunkResidual.slice(targetSize) : null;
+                                        } else {
+                                            currentChunk = { data: currentChunkResidual, seq: chunkSeqIdx, offset: byteOffset };
+                                            currentChunkResidual = null;
+                                        }
+                                    }
+                                } catch(e) {}
+                            }
+                        }
+                    }
+
+                    if (!currentChunk) break;
+                    const { data: chunkData, seq: currentSeq, offset: currentOffset } = currentChunk;
+                    const currentGen = pipeGenerationRef.current[pipeIdx] || 1;
+                    
+                    headerViewRef.current.setUint16(0, index, true);
+                    headerViewRef.current.setUint16(2, currentGen, true);
+                    headerViewRef.current.setUint32(4, currentSeq, true); 
+                    headerViewRef.current.setUint32(8, currentOffset, true); 
+
+                    try {
+                        const packet = new Uint8Array(12 + chunkData.byteLength);
+                        packet.set(headerBufRef.current);
+                        packet.set(chunkData, 12);
+                        dc.send(packet as any);
+                        
+                        // Telemetry & Cache
+                        const cacheKey = `${index}_${currentSeq}`;
+                        senderChunkCacheRef.current.set(cacheKey, packet);
+                        if (senderChunkCacheRef.current.size > 2048) {
+                            const k = senderChunkCacheRef.current.keys().next().value;
+                            if (k) senderChunkCacheRef.current.delete(k);
+                        }
+                        totalSentBytesRef.current += packet.byteLength;
+                        gpeInFlightBytesRef.current += packet.byteLength; 
+                        byteOffset += chunkData.byteLength; 
+                        chunkSeqIdx++;
+                        burstSent++;
+                        lastChunkSeqRef.current = currentSeq;
+                        lastProgressTimeRef.current = Date.now();
+                    } catch (e: any) {
+                        pendingChunk = currentChunk;
+                        break; 
                     }
                 }
+                lastChannelIndexRef.current = (lastChannelIndexRef.current + Math.max(1, burstSent)) % openChannels.length;
 
-                if (!selectedDC) {
-                    const dc = openChannels[0];
-                    if (dc && dc.readyState === 'open') {
+                if (burstSent === 0) {
+                    // ALL channels full: Yield with 2ms pacer and 5ms event loop breath
+                    const backupDC = openChannels[0];
+                    if (backupDC && backupDC.readyState === 'open') {
+                        backupDC.bufferedAmountLowThreshold = NITRO_THRESHOLD / 4;
                         await new Promise(resolve => {
-                            let resolved = false;
-                            const handler = () => {
-                                if (!resolved) {
-                                    resolved = true;
-                                    dc.removeEventListener('bufferedamountlow', handler);
-                                    resolve(null);
-                                }
-                            };
-                            dc.addEventListener('bufferedamountlow', handler);
-                            // v02.2.78: [FIX 2] 2ms Pacer Delay
-                            setTimeout(handler, 2); 
+                            const h = () => { backupDC.removeEventListener('bufferedamountlow', h); resolve(null); };
+                            backupDC.addEventListener('bufferedamountlow', h);
+                            setTimeout(h, 2); 
                         });
                     }
-                    // v02.2.71: Reduced yield when ALL pipes are full
                     await new Promise(resolve => setTimeout(resolve, 5)); 
-                    continue; 
-                }
-
-                const dc = selectedDC;
-                
-                if (dc && dc.readyState === 'open') {
-                    // v02.2.78: [FIX 5] Disabled MTU Shrink (Prompt 07)
-                    /* 
-                    const timeSinceLastPulse = Date.now() - flowPulseLastTsRef.current;
-                    if (timeSinceLastPulse > 2000 && dynamicChunkSizeRef.current > 16384) {
-                        dynamicChunkSizeRef.current = Math.floor(dynamicChunkSizeRef.current / 2);
-                        logDebug(`â‰¡Æ’Ã´Ã­ BACKPRESSURE: No flow pulse for 2s. Throttling MTU to ${Math.round(dynamicChunkSizeRef.current/1024)}KB`);
-                        flowPulseLastTsRef.current = Date.now(); 
-                    }
-                    */
-
-                    // v02.2.78: [FIX 4] RTT-Based MTU Scaling (Prompt 07)
-                    const rtt = Math.min(...rttBufferRef.current.filter(r => r > 0), 1.0);
-                    const rttMs = rtt * 1000;
-                    if (rttMs < 60) dynamicChunkSizeRef.current = 65536; // 64KB
-                    else if (rttMs < 120) dynamicChunkSizeRef.current = 49152; // 48KB
-                    else dynamicChunkSizeRef.current = 32768; // 32KB
-                    
-                    // v02.2.78: [FIX 2] Turbo-Burst (16 chunks per loop)
-                    const BURST_SIZE = isM2M ? 16 : 1;
-                    let burstSent = 0;
-
-                    while (burstSent < BURST_SIZE && (byteOffset < file.size || pendingChunk)) {
-                        // v02.2.70: Tightened Gate (1.2x) for smoother 4G flow
-                        if (gpeInFlightBytesRef.current >= saturationThreshold * 1.2) break;
-                        if (dc.bufferedAmount > saturationThreshold) break;
-                        if (dc.readyState !== 'open') break;
-
-                        // --- CHUNK ACQUISITION (Fix 1: Zero-Yield Path) ---
-                        let currentChunk: { data: Uint8Array, seq: number, offset: number } | null = null;
-
-                        if (pendingChunk) {
-                            currentChunk = pendingChunk;
-                            pendingChunk = null;
-                        } else if (byteOffset < file.size) {
-                            const targetSize = dynamicChunkSizeRef.current;
-                            let chunkData: Uint8Array | null = null;
-
-                            if (fileBuffer) {
-                                // Sync Path: Memory Slice
-                                const end = Math.min(byteOffset + targetSize, file.size);
-                                chunkData = fileBuffer.subarray(byteOffset, end);
-                            } else if (reader) {
-                                // Async Path: Stream Read (Fallback for large files/L2M)
-                                if (currentChunkResidual && currentChunkResidual.length >= targetSize) {
-                                    chunkData = currentChunkResidual.slice(0, targetSize);
-                                    currentChunkResidual = currentChunkResidual.length > targetSize ? currentChunkResidual.slice(targetSize) : null;
-                                } else {
-                                    try {
-                                        const { value, done } = await reader.read();
-                                        if (done) {
-                                            if (currentChunkResidual) {
-                                                chunkData = currentChunkResidual;
-                                                currentChunkResidual = null;
-                                            }
-                                        } else {
-                                            if (currentChunkResidual) {
-                                                const newBuf: Uint8Array = new Uint8Array(currentChunkResidual.length + value.length);
-                                                newBuf.set(currentChunkResidual);
-                                                newBuf.set(value, currentChunkResidual.length);
-                                                currentChunkResidual = newBuf;
-                                            } else {
-                                                currentChunkResidual = value;
-                                            }
-                                            const res = currentChunkResidual as Uint8Array;
-                                            if (res.length >= targetSize) {
-                                                chunkData = res.slice(0, targetSize);
-                                                currentChunkResidual = res.length > targetSize ? res.slice(targetSize) : null;
-                                            } else {
-                                                chunkData = res;
-                                                currentChunkResidual = null;
-                                            }
-                                        }
-                                    } catch(e) {}
-                                }
-                            }
-
-                            if (chunkData) {
-                                currentChunk = { data: chunkData, seq: chunkSeqIdx, offset: byteOffset };
-                            }
-                        }
-
-                        if (!currentChunk) break;
-                        const { data: chunkData, seq: currentSeq, offset: currentOffset } = currentChunk;
-
-                        // v02.2.68: Fix 5 â€” No-Allocation Packet Construction
-                        const dcIdx = dataChannelsRef.current.indexOf(dc);
-                        const pipeIdx = Math.floor(dcIdx / CHANNELS_PER_PIPE);
-                        const currentGen = pipeGenerationRef.current[pipeIdx] || 1;
-                        
-                        headerViewRef.current.setUint16(0, index, true);
-                        headerViewRef.current.setUint16(2, currentGen, true);
-                        headerViewRef.current.setUint32(4, currentSeq, true); 
-                        headerViewRef.current.setUint32(8, currentOffset, true); // v02.2.77: Restore missing offset for reassembly
-                        try {
-                            // v02.2.70: Sovereign-Unify Packet Atomicity
-                            // Use unified cachePacket for primary send to ensure receiver compatibility
-                            const unifiedPacket = new Uint8Array(12 + chunkData.byteLength);
-                            unifiedPacket.set(headerBufRef.current);
-                            unifiedPacket.set(chunkData, 12);
-
-                            dc.send(unifiedPacket as any);
-                            lastChunkSeqRef.current = currentSeq; // v02.2.75: Telemetry Recovery
-                            
-                            // Cache for NACK recovery
-                            const cacheKey = `${index}_${currentSeq}`;
-                            senderChunkCacheRef.current.set(cacheKey, unifiedPacket);
-                            if (senderChunkCacheRef.current.size > 2048) {
-                                const k = senderChunkCacheRef.current.keys().next().value;
-                                if (k) senderChunkCacheRef.current.delete(k);
-                            }
-
-                            totalSentBytesRef.current += unifiedPacket.byteLength;
-                            gpeInFlightBytesRef.current += unifiedPacket.byteLength; 
-                            lastProgressTimeRef.current = Date.now();
-                            
-                            byteOffset += chunkData.byteLength; 
-                            chunkSeqIdx++;
-                            burstSent++;
-                        } catch (e: any) {
-                            logDebug(`Î“Â¥Ã® DataChannel Send Error: ${e.message}. Retrying chunk ${currentSeq}...`);
-                            pendingChunk = currentChunk; // Re-queue for next iteration
-                            break; 
-                        }
-                    }
+                    continue;
                 }
 
                 // v02.2.40: WebSocket Tunnel Fallback (If P2P Stalled)

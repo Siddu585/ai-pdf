@@ -1,9 +1,9 @@
 Vercel Deployment Manifest
 -------------------------
-Version: v02.2.79
+Version: v02.2.80
 Build: LPM (Live Production Mode)
-Engine: Quasar Ultra ║ 8-Pipe (High-BDP Mobile)
-Optimizer: Prompt 07 Fixed-Gate (96MB Window, 2ms Pacer)
+Engine: Quasar Ultra Plus ║ 4-Pipe (Cross-Carrier Hardened)
+Optimizer: Prompt 08 Round-Robin Burst (GPE Drain Sync)
 Status: PUSH_TRIGGERED
-Timestamp: 1776742141
+Timestamp: 1776782341
 -------------------------
