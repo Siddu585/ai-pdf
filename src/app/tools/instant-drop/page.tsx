@@ -41,7 +41,7 @@ import { PaywallModal } from "@/components/layout/PaywallModal";
 // v02.2.63 (Tachyon Omega - Zenith Surgical) - 5 Surgical Patches (Rollback Debounce, Migration Guard, Active BDP Gate, MTU Floor Removal, NACK Throttling)
 // v02.2.64 (Tachyon Omega - Gate Unblocker) - GPE 8MB Floor Removal + ICE-based activePipeCount + Unified BDP Formula
 // v02.2.65 (Tachyon Omega - MTU Shield) - File-start MTU grace period + Permanent pipe retirement + Dispatch rate telemetry
-const VERSION = "v02.2.83 (Tachyon Omega Quasar Sync Ultra)"; // v02.2.83: Metadata Sequencing + 2ms Pacer Tuning
+const VERSION = "v02.2.80 (Tachyon Omega Quasar Ultra Plus)"; // v02.2.80: Round-Robin + 512KB Drain + 500ms Floor + Zero-GC Buffers
 
 
 function getEngineConfig(engine: 'M2M' | 'HYBRID' | 'NITRO') {
@@ -60,9 +60,9 @@ function getEngineConfig(engine: 'M2M' | 'HYBRID' | 'NITRO') {
         nackBackoff: 1000
     };
 }
-const PIPES = 16; // v02.2.75: Expanded 16-Pipe BDP-XL Architecture
+const PIPES = 12; // v02.2.80: Synchronized with 12-Pipe Pistor Core
 const CHANNELS_PER_PIPE = 8; 
-const CHANNELS = 128; // PIPES * CHANNELS_PER_PIPE 
+const CHANNELS = 96; // PIPES * CHANNELS_PER_PIPE 
 const CHUNK_SIZE = 32 * 1024; // 32KB Base MTU
 const HIGH_WATER_MARK_MAX = 32 * 1024 * 1024; // 32MB Jumbo Window
 const BASE_PACER_THRESHOLD = 16 * 1024 * 1024; // 16MB Pacer Threshold
@@ -1377,15 +1377,15 @@ ${capturedLogsRef.current.join('\n')}
                             const isLocal = typeof window !== 'undefined' && (window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1');
                             if (isM2M && !isLocal) {
                                 logDebug('M2M Cross-Carrier: Pre-retiring Pipes 4–11, using 4-pipe configuration');
-                                for (let p = 4; p < 12; p++) {
+                                for (let p = 4; p < PIPES; p++) {
                                     pipeGenerationRef.current[p] = 99; // Mark as permanently retired
                                     diagnosticMetricsRef.current.pistonStats[p] = { speed: 0, health: 'red' };
                                 }
                             }
 
                             const startStaggeredHandshake = async () => {
-                                // v02.2.78: 8-pipe concurrency for high-BDP mobile
-                                const setupCount = (isM2M && !isLocal) ? 8 : config.pipes;
+                                // v02.2.80: Unified config-driven setup for M2M
+                                const setupCount = config.pipes;
                                 for (let i = 0; i < setupCount; i++) {
                                     setupWebRTC(ws, true, i);
                                     if (i === 0) await new Promise(resolve => setTimeout(resolve, 300));
@@ -1871,22 +1871,12 @@ ${capturedLogsRef.current.join('\n')}
             };
             lastMetadataRef.current = meta;
 
-            // v02.2.0.22 Pipeline: Send Metadata then immediately stream chunks
+            // v02.2.80: [PROMPT 08] Metadata Sequencing + Sequential P2P Burst
             logDebug(`Sender: Sending Pipelined Metadata for ${file.name}`);
             sendControlMsg(meta);
 
-            // v02.2.80: [PROMPT 08] GPE Pipeline Drain (Zero-Delay Handover)
-            await transferFileP2PParallel(currentFiles[i], i);
-
-            const drainStart = Date.now();
-            logDebug(`Sender: Awaiting GPE pipeline drain for File-${i}...`);
-            // Wait for in-flight data to drop below 2MB before sending next sync metadata
-            while (gpeInFlightBytesRef.current > 2 * 1024 * 1024 && 
-                   (Date.now() - drainStart < 5000) && 
-                   isActive.current) {
-                await new Promise(resolve => setTimeout(resolve, 20));
-            }
-            logDebug(`Sender: Pipe cleared (${(gpeInFlightBytesRef.current/1024/1024).toFixed(2)}MB in-flight). Moving to next file.`);
+            // v02.2.80: Self-Contained Parallel Transfer with Integrated GPE Drain
+            await transferFileP2PParallelSnapshot(file, i);
 
             if (!isActive.current && statusRef.current !== 'done' && statusRef.current !== 'done-waiting') {
                 logDebug("Sender: Transfer loop interrupted by Sentinel reset. Aborting finalization chain.");
@@ -2012,7 +2002,7 @@ ${capturedLogsRef.current.join('\n')}
         isActive.current = false;
     };
  
-    const transferFileP2PParallel = async (file: File, index: number) => {
+    const transferFileP2PParallelSnapshot = async (file: File, index: number) => {
         // v02.2.68: Fix 1 â€” Pre-read Entire File for M2M (Zero-Yield Hot Path)
         const isSelfMobile = isMobileDevice();
         const isM2M = isSelfMobile && remoteCapabilityRef.current.isMobile;
@@ -2052,6 +2042,10 @@ ${capturedLogsRef.current.join('\n')}
 
         let currentChunkResidual: Uint8Array | null = null;
         let pendingChunk: { data: Uint8Array, seq: number, offset: number } | null = null;
+
+        // v02.2.80: [PROMPT 08] Pre-allocated Burst Buffers (Zero-GC Hot Path)
+        const MAX_MTU = 65536;
+        const packetBufs = Array.from({ length: 128 }, () => new Uint8Array(12 + MAX_MTU));
 
         while (byteOffset < file.size || pendingChunk) {
             if (!isActive.current) return;
@@ -2184,7 +2178,7 @@ ${capturedLogsRef.current.join('\n')}
 
             if (isGPEBlocked) {
                 if (!gpeBlockedSinceRef.current) gpeBlockedSinceRef.current = Date.now();
-                if (Date.now() - gpeBlockedSinceRef.current > 15000) { // v02.2.81: Increased to 15s to respect high-latency M2M ACKs
+                if (Date.now() - gpeBlockedSinceRef.current > 15000) {
                     logDebug("Î“ÃœÃ¡âˆ©â••Ã… GPE Deadlock detected (15s). Performing Emergency Heartbeat...");
                     sendControlMsg({ type: 'heartbeat', ts: Date.now() }); 
                     gpeBlockedSinceRef.current = Date.now();
@@ -2193,44 +2187,34 @@ ${capturedLogsRef.current.join('\n')}
                 gpeBlockedSinceRef.current = null;
             }
 
-            // v02.2.83: Hoisted Metrics for Multi-Path Stability
+            // v02.2.80: [PROMPT 10] Real-time RTT & Saturation Tuning
             const rttSafe = Math.min(...rttBufferRef.current.filter(r => r > 0), 1.0);
             const rttMs = rttSafe * 1000;
-            const M2M_FLOOR = 3 * 1024 * 1024; // 3MB Per-channel M2M floor (v02.2.83)
+            const M2M_FLOOR = 3 * 1024 * 1024; // 3MB Per-channel M2M floor
             const saturationThreshold = isM2M ? M2M_FLOOR : Math.min(32 * 1024 * 1024, Math.max(8 * 1024 * 1024, (rttMs / 50) * 8 * 1024 * 1024));
-            const globalGateCeiling = saturationThreshold * openChannels.length * 1.25;
 
             let burstSent = 0;
+            // v02.2.80: [PROMPT 08] Surgical Round-Robin Burst (Structural Fix)
+            // Removed selectedDC scan. Chunks are distributed across all non-saturated channels.
             if (!isGPEBlocked && openChannels.length > 0) {
-                let selectedDC: RTCDataChannel | null = null;
-                // v02.2.80: [PROMPT 08] Multi-Channel Round-Robin Burst (Zero-Congestion Engine)
-                // Instead of saturating ONE channel, we distribute chunks across ALL open channels.
-                const BURST_SIZE = isM2M ? 128 : 1; // v02.2.83: Full-Pipe Burst (128 Channels)
+                const maxPerBurst = isM2M ? 128 : openChannels.length; 
                 
-                if (rttMs < 60) dynamicChunkSizeRef.current = 65536; // 64KB (Ultra-High Speed)
-                else if (rttMs < 120) dynamicChunkSizeRef.current = 49152; // 48KB
-                else dynamicChunkSizeRef.current = 32768; // 32KB Stable
-
-                for (let b = 0; b < BURST_SIZE && (byteOffset < file.size || pendingChunk); b++) {
+                for (let b = 0; b < maxPerBurst && (byteOffset < file.size || pendingChunk); b++) {
                     const testIdx = (lastChannelIndexRef.current + b) % openChannels.length;
                     const dc = openChannels[testIdx];
                     if (!dc || dc.readyState !== 'open') continue;
 
-                    // v02.2.80: Pipe Health & Ready Check
+                    // v02.2.80: GPE Gate & Pipe Health Ready Check
+                    if (dc.bufferedAmount > saturationThreshold) continue;
+                    if (gpeInFlightBytesRef.current >= currentGate) break;
+
                     const pipeIdx = Math.floor(testIdx / CHANNELS_PER_PIPE);
                     const health = diagnosticMetricsRef.current.pistonStats[pipeIdx]?.health || 'green';
                     const pipeMsAlive = Date.now() - (pipeConnectedAtRef.current[pipeIdx] || 0);
                     const pipeHasSentData = pipeSentBytesRef.current[pipeIdx] > 0;
-                    const pipeIsReady = pipeHasSentData && pipeMsAlive >= 200;
-                    if (health === 'red' || !pipeIsReady) {
-                        if (pipeIdx > 3) continue; // Only Pipes 0-3 are allowed unstable/unready sends
+                    if (health === 'red' || (!pipeHasSentData && pipeMsAlive < 200)) {
+                        if (pipeIdx > 3) continue; // v02.2.80: Reserve Pipes 0-3 for unstable/unready sends
                     }
-
-                    if (isM2M && dc.bufferedAmount > saturationThreshold) continue;
-                    if (!isM2M && dc.bufferedAmount > saturationThreshold) continue;
-                    
-                    // v02.2.82: GPE Gate Enforcement (Global Perspective)
-                    if (gpeInFlightBytesRef.current >= globalGateCeiling) break;
 
                     // --- CHUNK ACQUISITION ---
                     let currentChunk: { data: Uint8Array, seq: number, offset: number } | null = null;
@@ -2243,6 +2227,7 @@ ${capturedLogsRef.current.join('\n')}
                             const end = Math.min(byteOffset + targetSize, file.size);
                             currentChunk = { data: fileBuffer.subarray(byteOffset, end), seq: chunkSeqIdx, offset: byteOffset };
                         } else if (reader) {
+                             // v02.2.80: Preservation of reader-path buffering
                             if (currentChunkResidual && currentChunkResidual.length >= targetSize) {
                                 currentChunk = { data: currentChunkResidual.slice(0, targetSize), seq: chunkSeqIdx, offset: byteOffset };
                                 currentChunkResidual = currentChunkResidual.length > targetSize ? currentChunkResidual.slice(targetSize) : null;
@@ -2281,38 +2266,39 @@ ${capturedLogsRef.current.join('\n')}
                     const { data: chunkData, seq: currentSeq, offset: currentOffset } = currentChunk;
                     const currentGen = pipeGenerationRef.current[pipeIdx] || 1;
                     
+                    // v02.2.80: [PROMPT 08] Zero-GC Header & Packet Sync
                     headerViewRef.current.setUint16(0, index, true);
                     headerViewRef.current.setUint16(2, currentGen, true);
                     headerViewRef.current.setUint32(4, currentSeq, true); 
                     headerViewRef.current.setUint32(8, currentOffset, true); 
 
                     try {
-                        const packet = new Uint8Array(12 + chunkData.byteLength);
-                        packet.set(headerBufRef.current);
-                        packet.set(chunkData, 12);
+                        // v02.2.80: Zero-GC Packet Buffering
+                        const buf = packetBufs[testIdx % 128];
+                        buf.set(headerBufRef.current, 0);
+                        buf.set(chunkData, 12);
+                        const packet = buf.subarray(0, 12 + chunkData.byteLength);
                         dc.send(packet as any);
                         
-                        // Telemetry & Cache
+                        // v02.2.80: Immutable Cache Allocation (Only during caching)
                         const cacheKey = `${index}_${currentSeq}`;
-                        senderChunkCacheRef.current.set(cacheKey, packet);
+                        senderChunkCacheRef.current.set(cacheKey, buf.slice(0, 12 + chunkData.byteLength));
                         if (senderChunkCacheRef.current.size > 2048) {
                             const k = senderChunkCacheRef.current.keys().next().value;
                             if (k) senderChunkCacheRef.current.delete(k);
                         }
+
                         totalSentBytesRef.current += packet.byteLength;
                         gpeInFlightBytesRef.current += packet.byteLength; 
                         byteOffset += chunkData.byteLength; 
                         chunkSeqIdx++;
                         burstSent++;
-                        chunksSentSinceScaleRef.current++; // v02.2.81: Telemetry Fix
+                        diagnosticMetricsRef.current.pistonStats[pipeIdx].speed += packet.byteLength;
+                        
                         lastChunkSeqRef.current = currentSeq;
                         lastProgressTimeRef.current = Date.now();
-                        
-                        // v02.2.81: Net-Sent Progress Sync (Sent minus In-Flight)
-                        const netSentBytes = Math.max(0, totalSentBytesRef.current - gpeInFlightBytesRef.current);
-                        const fileBaseSent = totalSentBytesRef.current - byteOffset; // Rough estimate of bytes from previous files
-                        const currentFileNetSent = Math.max(0, netSentBytes - fileBaseSent);
-                        setProgress(Math.min(99, (currentFileNetSent / file.size) * 100));
+                        setProgress(Math.min(99, (byteOffset / file.size) * 100));
+
                     } catch (e: any) {
                         pendingChunk = currentChunk;
                         break; 
@@ -2378,6 +2364,7 @@ ${capturedLogsRef.current.join('\n')}
                             await new Promise(resolve => setTimeout(resolve, 15));
                         }
                     } catch (e) {}
+                }
             }
 
         setProgress(100);
@@ -2396,40 +2383,19 @@ ${capturedLogsRef.current.join('\n')}
             }
         });
 
-        // v02.2.81: [ATOMIC HANDOVER] P2P-ACK Lock
-        // Ensures File N is fully reassembled on receiver BEFORE sending Metadata for File N+1.
-        await new Promise<void>(resolve => {
-            const startT = Date.now();
-            const check = () => {
-                if (!isActive.current) return resolve();
-                const isConfirmed = hasReceivedFileDoneRef.current[index];
-                const buffered = dataChannelsRef.current.reduce(
-                    (acc, c) => acc + (c?.readyState === 'open' ? c.bufferedAmount : 0), 0
-                );
-                
-                // v02.2.81: Strict 2MB GPE + Receiver ACK + 10s Timeout Safety
-                const gap = Date.now() - startT;
-                if ((isConfirmed && buffered < 65536) || gap > 10000) {
-                    if (gap > 10000) logDebug(`[HYDRA] Handover timeout (10s) triggered for File-${index}`);
-                    resolve();
-                } else {
-                    setTimeout(check, 100);
-                    if (gap % 2000 === 0) {
-                        logDebug(`[HYDRA] Awaiting P2P-ACK for File-${index}... (In-Flight: ${Math.round(gpeInFlightBytesRef.current/1024)}KB)`);
-                        // Send heartbeat to poke receiver if stalled
-                        sendControlMsg({ type: 'heartbeat', ts: Date.now() });
-                    }
-                }
-            };
-            check();
-        });
-        
-        logDebug(`Sender: Data pipelined AND confirmed for ${file.name}. Pipe Drained.`);
+        // v02.2.80: [PROMPT 10] gpeInFlight Drain (Surgical Finalization)
+        // Ensures network queue is < 512KB and at least 500ms has passed for receiver reassembly.
+        const drainStart = Date.now();
+        const MIN_INTER_FILE_GAP_MS = 500;
+        while (isActive.current) {
+            const elapsed = Date.now() - drainStart;
+            const inFlight = gpeInFlightBytesRef.current;
+            if (inFlight < 512 * 1024 && elapsed >= MIN_INTER_FILE_GAP_MS) break;
+            if (elapsed >= 5000) break; // v02.2.80: Hard timeout floor
+            await new Promise(resolve => setTimeout(resolve, 20));
         }
         
-        // Multi-File EOF
-        sendControlMsg({ type: 'batch-eof', totalFiles: filesRef.current.length });
-        setStatus('done-waiting');
+        logDebug(`Sender: Data pipelined AND confirmed for ${file.name}. Pipe Drained.`);
     };
 
     // --- RECEIVER LOGIC (Turbo Drop 2.0) ---

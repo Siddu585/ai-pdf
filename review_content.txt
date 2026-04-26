@@ -1,0 +1,80 @@
+Implementation Plan Review for : v02.2.80 "Quasar Ultra Plus"
+Overall Verdict: Conditionally Approved with 4 mandatory corrections. The direction is correct and the three problems are correctly identified. However two of the three proposed implementations have structural flaws that will cause them to either fail silently or produce a different result than intended. The plan as written will deploy broken code.
+Change 1 — Round-Robin Burst (Problem 1 Fix)
+Status: STRUCTURALLY INCORRECT — will not work as described.
+The plan says: "Increase BURST_SIZE to 32... modify the burst loop to distribute chunks across all openChannels in a round-robin fashion."
+This misunderstands the current architecture. The burst loop (L2264–L2366) lives inside the selectedDC block (L2188–L2367). selectedDC is a single channel chosen by the O(32) scan at L2197–L2216. The burst loop then sends all chunks to that one selectedDC. If you simply change BURST_SIZE to 32 and add dc = openChannels[b % openChannels.length] inside the existing burst loop, you still have the selectedDC scan running every outer iteration — selecting one channel, then ignoring it because the burst loop picks its own channels. The selectedDC scan at L2197–L2216 will also falsely break the entire block if selectedDC === null (when one channel happens to be above saturationThreshold), even though other channels are free.
+The required change is a full restructuring of L2188–L2366, not a parameter tweak. The selectedDC variable and its scan loop must be removed entirely. The new structure should be:
+typescript
+// L2188 replacement — remove selectedDC entirely
+if (!isGPEBlocked && openChannels.length > 0) {
+    let chunksThisBurst = 0;
+    const maxPerBurst = openChannels.length; // 32 for M2M
+    for (let b = 0; b < maxPerBurst && byteOffset < file.size; b++) {
+        const dc = openChannels[(lastChannelIndexRef.current + b) % openChannels.length];
+        if (!dc || dc.readyState !== 'open') continue;
+        if (dc.bufferedAmount > saturationThreshold) continue;
+        if (gpeInFlightBytesRef.current >= currentGate) break;
+        // [chunk acquisition — fileBuffer sync path, same as current L2271–L2322]
+        // [header construction — same as current L2327–L2335]
+        // [dc.send(unifiedPacket) — same as current L2336–L2365]
+        chunksThisBurst++;
+    }
+    lastChannelIndexRef.current = (lastChannelIndexRef.current + openChannels.length) % openChannels.length;
+    // Only fall back to bufferedamountlow wait if zero chunks sent this iteration
+    if (chunksThisBurst === 0) {
+        const dc = openChannels[0];
+        if (dc && dc.readyState === 'open') {
+            await new Promise<void>(resolve => {
+                let resolved = false;
+                const handler = () => { if (!resolved) { resolved = true; dc.removeEventListener('bufferedamountlow', handler); resolve(); } };
+                dc.addEventListener('bufferedamountlow', handler);
+                setTimeout(handler, 2);
+            });
+        }
+        await new Promise(resolve => setTimeout(resolve, 5));
+    }
+}
+The chunk acquisition block inside this loop needs special handling: when fileBuffer is set (the M2M sync path), each inner iteration of the loop must advance its own local offset pointer, not use the outer byteOffset which only advances after a successful send. In the current code byteOffset += chunkData.byteLength is inside the try block — this is fine as long as each inner loop iteration reads fileBuffer.subarray(byteOffset, ...) using the most recently advanced byteOffset. This is already correct because byteOffset is advanced before b increments. The pendingChunk re-queue logic (L2363) must also be preserved — if a dc.send() throws, set pendingChunk = currentChunk and break from the inner loop.
+Change 2 — gpeInFlight Drain (Problem 2 Fix)
+Status: DIRECTIONALLY CORRECT but threshold is too loose. The 2MB value will cause metadata collisions on slow links.
+The gpeInFlight drain approach is sound — it replaces an unmeasurable round-trip wait with a local observable. However the 2MB threshold is wrong for cross-carrier TURN sessions. Here is why:
+The receiver sends gpe-pull ACKs in the HYDRA monitor every ~1 second, clearing batches of bytesCleared. At 1.1 MB/s throughput, each 1-second ACK clears ~1.1MB from gpeInFlight. The sender's last burst drains to near zero quickly, but gpeInFlight lags by up to 1 second (the HYDRA interval). It will typically sit at 1–3MB after the send loop ends, meaning gpeInFlight < 2MB triggers almost immediately — before the receiver has reassembled the final chunks of File-N.
+File-N's last chunks travel 42–146ms to the receiver (the session OWTT range), then take ~500ms to reassemble in the worker, then the worker posts file-done, then the receiver sends it via the signaling WebSocket to the sender. Total: ~650ms minimum. If the sender proceeds after gpeInFlight < 2MB at ~100ms after drain, File-N+1 metadata arrives at the receiver 550ms before File-N is fully reassembled. On a congested 4G link where SCTP delivery order may not be strict, this creates the same chunk collision as before.
+Change the threshold to < 512KB and add a hard minimum wait of 500ms:
+typescript
+// Wait for both: (a) in-flight drops below 512KB AND (b) minimum 500ms elapsed
+const drainStart = Date.now();
+const MIN_INTER_FILE_GAP_MS = 500;
+while (isActive.current) {
+    const elapsed = Date.now() - drainStart;
+    const inFlight = gpeInFlightBytesRef.current;
+    if (inFlight < 512 * 1024 && elapsed >= MIN_INTER_FILE_GAP_MS) break;
+    if (elapsed >= 5000) break; // hard timeout unchanged
+    await new Promise(resolve => setTimeout(resolve, 20));
+}
+This ensures: (1) the network queue is nearly empty (512KB ≈ 10 chunks at 48KB MTU, arriving in <50ms at 146ms RTT), and (2) the receiver's reassembly worker has had at least 500ms to process them. For a 12.6MB file completing at 1.1 MB/s the inter-file gap shrinks from 10s to 500ms — a 20× improvement. For the eventual 10 MB/s target, 12.6MB sends in 1.26s, and the 500ms floor means 28% overhead — acceptable and easily tunable further once throughput improves.
+Change 3 — pipes: 4 and Pre-retire Pipes 4–11 (Problem 3 Fix)
+Status: CORRECT and necessary. The plan exactly matches what the code needs.
+The v79 source confirms:
+getEngineConfig M2M: pipes: 8 → change to 4
+Pre-retirement loop (L1369–L1373): currently retires only Pipes 8–11 → change to Pipes 4–11
+Also required (not in the plan): startStaggeredHandshake at L1378 uses const setupCount = (isM2M && !isLocal) ? 8 : config.pipes. After changing config.pipes to 4, setupCount will be 4 for M2M. This is correct and already handles itself — no additional change needed there.
+One edge case to watch: targetChannelLimit is computed as Math.max(48, PIPES * CHANNELS_PER_PIPE). PIPES is the global constant (currently 12, was 16 in v76), not config.pipes. The channel cache scan at L2106 still iterates 0..95 (or 0..127). With Pipes 4–11 pre-retired and their DataChannels never opened, dataChannelsRef.current[32..95] will be null, so the cache scan simply skips them. This is not a bug, just a minor inefficiency (scanning 64 null slots every 10ms). For a future cleanup, set targetChannelLimit = 32 explicitly for M2M, but it is not blocking for v02.2.80.
+Additional Item Not in the Plan: unifiedPacket Allocation Inside Hot Path
+The plan does not address the new Uint8Array(12 + chunkData.byteLength) at L2339. With round-robin bursting across 32 channels per outer iteration, this fires 32 times per outer loop — 32 GC allocations. At 10 MB/s that is 320 allocations/second per channel × 32 channels = 10,240 Uint8Array allocations/second. On a constrained mobile JS runtime (Chrome on Android with limited GC budget) this will cause GC pauses of 5–15ms every 1–2 seconds, visible as throughput hiccups.
+Pre-allocate a per-channel packet buffer array before the outer while loop:
+typescript
+// Once, before the while loop:
+const MAX_CHANNELS = 32;
+const MAX_MTU = 65536;
+const packetBufs = Array.from({ length: MAX_CHANNELS }, () => new Uint8Array(12 + MAX_MTU));
+// Inside the inner loop (replacing L2339–L2341):
+const buf = packetBufs[b % MAX_CHANNELS];
+buf.set(headerBufRef.current, 0);       // 12-byte header
+buf.set(chunkData, 12);                 // data
+const packet = buf.subarray(0, 12 + chunkData.byteLength);  // view, no copy
+dc.send(packet as any);
+This eliminates all per-chunk GC pressure. buf.subarray() is O(1) and creates a view without allocation. The NACK cache at L2347 (senderChunkCacheRef.current.set(cacheKey, unifiedPacket)) stores a reference — with the pre-allocated buffer approach, the cache would store a reference to a mutable buffer. Fix by storing a copy only when caching: senderChunkCacheRef.current.set(cacheKey, buf.slice(0, 12 + chunkData.byteLength)). The .slice() allocation for the cache is fine since it happens at most 2048 times total (cache cap).
+Summary: What Needs to Change from the Plan Before Coding Begins
+Changes 3 and 4 are straightforward one-pass edits. Changes 1 and 2 require careful surgical restructuring. Implementing Change 1 incorrectly (patching BURST_SIZE without removing selectedDC) will appear to work but will only use 1 channel when selectedDC resolves to null, regressing to the current blocking behavior.
