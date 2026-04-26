@@ -41,14 +41,14 @@ import { PaywallModal } from "@/components/layout/PaywallModal";
 // v02.2.63 (Tachyon Omega - Zenith Surgical) - 5 Surgical Patches (Rollback Debounce, Migration Guard, Active BDP Gate, MTU Floor Removal, NACK Throttling)
 // v02.2.64 (Tachyon Omega - Gate Unblocker) - GPE 8MB Floor Removal + ICE-based activePipeCount + Unified BDP Formula
 // v02.2.65 (Tachyon Omega - MTU Shield) - File-start MTU grace period + Permanent pipe retirement + Dispatch rate telemetry
-const VERSION = "v02.2.83 (Tachyon Omega - Prompt 09 Refined)"; // v02.2.83: Adaptive BDP Gate + 60ms Cooldown + 1.5s Resuscitator + Gen Guard
+const VERSION = "v02.2.84 (Tachyon Omega - Prompt 10 Final)"; // v02.2.84: 12-Pipe M2M + 3-Pipe Induction Gate + Adaptive BDP Gate + Gen Guard
 
 
 function getEngineConfig(engine: 'M2M' | 'HYBRID' | 'NITRO') {
     if (engine === 'M2M') {
         return {
-            pipes: 4, // v02.2.80: Stabilized 4-pipe for cross-carrier (retires jitter-prone 8-pipe)
-            pacerThreshold: 96 * 1024 * 1024, // v02.2.79: Matches Prompt 07 window
+            pipes: 12, // v02.2.84: Restored 12-pipe for 10MB/s target (governed by 60ms batching)
+            pacerThreshold: 96 * 1024 * 1024, 
             mtuLimit: 48 * 1024, 
             nackBackoff: 200 
         };
@@ -1860,9 +1860,22 @@ ${capturedLogsRef.current.join('\n')}
         requestWakeLock();
         
         // v02.2.10.8: NAT Warm-up Pulse (200ms)
-        // Ensures the Mumbai relay and client NAT mappings are fully established before the first metadata blast.
         await new Promise(resolve => setTimeout(resolve, 200));
         logDebug("Î“Â£Ã  NAT WARMED: Starting High-Speed Batch broadcast.");
+
+        // v02.2.84: [FIX 3] M2M Induction Gate - Wait for at least 3 pipes to stabilize before data flow
+        const isSelfMobile = isMobileDevice();
+        const isM2M = isSelfMobile && remoteCapabilityRef.current.isMobile;
+        if (isM2M) {
+            logDebug("M2M Mode: Awaiting minimum 3 pipes for stable induction...");
+            const startWait = Date.now();
+            while (isActive.current && Date.now() - startWait < 8000) {
+                const connectedCount = peersRef.current.filter(p => p && p.iceConnectionState === 'connected').length;
+                if (connectedCount >= 3) break;
+                await new Promise(resolve => setTimeout(resolve, 300));
+            }
+            logDebug(`M2M Mode: Induction ready (${peersRef.current.filter(p => p && p.iceConnectionState === 'connected').length} connected).`);
+        }
 
         // v02.1.39 (Patch 6): Initial Metadata Sweep (Redundant)
         // v02.2.83: DEPRECATED LEGACY FLOOD - Metadata is now exclusively sequencing-driven
