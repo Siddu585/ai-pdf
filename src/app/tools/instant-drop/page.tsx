@@ -41,7 +41,7 @@ import { PaywallModal } from "@/components/layout/PaywallModal";
 // v02.2.63 (Tachyon Omega - Zenith Surgical) - 5 Surgical Patches (Rollback Debounce, Migration Guard, Active BDP Gate, MTU Floor Removal, NACK Throttling)
 // v02.2.64 (Tachyon Omega - Gate Unblocker) - GPE 8MB Floor Removal + ICE-based activePipeCount + Unified BDP Formula
 // v02.2.65 (Tachyon Omega - MTU Shield) - File-start MTU grace period + Permanent pipe retirement + Dispatch rate telemetry
-const VERSION = "v02.2.81 (Tachyon Omega - Sync Hardened)"; // v02.2.81: UI-Sync + Barrier Drain + Hole-Aware Pacing + Sync Redundancy
+const VERSION = "v02.2.82 (Tachyon Omega - RECOMMENDATION SYNC)"; // v02.2.82: Remove selectedDC + 512KB Drain + 32-Channel Cap + RX-Progress Pulse
 
 
 function getEngineConfig(engine: 'M2M' | 'HYBRID' | 'NITRO') {
@@ -575,6 +575,12 @@ function InstantDropContent() {
                     
                     workerRef.current?.postMessage({ type: 'metadata', fileIdx: safeIdx, meta: { ...msg, currentIdx: safeIdx, totalFiles: safeTotal } });
                     if (statusRef.current !== 'done') setStatus('transferring');
+                }
+                break;
+            case 'rx-progress':
+                if (modeRef.current === 'send' && currentFileIndex === msg.fileIdx) {
+                    const prog = Math.min(100, (msg.chunksReceived / msg.totalChunks) * 100);
+                    setProgress(Math.round(prog));
                 }
                 break;
             case 'file-done-ack':
@@ -2055,9 +2061,9 @@ ${capturedLogsRef.current.join('\n')}
         let currentChunkResidual: Uint8Array | null = null;
         let pendingChunk: { data: Uint8Array, seq: number, offset: number } | null = null;
 
-        // v02.2.80: [PROMPT 08] Pre-allocated Burst Buffers (Zero-GC Hot Path)
+        // v02.2.82: [FIX 3] Pre-allocate 32 packet buffers (Change 4 from plan)
         const MAX_MTU = 65536;
-        const packetBufs = Array.from({ length: 128 }, () => new Uint8Array(12 + MAX_MTU));
+        const packetBufs = Array.from({ length: 32 }, () => new Uint8Array(12 + MAX_MTU));
 
         while (byteOffset < file.size || pendingChunk) {
             if (!isActive.current) return;
@@ -2101,7 +2107,8 @@ ${capturedLogsRef.current.join('\n')}
             const NITRO_THRESHOLD = config.pacerThreshold;
             const FIXED_GPE_WINDOW = 96 * 1024 * 1024; // 96MB Stable Window
             const currentGate = FIXED_GPE_WINDOW;
-            const targetChannelLimit = Math.max(48, PIPES * CHANNELS_PER_PIPE); 
+            // v02.2.82: [FIX 5] Cap targetChannelLimit = 32 explicitly for M2M Clean-up
+            const targetChannelLimit = isM2M ? 32 : Math.max(48, PIPES * CHANNELS_PER_PIPE); 
             const isGPEBlocked = gpeInFlightBytesRef.current > currentGate; 
 
             if (isGPEBlocked && chunkSeqIdx % 50 === 0) {
@@ -2206,19 +2213,20 @@ ${capturedLogsRef.current.join('\n')}
             const saturationThreshold = isM2M ? M2M_FLOOR : Math.min(32 * 1024 * 1024, Math.max(8 * 1024 * 1024, (rttMs / 50) * 8 * 1024 * 1024));
 
             let burstSent = 0;
-            // v02.2.80: [PROMPT 08] Surgical Round-Robin Burst (Structural Fix)
-            // Removed selectedDC scan. Chunks are distributed across all non-saturated channels.
+            // v02.2.82: [FIX 1] Structured Round-Robin (Remove selectedDC entirely)
             if (!isGPEBlocked && openChannels.length > 0) {
-                const maxPerBurst = isM2M ? 128 : openChannels.length; 
+                // v02.2.82: Iterate up to 32 channels per burst for M2M efficiency
+                const scanLimit = Math.min(openChannels.length, targetChannelLimit);
                 
-                for (let b = 0; b < maxPerBurst && (byteOffset < file.size || pendingChunk); b++) {
+                for (let b = 0; b < scanLimit && (byteOffset < file.size || pendingChunk); b++) {
+                    if (gpeInFlightBytesRef.current >= currentGate) break; // [FIX 1] Break when Gate saturated
+
                     const testIdx = (lastChannelIndexRef.current + b) % openChannels.length;
                     const dc = openChannels[testIdx];
                     if (!dc || dc.readyState !== 'open') continue;
 
-                    // v02.2.80: GPE Gate & Pipe Health Ready Check
+                    // v02.2.82: [FIX 1] Saturation Skip
                     if (dc.bufferedAmount > saturationThreshold) continue;
-                    if (gpeInFlightBytesRef.current >= currentGate) break;
 
                     const pipeIdx = Math.floor(testIdx / CHANNELS_PER_PIPE);
                     const health = diagnosticMetricsRef.current.pistonStats[pipeIdx]?.health || 'green';
@@ -2285,14 +2293,16 @@ ${capturedLogsRef.current.join('\n')}
                     headerViewRef.current.setUint32(8, currentOffset, true); 
 
                     try {
-                        // v02.2.80: Zero-GC Packet Buffering
-                        const buf = packetBufs[testIdx % 128];
+                        // v02.2.82: [FIX 3] Pre-allocated Buffer Piling (32 slots)
+                        const buf = packetBufs[b % 32];
                         buf.set(headerBufRef.current, 0);
                         buf.set(chunkData, 12);
+                        
+                        // v02.2.82: [FIX 3] Subarray for send (Zero-Copy)
                         const packet = buf.subarray(0, 12 + chunkData.byteLength);
                         dc.send(packet as any);
                         
-                        // v02.2.80: Immutable Cache Allocation (Only during caching)
+                        // v02.2.82: [FIX 3] .slice() for NACK cache (Avoid pool corruption)
                         const cacheKey = `${index}_${currentSeq}`;
                         senderChunkCacheRef.current.set(cacheKey, buf.slice(0, 12 + chunkData.byteLength));
                         if (senderChunkCacheRef.current.size > 2048) {
@@ -2444,6 +2454,26 @@ ${capturedLogsRef.current.join('\n')}
         }, 10000); // 10s Heartbeat for lower overhead
         return () => clearInterval(interval);
     }, [status]);
+    
+    // v02.2.82: [FIX 4] Receiver-side Progress Report Pulse (fixes UI de-sync symptom)
+    useEffect(() => {
+        if (mode !== 'receive' || (status !== 'transferring' && status !== 'connecting')) return;
+        const interval = setInterval(() => {
+            if (wsRef.current?.readyState === WebSocket.OPEN) {
+                // Emit progress for all active reassemblies
+                reassemblyMapRef.current.forEach((bitset, fileIdx) => {
+                    const total = expectedChunksMapRef.current.get(fileIdx) || 1;
+                    sendControlMsg({
+                        type: 'rx-progress',
+                        fileIdx: fileIdx,
+                        chunksReceived: bitset.size,
+                        totalChunks: total
+                    });
+                });
+            }
+        }, 500);
+        return () => clearInterval(interval);
+    }, [mode, status]);
 
     const joinRoom = async (roomName: string) => {
         disconnectEverything();
