@@ -41,7 +41,7 @@ import { PaywallModal } from "@/components/layout/PaywallModal";
 // v02.2.63 (Tachyon Omega - Zenith Surgical) - 5 Surgical Patches (Rollback Debounce, Migration Guard, Active BDP Gate, MTU Floor Removal, NACK Throttling)
 // v02.2.64 (Tachyon Omega - Gate Unblocker) - GPE 8MB Floor Removal + ICE-based activePipeCount + Unified BDP Formula
 // v02.2.65 (Tachyon Omega - MTU Shield) - File-start MTU grace period + Permanent pipe retirement + Dispatch rate telemetry
-const VERSION = "v02.2.80 (Tachyon Omega Quasar Ultra Plus)"; // v02.2.80: Round-Robin + 512KB Drain + 500ms Floor + Zero-GC Buffers
+const VERSION = "v02.2.81 (Tachyon Omega - Sync Hardened)"; // v02.2.81: UI-Sync + Barrier Drain + Hole-Aware Pacing + Sync Redundancy
 
 
 function getEngineConfig(engine: 'M2M' | 'HYBRID' | 'NITRO') {
@@ -575,6 +575,18 @@ function InstantDropContent() {
                     
                     workerRef.current?.postMessage({ type: 'metadata', fileIdx: safeIdx, meta: { ...msg, currentIdx: safeIdx, totalFiles: safeTotal } });
                     if (statusRef.current !== 'done') setStatus('transferring');
+                }
+                break;
+            case 'file-done-ack':
+                if (modeRef.current === 'send') {
+                    hasReceivedFileDoneRef.current[msg.fileIdx] = true;
+                    logDebug(`Sender: Received Signal-ACK for File-${msg.fileIdx}. Barrier unlocked.`);
+                }
+                break;
+            case 'sync-poke':
+                if (modeRef.current === 'receive') {
+                    logDebug(`Receiver: Received Sync-Poke for File-${msg.fileIdx}. Re-broadcasting completion status...`);
+                    triggerFileCompletion(msg.fileIdx);
                 }
                 break;
             case 'nack':
@@ -2297,7 +2309,10 @@ ${capturedLogsRef.current.join('\n')}
                         
                         lastChunkSeqRef.current = currentSeq;
                         lastProgressTimeRef.current = Date.now();
-                        setProgress(Math.min(99, (byteOffset / file.size) * 100));
+                        // v02.2.81: Receiver-State Progress Sync (Prevents UI Leap-ahead)
+                        const confirmedBytes = Math.max(0, byteOffset - gpeInFlightBytesRef.current);
+                        const progress = Math.min(99, (confirmedBytes / file.size) * 100);
+                        setProgress(progress);
 
                     } catch (e: any) {
                         pendingChunk = currentChunk;
@@ -2383,19 +2398,38 @@ ${capturedLogsRef.current.join('\n')}
             }
         });
 
-        // v02.2.80: [PROMPT 10] gpeInFlight Drain (Surgical Finalization)
-        // Ensures network queue is < 512KB and at least 500ms has passed for receiver reassembly.
+        // v02.2.81: [SYNC] Multi-Dimensional Integrity Barrier
+        // Ensures: 1. Network Queue Clear (<512KB), 2. NACK Queue Clear (Empty), 3. Receiver reassembly DONE.
         const drainStart = Date.now();
         const MIN_INTER_FILE_GAP_MS = 500;
+        const BARRIER_TIMEOUT_MS = 45000; // 45s deep re-send buffer
+        
         while (isActive.current) {
             const elapsed = Date.now() - drainStart;
             const inFlight = gpeInFlightBytesRef.current;
-            if (inFlight < 512 * 1024 && elapsed >= MIN_INTER_FILE_GAP_MS) break;
-            if (elapsed >= 5000) break; // v02.2.80: Hard timeout floor
-            await new Promise(resolve => setTimeout(resolve, 20));
+            const nackCount = nackQueueRef.current.size;
+            const isConfirmed = hasReceivedFileDoneRef.current[index];
+
+            if (inFlight < 512 * 1024 && nackCount === 0 && isConfirmed && elapsed >= MIN_INTER_FILE_GAP_MS) {
+                break;
+            }
+            
+            if (elapsed % 1000 < 50) {
+                 logDebug(`[SYNC BARRIER] File-${index}: InFlight=${(inFlight/1024).toFixed(0)}KB, Holes=${nackCount}, Confirmed=${isConfirmed}`);
+                 // Periodic poke if missing sync
+                 if (!isConfirmed && elapsed > 5000) {
+                      sendControlMsg({ type: 'sync-poke', fileIdx: index });
+                 }
+            }
+
+            if (elapsed >= BARRIER_TIMEOUT_MS) {
+                logDebug(`[SYNC BARRIER] Timeout! Forced Move-on for File-${index}.`);
+                break; 
+            }
+            await new Promise(resolve => setTimeout(resolve, 50));
         }
         
-        logDebug(`Sender: Data pipelined AND confirmed for ${file.name}. Pipe Drained.`);
+        logDebug(`Sender: Data pipelined AND confirmed for ${file.name}. Barrier Cleared.`);
     };
 
     // --- RECEIVER LOGIC (Turbo Drop 2.0) ---
@@ -2523,23 +2557,28 @@ ${capturedLogsRef.current.join('\n')}
         if (targetBlocks && fileBitset && fileBitset.size >= targetBlocks) {
             logDebug(`Î“Â£Ã  File ${fileIdx} fully reassembled asynchronously (${fileBitset.size} chunks). Symmetry Verified.`);
             
-            // v02.2.78: [INTEGRITY] Atomic P2P-SYNC (Post-Verification Only)
+            // v02.2.81: [SYNC] Redundant P2P-SYNC Broadcast
             if (!hasSentDoneForFileRef.current[fileIdx]) {
-                const dc = dataChannelsRef.current.find(c => c && c.readyState === 'open');
-                if (dc) {
+                const openDCs = dataChannelsRef.current.filter(c => c && c.readyState === 'open');
+                if (openDCs.length > 0) {
                     const ackView = rtcAckViewRef.current;
                     ackView.setUint16(0, 0xFFFF);
                     ackView.setUint16(2, 0xEEEE);
-                    // Payload: [31: DONE_FLAG] [30-16: fileIdx] [15-0: totalBytesToClear] 0xFFFF
                     let payload = 0;
                     payload |= 0x80000000; // DONE_FLAG
-                    payload |= ((fileIdx & 0x7FFF) << 16); // File Index
+                    payload |= ((fileIdx & 0x7FFF) << 16); 
                     ackView.setUint32(4, payload, true);
-                    try { 
-                        dc.send(rtcAckBufRef.current.buffer as ArrayBuffer); 
-                        hasSentDoneForFileRef.current[fileIdx] = true;
-                        logDebug(`âœ… [HYDRA] Integrity Verified: File-${fileIdx} P2P-SYNC Dispatched.`);
-                    } catch(e) {}
+                    
+                    const pkt = rtcAckBufRef.current.buffer as ArrayBuffer;
+                    openDCs.forEach(dc => {
+                        try { dc.send(pkt); } catch(e) {}
+                    });
+                    
+                    // Final redundancy via signaling
+                    sendControlMsg({ type: 'file-done-ack', fileIdx: fileIdx });
+
+                    hasSentDoneForFileRef.current[fileIdx] = true;
+                    logDebug(`âœ… [HYDRA] Integrity Verified: File-${fileIdx} Multi-Channel P2P-SYNC Broadcasted.`);
                 }
             }
             
