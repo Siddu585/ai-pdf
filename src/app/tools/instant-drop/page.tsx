@@ -41,7 +41,7 @@ import { PaywallModal } from "@/components/layout/PaywallModal";
 // v02.2.63 (Tachyon Omega - Zenith Surgical) - 5 Surgical Patches (Rollback Debounce, Migration Guard, Active BDP Gate, MTU Floor Removal, NACK Throttling)
 // v02.2.64 (Tachyon Omega - Gate Unblocker) - GPE 8MB Floor Removal + ICE-based activePipeCount + Unified BDP Formula
 // v02.2.65 (Tachyon Omega - MTU Shield) - File-start MTU grace period + Permanent pipe retirement + Dispatch rate telemetry
-const VERSION = "v02.2.82 (Tachyon Omega - RECOMMENDATION SYNC)"; // v02.2.82: Remove selectedDC + 512KB Drain + 32-Channel Cap + RX-Progress Pulse
+const VERSION = "v02.2.83 (Tachyon Omega - Prompt 09 Refined)"; // v02.2.83: Adaptive BDP Gate + 60ms Cooldown + 1.5s Resuscitator + Gen Guard
 
 
 function getEngineConfig(engine: 'M2M' | 'HYBRID' | 'NITRO') {
@@ -1408,7 +1408,8 @@ ${capturedLogsRef.current.join('\n')}
                                     setupWebRTC(ws, true, i);
                                     if (i === 0) await new Promise(resolve => setTimeout(resolve, 300));
                                     if ((i + 1) % 4 === 0 && i < setupCount - 1) {
-                                        const cooldown = isM2M ? 0 : 600;
+                                        // v02.2.83: [FIX 2] Reduced Batch Cooldown (60ms vs 600ms) for M2M
+                                        const cooldown = isM2M ? 60 : 600;
                                         await new Promise(resolve => setTimeout(resolve, cooldown));
                                     } else {
                                         await new Promise(resolve => setTimeout(resolve, isM2M ? 20 : 50));
@@ -1565,7 +1566,7 @@ ${capturedLogsRef.current.join('\n')}
                         }
                     } catch (e) {}
                 }
-            }, (isMobileDevice() && remoteCapabilityRef.current.isMobile) ? 1500 : 4000);
+            }, (isMobileDevice() && remoteCapabilityRef.current.isMobile) ? 1500 : 4000); // v02.2.83: [FIX 3] 1.5s M2M Resuscitator
 
             if (!useFallback && isSender && (pipeIdx >= 0)) {
                 // v02.1.69: Symmetric Escalation Watchdog (Sender-Only)
@@ -2105,8 +2106,11 @@ ${capturedLogsRef.current.join('\n')}
 
             // v02.2.78: [FIX 6 & 1] Hard-Stable GPE & Decoupled Pacer (Prompt 07)
             const NITRO_THRESHOLD = config.pacerThreshold;
-            const FIXED_GPE_WINDOW = 96 * 1024 * 1024; // 96MB Stable Window
-            const currentGate = FIXED_GPE_WINDOW;
+            const FIXED_GPE_WINDOW = 96 * 1024 * 1024; 
+            // v02.2.83: [FIX 1] Adaptive M2M GPE Gate (4x BDP Scaling)
+            const currentGate = isM2M 
+                ? Math.max(32 * 1024 * 1024, smoothedRTT * 10 * 1024 * 1024 * 4) 
+                : FIXED_GPE_WINDOW;
             // v02.2.82: [FIX 5] Cap targetChannelLimit = 32 explicitly for M2M Clean-up
             const targetChannelLimit = isM2M ? 32 : Math.max(48, PIPES * CHANNELS_PER_PIPE); 
             const isGPEBlocked = gpeInFlightBytesRef.current > currentGate; 
