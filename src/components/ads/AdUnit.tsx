@@ -12,11 +12,20 @@ interface AdUnitProps {
 export default function AdUnit({ slot, format = "auto", responsive = "true", style }: AdUnitProps) {
     useEffect(() => {
         try {
-            ((window as any).adsbygoogle = (window as any).adsbygoogle || []).push({});
-        } catch (err) {
+            const insElements = document.querySelectorAll(`ins.adsbygoogle[data-ad-slot="${slot}"]`);
+            const isAlreadyLoaded = Array.from(insElements).some(el => el.getAttribute("data-adsbygoogle-status") === "done");
+            
+            if (!isAlreadyLoaded) {
+                ((window as any).adsbygoogle = (window as any).adsbygoogle || []).push({});
+            }
+        } catch (err: any) {
+            if (err.message && err.message.includes("already have ads in them")) {
+                // Ignore strict-mode development noise
+                return;
+            }
             console.error("AdSense Error:", err);
         }
-    }, []);
+    }, [slot]);
 
     return (
         <div className="ad-container my-8 flex justify-center items-center overflow-hidden min-h-[100px] bg-muted/50 rounded-lg border border-dashed border-border">

@@ -27,6 +27,8 @@ import { Navbar } from "@/components/layout/Navbar";
 import { Footer } from "@/components/layout/Footer";
 import { useUsage } from "@/hooks/useUsage";
 import { PaywallModal } from "@/components/layout/PaywallModal";
+import { generateSessionKey, importSessionKey, encryptFileStream, decryptNetworkStream } from './crypto-stream';
+const CLOUDFLARE_RELAY_URL = 'https://turbodrop-stream-relay.siddhant.workers.dev/relay';
 
 // v02.2.10.6d (NMI Protocol) - Fix Fatal NACK ReferenceError
 // v02.2.21 (Tachyon Overdrive) - M2M vs L2M Engine Differentiation
@@ -102,7 +104,8 @@ function InstantDropContent() {
     const initialRoom = searchParams.get("room");
 
     const [mode, setMode] = useState<'select' | 'send' | 'receive'>(initialRoom ? 'receive' : 'select');
-    const [engineMode, setEngineMode] = useState<'M2M' | 'HYBRID' | 'NITRO'>('NITRO');
+        const [cryptoKeyStr, setCryptoKeyStr] = useState<string | null>(null);
+const [engineMode, setEngineMode] = useState<'M2M' | 'HYBRID' | 'NITRO'>('NITRO');
     const [roomId, setRoomId] = useState<string>(initialRoom || "");
     const { recordUsage, isPaywallOpen, setIsPaywallOpen, handleAction, deviceId, isPro, email } = useUsage();
     const [files, setFiles] = useState<File[]>([]);
@@ -1290,6 +1293,46 @@ ${capturedLogsRef.current.join('\n')}
 
     // --- SENDER LOGIC (Turbo Drop 2.0) ---
     const startSending = async (selectedFiles: FileList | File[]) => {
+        // --- CLOUD RELAY BYPASS (SENDER) ---
+        if (true) { 
+            setStatus('connecting');
+            const { keyObj, keyString } = await generateSessionKey();
+            setCryptoKeyStr(keyString);
+            
+            const finalRoomId = (roomRef.current || Math.floor(100000 + Math.random() * 900000).toString()).toUpperCase().trim();
+            setRoomId(finalRoomId);
+            roomRef.current = finalRoomId;
+            
+            // Wait for receiver via simple WS
+            const ws = new WebSocket(`${BACKEND_WS_URL}/ws/drop/${finalRoomId}/sender`);
+            wsRef.current = ws;
+            ws.onopen = () => {
+                ws.send(JSON.stringify({ type: 'sender-ready', roomId: finalRoomId, sessionKey: keyString }));
+            };
+            ws.onmessage = async (e) => {
+                const data = JSON.parse(e.data);
+                if (data.type === 'receiver-ready') {
+                    setStatus('transferring');
+                    const file = selectedFiles[0];
+                    const stream = encryptFileStream(file, keyObj, new Uint8Array(12));
+                    try {
+                        const res = await fetch(`${CLOUDFLARE_RELAY_URL}/${finalRoomId}`, {
+                            method: 'POST',
+                            body: stream,
+                            //@ts-ignore
+                            duplex: 'half'
+                        });
+                        if (res.ok) setStatus('done');
+                        else setStatus('error');
+                    } catch (err) {
+                        setStatus('error');
+                    }
+                }
+            };
+            return;
+        }
+        // --- END BYPASS ---
+
         disconnectEverything();
         const fileList = Array.from(selectedFiles);
         setFiles(fileList);
@@ -2498,6 +2541,43 @@ ${capturedLogsRef.current.join('\n')}
     }, [mode, status]);
 
     const joinRoom = async (roomName: string) => {
+        // --- CLOUD RELAY BYPASS (RECEIVER) ---
+        if (true) {
+            setStatus('connecting');
+            const normalizedRoom = roomName.toUpperCase().trim();
+            setRoomId(normalizedRoom);
+            roomRef.current = normalizedRoom;
+            
+            const ws = new WebSocket(`${BACKEND_WS_URL}/ws/drop/${normalizedRoom}/receiver`);
+            wsRef.current = ws;
+            ws.onopen = () => {
+                ws.send(JSON.stringify({ type: 'receiver-ready' }));
+            };
+            ws.onmessage = async (e) => {
+                const data = JSON.parse(e.data);
+                if (data.type === 'sender-ready' && data.sessionKey) { 
+                    setStatus('transferring');
+                    setCryptoKeyStr(data.sessionKey);
+                    await new Promise(r => setTimeout(r, 1000)); // Grace delay
+                    try {
+                        const res = await fetch(`${CLOUDFLARE_RELAY_URL}/${normalizedRoom}`);
+                        if (res.ok && res.body) {
+                            const keyObj = await importSessionKey(data.sessionKey);
+                            const decryptedBlob = await decryptNetworkStream(res.body, keyObj, new Uint8Array(12), 1000, (p: number) => setProgress(p));
+                            setReceivedFiles([{ blob: decryptedBlob, name: 'Encrypted_Transfer.bin' }]);
+                            setStatus('done-waiting');
+                        } else {
+                            setStatus('error');
+                        }
+                    } catch (err) {
+                        setStatus('error');
+                    }
+                }
+            };
+            return;
+        }
+        // --- END BYPASS ---
+
         disconnectEverything();
         setRoomId(roomName);
         roomRef.current = roomName;
