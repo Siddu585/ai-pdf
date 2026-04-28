@@ -43,7 +43,7 @@ const CLOUDFLARE_RELAY_URL = 'https://turbodrop-stream-relay.siddhant.workers.de
 // v02.2.63 (Tachyon Omega - Zenith Surgical) - 5 Surgical Patches (Rollback Debounce, Migration Guard, Active BDP Gate, MTU Floor Removal, NACK Throttling)
 // v02.2.64 (Tachyon Omega - Gate Unblocker) - GPE 8MB Floor Removal + ICE-based activePipeCount + Unified BDP Formula
 // v02.2.65 (Tachyon Omega - MTU Shield) - File-start MTU grace period + Permanent pipe retirement + Dispatch rate telemetry
-const VERSION = "v02.2.85 (Tachyon Omega - BDP Unshackled)"; // v02.2.85: Unified BDP Saturation + 96-Channel M2M Restoration + Induction Gate
+const VERSION = "v3.0.0 (Cloudflare Stream Engine - WebRTC Bypass)";
 
 
 function getEngineConfig(engine: 'M2M' | 'HYBRID' | 'NITRO') {
