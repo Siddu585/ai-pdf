@@ -1295,7 +1295,13 @@ ${capturedLogsRef.current.join('\n')}
     const startSending = async (selectedFiles: FileList | File[]) => {
         // --- CLOUD RELAY BYPASS (SENDER) ---
         if (true) { 
-            setStatus('connecting');
+            disconnectEverything();
+            const fileList = Array.from(selectedFiles);
+            setFiles(fileList);
+            filesRef.current = fileList;
+            setMode('send');
+            setStatus('waiting');
+
             const { keyObj, keyString } = await generateSessionKey();
             setCryptoKeyStr(keyString);
             
@@ -2543,6 +2549,8 @@ ${capturedLogsRef.current.join('\n')}
     const joinRoom = async (roomName: string) => {
         // --- CLOUD RELAY BYPASS (RECEIVER) ---
         if (true) {
+            disconnectEverything();
+            setMode('receive');
             setStatus('connecting');
             const normalizedRoom = roomName.toUpperCase().trim();
             setRoomId(normalizedRoom);
