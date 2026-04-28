@@ -43,7 +43,7 @@ const CLOUDFLARE_RELAY_URL = 'https://turbodrop-stream-relay.siddhantjangam33.wo
 // v02.2.63 (Tachyon Omega - Zenith Surgical) - 5 Surgical Patches (Rollback Debounce, Migration Guard, Active BDP Gate, MTU Floor Removal, NACK Throttling)
 // v02.2.64 (Tachyon Omega - Gate Unblocker) - GPE 8MB Floor Removal + ICE-based activePipeCount + Unified BDP Formula
 // v02.2.65 (Tachyon Omega - MTU Shield) - File-start MTU grace period + Permanent pipe retirement + Dispatch rate telemetry
-const VERSION = "v3.0.2 (Cloudflare Stream Engine - Handshake Synchronized)";
+const VERSION = "v3.0.3 (Cloudflare Stream Engine - Framed)";
 
 
 function getEngineConfig(engine: 'M2M' | 'HYBRID' | 'NITRO') {
@@ -1314,9 +1314,20 @@ ${capturedLogsRef.current.join('\n')}
                 const ws = new WebSocket(`${BACKEND_WS_URL}/ws/drop/${finalRoomId}/sender`);
                 wsRef.current = ws;
                 
+                const sendHandshake = () => {
+                    const file = selectedFiles[0];
+                    ws.send(JSON.stringify({ 
+                        type: 'sender-ready', 
+                        roomId: finalRoomId, 
+                        sessionKey: keyString,
+                        fileName: file?.name || 'file.bin',
+                        fileSize: file?.size || 0
+                    }));
+                };
+
                 ws.onopen = () => {
                     logDebug(`[BYPASS SENDER] WS Open. Sending sender-ready with Key.`);
-                    ws.send(JSON.stringify({ type: 'sender-ready', roomId: finalRoomId, sessionKey: keyString }));
+                    sendHandshake();
                 };
                 
                 ws.onerror = (e) => logDebug(`[BYPASS SENDER] WS Error: ${e}`);
@@ -1328,7 +1339,7 @@ ${capturedLogsRef.current.join('\n')}
 
                     if (data.type === 'peer-connected') {
                         logDebug(`[BYPASS SENDER] Peer arrived! Re-broadcasting sender-ready.`);
-                        ws.send(JSON.stringify({ type: 'sender-ready', roomId: finalRoomId, sessionKey: keyString }));
+                        sendHandshake();
                     }
 
                     if (data.type === 'receiver-ready') {
@@ -1336,7 +1347,7 @@ ${capturedLogsRef.current.join('\n')}
                         logDebug(`[BYPASS SENDER] Receiver ready msg parsed. Starting POST fetch.`);
                         setStatus('transferring');
                         const file = selectedFiles[0];
-                        const stream = encryptFileStream(file, keyObj, new Uint8Array(12));
+                        const stream = encryptFileStream(file, keyObj);
                         try {
                             const res = await fetch(`${CLOUDFLARE_RELAY_URL}/${finalRoomId}`, {
                                 method: 'POST',
@@ -2611,11 +2622,11 @@ ${capturedLogsRef.current.join('\n')}
                             logDebug(`[BYPASS RECEIVER] GET stream fetch resolved. Status: ${res.status}`);
                             
                             if (res.ok && res.body) {
-                                logDebug(`[BYPASS RECEIVER] Setting up decryptor...`);
+                                logDebug(`[BYPASS RECEIVER] Setting up decryptor for ${data.fileName || 'unknown'} (${data.fileSize || 0} bytes)...`);
                                 const keyObj = await importSessionKey(data.sessionKey);
-                                const decryptedBlob = await decryptNetworkStream(res.body, keyObj, new Uint8Array(12), 1000, (p: number) => setProgress(p));
+                                const decryptedBlob = await decryptNetworkStream(res.body, keyObj, data.fileSize || 0, (p: number) => setProgress(p));
                                 logDebug(`[BYPASS RECEIVER] Stream decoded successfully!`);
-                                setReceivedFiles([{ blob: decryptedBlob, name: 'Encrypted_Transfer.bin' }]);
+                                setReceivedFiles([{ blob: decryptedBlob, name: data.fileName || 'Encrypted_Transfer.bin' }]);
                                 setStatus('done-waiting');
                             } else {
                                 logDebug(`[BYPASS RECEIVER] GET res not ok or missing body.`);
