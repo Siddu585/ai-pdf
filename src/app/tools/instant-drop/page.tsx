@@ -1295,46 +1295,60 @@ ${capturedLogsRef.current.join('\n')}
     const startSending = async (selectedFiles: FileList | File[]) => {
         // --- CLOUD RELAY BYPASS (SENDER) ---
         if (true) { 
-            disconnectEverything();
-            const fileList = Array.from(selectedFiles);
-            setFiles(fileList);
-            filesRef.current = fileList;
-            setMode('send');
-            setStatus('waiting');
+            try {
+                disconnectEverything();
+                const fileList = Array.from(selectedFiles);
+                setFiles(fileList);
+                filesRef.current = fileList;
+                setMode('send');
+                setStatus('waiting');
 
-            const { keyObj, keyString } = await generateSessionKey();
-            setCryptoKeyStr(keyString);
-            
-            const finalRoomId = (roomRef.current || Math.floor(100000 + Math.random() * 900000).toString()).toUpperCase().trim();
-            setRoomId(finalRoomId);
-            roomRef.current = finalRoomId;
-            
-            // Wait for receiver via simple WS
-            const ws = new WebSocket(`${BACKEND_WS_URL}/ws/drop/${finalRoomId}/sender`);
-            wsRef.current = ws;
-            ws.onopen = () => {
-                ws.send(JSON.stringify({ type: 'sender-ready', roomId: finalRoomId, sessionKey: keyString }));
-            };
-            ws.onmessage = async (e) => {
-                const data = JSON.parse(e.data);
-                if (data.type === 'receiver-ready') {
-                    setStatus('transferring');
-                    const file = selectedFiles[0];
-                    const stream = encryptFileStream(file, keyObj, new Uint8Array(12));
-                    try {
-                        const res = await fetch(`${CLOUDFLARE_RELAY_URL}/${finalRoomId}`, {
-                            method: 'POST',
-                            body: stream,
-                            //@ts-ignore
-                            duplex: 'half'
-                        });
-                        if (res.ok) setStatus('done');
-                        else setStatus('error');
-                    } catch (err) {
-                        setStatus('error');
+                const { keyObj, keyString } = await generateSessionKey();
+                setCryptoKeyStr(keyString);
+                
+                const finalRoomId = (roomRef.current || Math.floor(100000 + Math.random() * 900000).toString()).toUpperCase().trim();
+                setRoomId(finalRoomId);
+                roomRef.current = finalRoomId;
+                
+                logDebug(`[BYPASS SENDER] Connecting to WS: ${finalRoomId}`);
+                const ws = new WebSocket(`${BACKEND_WS_URL}/ws/drop/${finalRoomId}/sender`);
+                wsRef.current = ws;
+                
+                ws.onopen = () => {
+                    logDebug(`[BYPASS SENDER] WS Open. Sending sender-ready with Key.`);
+                    ws.send(JSON.stringify({ type: 'sender-ready', roomId: finalRoomId, sessionKey: keyString }));
+                };
+                
+                ws.onerror = (e) => logDebug(`[BYPASS SENDER] WS Error: ${e}`);
+                ws.onclose = () => logDebug(`[BYPASS SENDER] WS Closed`);
+                
+                ws.onmessage = async (e) => {
+                    logDebug(`[BYPASS SENDER] WS Msg Received: ${e.data.slice(0, 50)}...`);
+                    const data = JSON.parse(e.data);
+                    if (data.type === 'receiver-ready') {
+                        logDebug(`[BYPASS SENDER] Receiver ready msg parsed. Starting POST fetch.`);
+                        setStatus('transferring');
+                        const file = selectedFiles[0];
+                        const stream = encryptFileStream(file, keyObj, new Uint8Array(12));
+                        try {
+                            const res = await fetch(`${CLOUDFLARE_RELAY_URL}/${finalRoomId}`, {
+                                method: 'POST',
+                                body: stream,
+                                //@ts-ignore
+                                duplex: 'half'
+                            });
+                            logDebug(`[BYPASS SENDER] Fetch resolved. Status: ${res.status}`);
+                            if (res.ok) setStatus('done');
+                            else { logDebug(`[BYPASS SENDER] res not ok`); setStatus('error'); }
+                        } catch (err: any) {
+                            logDebug(`[BYPASS SENDER] FETCH ERROR THROWN: ${err.message}`);
+                            setStatus('error');
+                        }
                     }
-                }
-            };
+                };
+            } catch (fatal:any) {
+                logDebug(`[BYPASS SENDER] FATAL SYNC ERROR: ${fatal.message}`);
+            }
             return;
         }
         // --- END BYPASS ---
@@ -2549,39 +2563,59 @@ ${capturedLogsRef.current.join('\n')}
     const joinRoom = async (roomName: string) => {
         // --- CLOUD RELAY BYPASS (RECEIVER) ---
         if (true) {
-            disconnectEverything();
-            setMode('receive');
-            setStatus('connecting');
-            const normalizedRoom = roomName.toUpperCase().trim();
-            setRoomId(normalizedRoom);
-            roomRef.current = normalizedRoom;
-            
-            const ws = new WebSocket(`${BACKEND_WS_URL}/ws/drop/${normalizedRoom}/receiver`);
-            wsRef.current = ws;
-            ws.onopen = () => {
-                ws.send(JSON.stringify({ type: 'receiver-ready' }));
-            };
-            ws.onmessage = async (e) => {
-                const data = JSON.parse(e.data);
-                if (data.type === 'sender-ready' && data.sessionKey) { 
-                    setStatus('transferring');
-                    setCryptoKeyStr(data.sessionKey);
-                    await new Promise(r => setTimeout(r, 1000)); // Grace delay
-                    try {
-                        const res = await fetch(`${CLOUDFLARE_RELAY_URL}/${normalizedRoom}`);
-                        if (res.ok && res.body) {
-                            const keyObj = await importSessionKey(data.sessionKey);
-                            const decryptedBlob = await decryptNetworkStream(res.body, keyObj, new Uint8Array(12), 1000, (p: number) => setProgress(p));
-                            setReceivedFiles([{ blob: decryptedBlob, name: 'Encrypted_Transfer.bin' }]);
-                            setStatus('done-waiting');
-                        } else {
+            try {
+                disconnectEverything();
+                setMode('receive');
+                setStatus('connecting');
+                const normalizedRoom = roomName.toUpperCase().trim();
+                setRoomId(normalizedRoom);
+                roomRef.current = normalizedRoom;
+                
+                logDebug(`[BYPASS RECEIVER] Connecting to WS: ${normalizedRoom}`);
+                const ws = new WebSocket(`${BACKEND_WS_URL}/ws/drop/${normalizedRoom}/receiver`);
+                wsRef.current = ws;
+                
+                ws.onopen = () => {
+                    logDebug(`[BYPASS RECEIVER] WS Open. Sending receiver-ready.`);
+                    ws.send(JSON.stringify({ type: 'receiver-ready' }));
+                };
+                
+                ws.onerror = (e) => logDebug(`[BYPASS RECEIVER] WS Error: ${e}`);
+                ws.onclose = () => logDebug(`[BYPASS RECEIVER] WS Closed`);
+                
+                ws.onmessage = async (e) => {
+                    logDebug(`[BYPASS RECEIVER] WS Msg: ${e.data.slice(0, 50)}...`);
+                    const data = JSON.parse(e.data);
+                    if (data.type === 'sender-ready' && data.sessionKey) { 
+                        logDebug(`[BYPASS RECEIVER] Sender ready msg parsed. Key received.`);
+                        setStatus('transferring');
+                        setCryptoKeyStr(data.sessionKey);
+                        await new Promise(r => setTimeout(r, 1000)); // Grace delay
+                        try {
+                            logDebug(`[BYPASS RECEIVER] Starting GET stream fetch from Cloudflare...`);
+                            const res = await fetch(`${CLOUDFLARE_RELAY_URL}/${normalizedRoom}`);
+                            logDebug(`[BYPASS RECEIVER] GET stream fetch resolved. Status: ${res.status}`);
+                            
+                            if (res.ok && res.body) {
+                                logDebug(`[BYPASS RECEIVER] Setting up decryptor...`);
+                                const keyObj = await importSessionKey(data.sessionKey);
+                                const decryptedBlob = await decryptNetworkStream(res.body, keyObj, new Uint8Array(12), 1000, (p: number) => setProgress(p));
+                                logDebug(`[BYPASS RECEIVER] Stream decoded successfully!`);
+                                setReceivedFiles([{ blob: decryptedBlob, name: 'Encrypted_Transfer.bin' }]);
+                                setStatus('done-waiting');
+                            } else {
+                                logDebug(`[BYPASS RECEIVER] GET res not ok or missing body.`);
+                                setStatus('error');
+                            }
+                        } catch (err: any) {
+                            logDebug(`[BYPASS RECEIVER] GET FETCH ERROR: ${err.message}`);
                             setStatus('error');
                         }
-                    } catch (err) {
-                        setStatus('error');
                     }
-                }
-            };
+                };
+            } catch (fatal:any) {
+                logDebug(`[BYPASS RECEIVER] FATAL SYNC ERROR: ${fatal.message}`);
+            }
             return;
         }
         // --- END BYPASS ---
