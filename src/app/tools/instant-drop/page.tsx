@@ -43,7 +43,7 @@ const CLOUDFLARE_RELAY_URL = 'https://turbodrop-stream-relay.siddhantjangam33.wo
 // v02.2.63 (Tachyon Omega - Zenith Surgical) - 5 Surgical Patches (Rollback Debounce, Migration Guard, Active BDP Gate, MTU Floor Removal, NACK Throttling)
 // v02.2.64 (Tachyon Omega - Gate Unblocker) - GPE 8MB Floor Removal + ICE-based activePipeCount + Unified BDP Formula
 // v02.2.65 (Tachyon Omega - MTU Shield) - File-start MTU grace period + Permanent pipe retirement + Dispatch rate telemetry
-const VERSION = "v3.0.4 (Cloudflare Stream Engine - Multi-File)";
+const VERSION = "v3.0.5 (Cloudflare Stream Engine - Build Fixed)";
 
 
 function getEngineConfig(engine: 'M2M' | 'HYBRID' | 'NITRO') {
@@ -1315,18 +1315,18 @@ ${capturedLogsRef.current.join('\n')}
                 wsRef.current = ws;
                 
                 const sendHandshake = () => {
-                    const filesInfo = selectedFiles.map(f => ({ name: f.name, size: f.size }));
+                    const filesInfo = fileList.map(f => ({ name: f.name, size: f.size }));
                     ws.send(JSON.stringify({ 
                         type: 'sender-ready', 
                         roomId: finalRoomId, 
                         sessionKey: keyString,
                         files: filesInfo,
-                        totalSize: selectedFiles.reduce((acc, f) => acc + f.size, 0)
+                        totalSize: fileList.reduce((acc, f) => acc + f.size, 0)
                     }));
                 };
 
                 ws.onopen = () => {
-                    logDebug(`[BYPASS SENDER] WS Open. Sending sender-ready with ${selectedFiles.length} files.`);
+                    logDebug(`[BYPASS SENDER] WS Open. Sending sender-ready with ${fileList.length} files.`);
                     sendHandshake();
                 };
                 
@@ -1344,9 +1344,9 @@ ${capturedLogsRef.current.join('\n')}
 
                     if (data.type === 'receiver-ready') {
                         if (statusRef.current === 'transferring') return; // Prevent double-trigger
-                        logDebug(`[BYPASS SENDER] Starting Super-Stream for ${selectedFiles.length} files.`);
+                        logDebug(`[BYPASS SENDER] Starting Super-Stream for ${fileList.length} files.`);
                         setStatus('transferring');
-                        const stream = encryptMultiFileStream(selectedFiles, keyObj);
+                        const stream = encryptMultiFileStream(fileList, keyObj);
                         try {
                             const res = await fetch(`${CLOUDFLARE_RELAY_URL}/${finalRoomId}`, {
                                 method: 'POST',
