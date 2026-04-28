@@ -28,7 +28,7 @@ import { Footer } from "@/components/layout/Footer";
 import { useUsage } from "@/hooks/useUsage";
 import { PaywallModal } from "@/components/layout/PaywallModal";
 import { generateSessionKey, importSessionKey, encryptFileStream, decryptNetworkStream } from './crypto-stream';
-const CLOUDFLARE_RELAY_URL = 'https://turbodrop-stream-relay.siddhant.workers.dev/relay';
+const CLOUDFLARE_RELAY_URL = 'https://turbodrop-stream-relay.siddhantjangam33.workers.dev/relay';
 
 // v02.2.10.6d (NMI Protocol) - Fix Fatal NACK ReferenceError
 // v02.2.21 (Tachyon Overdrive) - M2M vs L2M Engine Differentiation
