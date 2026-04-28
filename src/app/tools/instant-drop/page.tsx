@@ -27,7 +27,7 @@ import { Navbar } from "@/components/layout/Navbar";
 import { Footer } from "@/components/layout/Footer";
 import { useUsage } from "@/hooks/useUsage";
 import { PaywallModal } from "@/components/layout/PaywallModal";
-import { generateSessionKey, importSessionKey, encryptMultiFileStream, decryptMultiFileStream } from './crypto-stream';
+import { generateSessionKey, importSessionKey, encryptFileStream, decryptNetworkStream } from './crypto-stream';
 const CLOUDFLARE_RELAY_URL = 'https://turbodrop-stream-relay.siddhantjangam33.workers.dev/relay';
 
 // v02.2.10.6d (NMI Protocol) - Fix Fatal NACK ReferenceError
@@ -43,7 +43,7 @@ const CLOUDFLARE_RELAY_URL = 'https://turbodrop-stream-relay.siddhantjangam33.wo
 // v02.2.63 (Tachyon Omega - Zenith Surgical) - 5 Surgical Patches (Rollback Debounce, Migration Guard, Active BDP Gate, MTU Floor Removal, NACK Throttling)
 // v02.2.64 (Tachyon Omega - Gate Unblocker) - GPE 8MB Floor Removal + ICE-based activePipeCount + Unified BDP Formula
 // v02.2.65 (Tachyon Omega - MTU Shield) - File-start MTU grace period + Permanent pipe retirement + Dispatch rate telemetry
-const VERSION = "v3.0.5 (Cloudflare Stream Engine - Build Fixed)";
+const VERSION = "v3.0.6 (Cloudflare Stream Engine - Sequential Batch)";
 
 
 function getEngineConfig(engine: 'M2M' | 'HYBRID' | 'NITRO') {
@@ -1326,7 +1326,7 @@ ${capturedLogsRef.current.join('\n')}
                 };
 
                 ws.onopen = () => {
-                    logDebug(`[BYPASS SENDER] WS Open. Sending sender-ready with ${fileList.length} files.`);
+                    logDebug(`[BYPASS SENDER] WS Open. Sending handshake for ${fileList.length} files.`);
                     sendHandshake();
                 };
                 
@@ -1334,19 +1334,21 @@ ${capturedLogsRef.current.join('\n')}
                 ws.onclose = () => logDebug(`[BYPASS SENDER] WS Closed`);
                 
                 ws.onmessage = async (e) => {
-                    logDebug(`[BYPASS SENDER] WS Msg Received: ${e.data.slice(0, 50)}...`);
                     const data = JSON.parse(e.data);
 
                     if (data.type === 'peer-connected') {
-                        logDebug(`[BYPASS SENDER] Peer arrived! Re-broadcasting sender-ready.`);
                         sendHandshake();
                     }
 
-                    if (data.type === 'receiver-ready') {
-                        if (statusRef.current === 'transferring') return; // Prevent double-trigger
-                        logDebug(`[BYPASS SENDER] Starting Super-Stream for ${fileList.length} files.`);
+                    if (data.type === 'ready-for-next') {
+                        const idx = data.index;
+                        if (idx >= fileList.length) return;
+                        
+                        const file = fileList[idx];
+                        logDebug(`[BYPASS SENDER] Streaming File ${idx + 1}/${fileList.length}: ${file.name}`);
                         setStatus('transferring');
-                        const stream = encryptMultiFileStream(fileList, keyObj);
+                        
+                        const stream = encryptFileStream(file, keyObj);
                         try {
                             const res = await fetch(`${CLOUDFLARE_RELAY_URL}/${finalRoomId}`, {
                                 method: 'POST',
@@ -1354,11 +1356,15 @@ ${capturedLogsRef.current.join('\n')}
                                 //@ts-ignore
                                 duplex: 'half'
                             });
-                            logDebug(`[BYPASS SENDER] Fetch resolved. Status: ${res.status}`);
-                            if (res.ok) setStatus('done');
-                            else { logDebug(`[BYPASS SENDER] res not ok`); setStatus('error'); }
+                            if (res.ok) {
+                                logDebug(`[BYPASS SENDER] File ${idx + 1} sent successfully.`);
+                                if (idx === fileList.length - 1) setStatus('done');
+                            } else {
+                                logDebug(`[BYPASS SENDER] File ${idx + 1} failed.`);
+                                setStatus('error');
+                            }
                         } catch (err: any) {
-                            logDebug(`[BYPASS SENDER] FETCH ERROR THROWN: ${err.message}`);
+                            logDebug(`[BYPASS SENDER] POST FETCH ERROR: ${err.message}`);
                             setStatus('error');
                         }
                     }
@@ -2601,38 +2607,43 @@ ${capturedLogsRef.current.join('\n')}
                 ws.onclose = () => logDebug(`[BYPASS RECEIVER] WS Closed`);
                 
                 ws.onmessage = async (e) => {
-                    logDebug(`[BYPASS RECEIVER] WS Msg: ${e.data.slice(0, 50)}...`);
                     const data = JSON.parse(e.data);
 
                     if (data.type === 'peer-connected') {
-                        logDebug(`[BYPASS RECEIVER] Peer arrived! Re-broadcasting receiver-ready.`);
                         ws.send(JSON.stringify({ type: 'receiver-ready' }));
                     }
 
-                        if (data.type === 'sender-ready' && data.sessionKey) { 
-                            if (statusRef.current === 'transferring') return; // Prevent double trigger
-                            logDebug(`[BYPASS RECEIVER] Sender ready. Batch size: ${data.files?.length || 1} files.`);
-                            setStatus('transferring');
-                            setCryptoKeyStr(data.sessionKey);
-                            await new Promise(r => setTimeout(r, 1000)); // Grace delay
-                            try {
-                                logDebug(`[BYPASS RECEIVER] Starting Super-Stream GET fetch...`);
-                                const res = await fetch(`${CLOUDFLARE_RELAY_URL}/${normalizedRoom}`);
-                                logDebug(`[BYPASS RECEIVER] GET fetch resolved. Status: ${res.status}`);
+                    if (data.type === 'sender-ready' && data.sessionKey) { 
+                        if (statusRef.current === 'transferring') return;
+                        setStatus('transferring');
+                        setCryptoKeyStr(data.sessionKey);
+                        const keyObj = await importSessionKey(data.sessionKey);
+                        const totalSize = data.totalSize || 0;
+                        let processedSize = 0;
+                        const batchResults = [];
+
+                        try {
+                            for (let i = 0; i < data.files.length; i++) {
+                                const fileMeta = data.files[i];
+                                logDebug(`[BYPASS RECEIVER] Fetching File ${i + 1}/${data.files.length}: ${fileMeta.name}`);
                                 
+                                ws.send(JSON.stringify({ type: 'ready-for-next', index: i }));
+                                await new Promise(r => setTimeout(r, 800)); // Wait for worker reset
+
+                                const res = await fetch(`${CLOUDFLARE_RELAY_URL}/${normalizedRoom}`);
                                 if (res.ok && res.body) {
-                                    logDebug(`[BYPASS RECEIVER] Unpacking multi-file batch...`);
-                                    const keyObj = await importSessionKey(data.sessionKey);
-                                    const fileBatch = await decryptMultiFileStream(res.body, keyObj, data.totalSize || 0, (p: number) => setProgress(p));
-                                    logDebug(`[BYPASS RECEIVER] Batch of ${fileBatch.length} files unpacked successfully!`);
-                                    setReceivedFiles(fileBatch);
-                                    setStatus('done-waiting');
+                                    const blob = await decryptNetworkStream(res.body, keyObj, totalSize, (p: number) => setProgress(p), processedSize);
+                                    batchResults.push({ name: fileMeta.name, blob });
+                                    processedSize += fileMeta.size;
+                                    setReceivedFiles([...batchResults]);
                                 } else {
-                                logDebug(`[BYPASS RECEIVER] GET res not ok or missing body.`);
-                                setStatus('error');
+                                    throw new Error(`Failed to fetch file ${i + 1}`);
+                                }
                             }
+                            logDebug(`[BYPASS RECEIVER] Batch complete! ${batchResults.length} files received.`);
+                            setStatus('done-waiting');
                         } catch (err: any) {
-                            logDebug(`[BYPASS RECEIVER] GET FETCH ERROR: ${err.message}`);
+                            logDebug(`[BYPASS RECEIVER] BATCH ERROR: ${err.message}`);
                             setStatus('error');
                         }
                     }

@@ -1,13 +1,7 @@
 /**
- * TurboDrop CryptoStream Utility (Multi-File Edition)
- * Handles WebCrypto E2EE streaming with a packetized multi-file protocol.
+ * TurboDrop CryptoStream Utility (Sequential Batch Edition)
+ * Handles WebCrypto E2EE streaming with framing to survive network fragmentation.
  */
-
-const FRAME_TYPE = {
-    METADATA: 0,
-    CHUNK: 1,
-    END_SESSION: 2
-};
 
 // Generate a random 256-bit AES-GCM key
 export async function generateSessionKey() {
@@ -35,100 +29,51 @@ export async function importSessionKey(base64Key) {
 }
 
 /**
- * Encrypts multiple files into a single continuous packetized stream.
+ * Encrypts a single file into a framed stream: [4-byte length][Ciphertext]
  */
-export function encryptMultiFileStream(files, keyObj) {
-    let fileIndex = 0;
-    let currentReader = null;
+export function encryptFileStream(file, keyObj) {
+    const CHUNK_SIZE = 128 * 1024;
+    const fileReader = file.stream().getReader();
     let chunkIndex = 0;
-    const encoder = new TextEncoder();
 
     return new ReadableStream({
         async pull(controller) {
-            // 1. If we don't have a file open, open the next one
-            if (!currentReader) {
-                if (fileIndex >= files.length) {
-                    // All files sent, send END_SESSION
-                    const endFrame = new Uint8Array(5);
-                    endFrame[0] = FRAME_TYPE.END_SESSION;
-                    controller.enqueue(endFrame);
-                    controller.close();
-                    return;
-                }
-
-                const file = files[fileIndex++];
-                const meta = JSON.stringify({ name: file.name, size: file.size });
-                const metaBytes = encoder.encode(meta);
-                
-                // Header Frame: [Type 1b][Length 4b][MetaJSON]
-                const header = new Uint8Array(5 + metaBytes.length);
-                header[0] = FRAME_TYPE.METADATA;
-                new DataView(header.buffer).setUint32(1, metaBytes.length, true);
-                header.set(metaBytes, 5);
-                controller.enqueue(header);
-
-                currentReader = file.stream().getReader();
-                chunkIndex = 0;
-            }
-
-            // 2. Read chunk from current file
-            const { done, value } = await currentReader.read();
-
+            const { done, value } = await fileReader.read();
             if (done) {
-                currentReader = null;
-                // Recursively call pull to start next file or close
-                return this.pull(controller);
+                controller.close();
+                return;
             }
-
-            // 3. Encrypt and wrap chunk
             const iv = new Uint8Array(12);
             new DataView(iv.buffer).setUint32(8, chunkIndex++, true);
-
             try {
-                const encrypted = await window.crypto.subtle.encrypt(
-                    { name: "AES-GCM", iv },
-                    keyObj,
-                    value
-                );
+                const encrypted = await window.crypto.subtle.encrypt({ name: "AES-GCM", iv }, keyObj, value);
                 const ciphertext = new Uint8Array(encrypted);
-                
-                // Chunk Frame: [Type 1b][Length 4b][Ciphertext]
-                const frame = new Uint8Array(5 + ciphertext.length);
-                frame[0] = FRAME_TYPE.CHUNK;
-                new DataView(frame.buffer).setUint32(1, ciphertext.length, true);
-                frame.set(ciphertext, 5);
-                
-                controller.enqueue(frame);
+                const framed = new Uint8Array(4 + ciphertext.length);
+                new DataView(framed.buffer).setUint32(0, ciphertext.length, true);
+                framed.set(ciphertext, 4);
+                controller.enqueue(framed);
             } catch (err) {
-                console.error("Encryption error", err);
                 controller.error(err);
             }
         },
-        cancel() {
-            if (currentReader) currentReader.cancel();
-        }
+        cancel() { fileReader.cancel(); }
     });
 }
 
 /**
- * Decrypts a packetized multi-file stream into an array of Blobs.
+ * Decrypts a framed network stream into a single Blob.
  */
-export async function decryptMultiFileStream(networkStream, keyObj, totalSize, onProgress) {
+export async function decryptNetworkStream(networkStream, keyObj, expectedSize, onProgress, startBytes = 0) {
     const reader = networkStream.getReader();
-    const results = [];
-    let currentChunks = [];
-    let currentFileName = "";
-    let totalReceived = 0;
+    const decryptedChunks = [];
+    let receivedBytes = 0;
     let chunkIndex = 0;
     let overflow = new Uint8Array(0);
 
     async function readExact(n) {
         while (overflow.length < n) {
             const { done, value } = await reader.read();
-            if (done) {
-                if (overflow.length === 0) return null;
-                throw new Error("Stream closed mid-packet");
-            }
+            if (done) return null;
             const joined = new Uint8Array(overflow.length + value.length);
             joined.set(overflow);
             joined.set(value, overflow.length);
@@ -141,55 +86,25 @@ export async function decryptMultiFileStream(networkStream, keyObj, totalSize, o
 
     try {
         while (true) {
-            // Read Frame Type
-            const typeBuf = await readExact(1);
-            if (!typeBuf) break;
-            const type = typeBuf[0];
+            const lengthBuf = await readExact(4);
+            if (!lengthBuf) break;
+            const cipherLength = new DataView(lengthBuf.buffer, lengthBuf.byteOffset, lengthBuf.byteLength).getUint32(0, true);
+            const ciphertext = await readExact(cipherLength);
+            if (!ciphertext) break;
 
-            if (type === FRAME_TYPE.END_SESSION) break;
-
-            // Read Length
-            const lenBuf = await readExact(4);
-            const length = new DataView(lenBuf.buffer, lenBuf.byteOffset, lenBuf.byteLength).getUint32(0, true);
-
-            // Read Payload
-            const payload = await readExact(length);
-
-            if (type === FRAME_TYPE.METADATA) {
-                // If we were processing a file, save it
-                if (currentChunks.length > 0) {
-                    results.push({ name: currentFileName, blob: new Blob(currentChunks) });
-                    currentChunks = [];
-                }
-                const meta = JSON.parse(new TextDecoder().decode(payload));
-                currentFileName = meta.name;
-                chunkIndex = 0;
-            } else if (type === FRAME_TYPE.CHUNK) {
-                const iv = new Uint8Array(12);
-                new DataView(iv.buffer).setUint32(8, chunkIndex++, true);
-
-                const decrypted = await window.crypto.subtle.decrypt(
-                    { name: "AES-GCM", iv },
-                    keyObj,
-                    payload
-                );
-                currentChunks.push(new Uint8Array(decrypted));
-                totalReceived += decrypted.byteLength;
-                
-                if (onProgress && totalSize > 0) {
-                    onProgress(Math.min(99, Math.round((totalReceived / totalSize) * 100)));
-                }
+            const iv = new Uint8Array(12);
+            new DataView(iv.buffer).setUint32(8, chunkIndex++, true);
+            const decrypted = await window.crypto.subtle.decrypt({ name: "AES-GCM", iv }, keyObj, ciphertext);
+            decryptedChunks.push(new Uint8Array(decrypted));
+            receivedBytes += decrypted.byteLength;
+            
+            if (onProgress) {
+                onProgress(startBytes + receivedBytes);
             }
         }
-
-        // Push last file
-        if (currentChunks.length > 0) {
-            results.push({ name: currentFileName, blob: new Blob(currentChunks) });
-        }
     } catch (err) {
-        console.error("Multi-file decryption failed", err);
+        console.error("Decryption failed", err);
         throw err;
     }
-
-    return results;
+    return new Blob(decryptedChunks);
 }
