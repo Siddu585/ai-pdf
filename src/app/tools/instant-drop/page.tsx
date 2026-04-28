@@ -43,7 +43,7 @@ const CLOUDFLARE_RELAY_URL = 'https://turbodrop-stream-relay.siddhantjangam33.wo
 // v02.2.63 (Tachyon Omega - Zenith Surgical) - 5 Surgical Patches (Rollback Debounce, Migration Guard, Active BDP Gate, MTU Floor Removal, NACK Throttling)
 // v02.2.64 (Tachyon Omega - Gate Unblocker) - GPE 8MB Floor Removal + ICE-based activePipeCount + Unified BDP Formula
 // v02.2.65 (Tachyon Omega - MTU Shield) - File-start MTU grace period + Permanent pipe retirement + Dispatch rate telemetry
-const VERSION = "v3.0.1 (Cloudflare Stream Engine - Diagnostic Tracer)";
+const VERSION = "v3.0.2 (Cloudflare Stream Engine - Handshake Synchronized)";
 
 
 function getEngineConfig(engine: 'M2M' | 'HYBRID' | 'NITRO') {
@@ -1325,7 +1325,14 @@ ${capturedLogsRef.current.join('\n')}
                 ws.onmessage = async (e) => {
                     logDebug(`[BYPASS SENDER] WS Msg Received: ${e.data.slice(0, 50)}...`);
                     const data = JSON.parse(e.data);
+
+                    if (data.type === 'peer-connected') {
+                        logDebug(`[BYPASS SENDER] Peer arrived! Re-broadcasting sender-ready.`);
+                        ws.send(JSON.stringify({ type: 'sender-ready', roomId: finalRoomId, sessionKey: keyString }));
+                    }
+
                     if (data.type === 'receiver-ready') {
+                        if (statusRef.current === 'transferring') return; // Prevent double-trigger
                         logDebug(`[BYPASS SENDER] Receiver ready msg parsed. Starting POST fetch.`);
                         setStatus('transferring');
                         const file = selectedFiles[0];
@@ -2586,7 +2593,14 @@ ${capturedLogsRef.current.join('\n')}
                 ws.onmessage = async (e) => {
                     logDebug(`[BYPASS RECEIVER] WS Msg: ${e.data.slice(0, 50)}...`);
                     const data = JSON.parse(e.data);
+
+                    if (data.type === 'peer-connected') {
+                        logDebug(`[BYPASS RECEIVER] Peer arrived! Re-broadcasting receiver-ready.`);
+                        ws.send(JSON.stringify({ type: 'receiver-ready' }));
+                    }
+
                     if (data.type === 'sender-ready' && data.sessionKey) { 
+                        if (statusRef.current === 'transferring') return; // Prevent double trigger
                         logDebug(`[BYPASS RECEIVER] Sender ready msg parsed. Key received.`);
                         setStatus('transferring');
                         setCryptoKeyStr(data.sessionKey);
