@@ -1348,6 +1348,10 @@ ${capturedLogsRef.current.join('\n')}
                         logDebug(`[BYPASS SENDER] Multiplexing File ${idx + 1}/${fileList.length}: ${file.name}`);
                         setStatus('transferring');
                         
+                        const NUM_PIPES = 6;
+                        const partSize = Math.ceil(file.size / NUM_PIPES);
+                        const pipePromises = [];
+                        
                         for (let p = 0; p < NUM_PIPES; p++) {
                             const start = p * partSize;
                             const end = Math.min(file.size, (p + 1) * partSize);
