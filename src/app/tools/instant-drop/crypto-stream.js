@@ -80,22 +80,37 @@ export function encryptFileStream(file, keyObj, fileIdx, pipeIdx, startOffset, o
  * Multiplexes multiple network streams into a single reassembled stream.
  */
 export function decryptContinuousStream(pipeStreams, keyObj) {
-    const reassemblyQueues = new Map(); // FileIdx -> { chunks: Map(offset -> data), size: number }
-    
+    let nextExpectedOffset = 0;
+    const reassemblyBuffer = new Map(); // offset -> decryptedData
+    let controllerRef = null;
+
+    const checkAndFlush = () => {
+        if (!controllerRef) return;
+        while (reassemblyBuffer.has(nextExpectedOffset)) {
+            const data = reassemblyBuffer.get(nextExpectedOffset);
+            reassemblyBuffer.delete(nextExpectedOffset);
+            controllerRef.enqueue(data);
+            nextExpectedOffset += data.length;
+        }
+    };
+
     return new ReadableStream({
         async start(controller) {
+            controllerRef = controller;
             const processPipe = async (stream, pipeIdx) => {
                 const reader = stream.getReader();
                 let overflow = new Uint8Array(0);
 
                 const readExact = async (n) => {
                     while (overflow.length < n) {
-                        const { done, value } = await reader.read();
-                        if (done) return null;
-                        const joined = new Uint8Array(overflow.length + value.length);
-                        joined.set(overflow);
-                        joined.set(value, overflow.length);
-                        overflow = joined;
+                        try {
+                            const { done, value } = await reader.read();
+                            if (done) return null;
+                            const joined = new Uint8Array(overflow.length + value.length);
+                            joined.set(overflow);
+                            joined.set(value, overflow.length);
+                            overflow = joined;
+                        } catch (e) { return null; }
                     }
                     const slice = overflow.subarray(0, n);
                     overflow = overflow.subarray(n);
@@ -123,18 +138,25 @@ export function decryptContinuousStream(pipeStreams, keyObj) {
                         ivView.setUint32(4, absOffset, true);
 
                         const decrypted = await window.crypto.subtle.decrypt({ name: "AES-GCM", iv }, keyObj, ciphertext);
-                        controller.enqueue(new Uint8Array(decrypted));
+                        const decryptedData = new Uint8Array(decrypted);
+
+                        // v3.2.5: Reassembly logic
+                        reassemblyBuffer.set(absOffset, decryptedData);
+                        checkAndFlush();
                     }
                 } catch (e) {
                     console.error(`Pipe ${pipeIdx} error:`, e);
                 }
             };
 
-            // Run all pipes in parallel, they all enqueue to the same controller
-            // NOTE: This assumes the consumer handles the ordering or the sender sends in order.
-            // For true out-of-order reassembly, we'd need a more complex buffer here.
-            // But for OMEGA v3.2.4, we keep it simple: the sender's dispatcher sends chunks in sequence.
+            // Run all pipes in parallel
             await Promise.all(pipeStreams.map((s, i) => processPipe(s, i)));
+            
+            // Final check
+            checkAndFlush();
+            if (reassemblyBuffer.size > 0) {
+                console.warn("[OMEGA] Stream closed with pending chunks. Hole detected?");
+            }
             controller.close();
         }
     });

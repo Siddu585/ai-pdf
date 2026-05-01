@@ -43,7 +43,7 @@ const CLOUDFLARE_RELAY_URL = 'https://turbodrop-stream-relay.siddhantjangam33.wo
 // v02.2.63 (Tachyon Omega - Zenith Surgical) - 5 Surgical Patches (Rollback Debounce, Migration Guard, Active BDP Gate, MTU Floor Removal, NACK Throttling)
 // v02.2.64 (Tachyon Omega - Gate Unblocker) - GPE 8MB Floor Removal + ICE-based activePipeCount + Unified BDP Formula
 // v02.2.65 (Tachyon Omega - MTU Shield) - File-start MTU grace period + Permanent pipe retirement + Dispatch rate telemetry
-const VERSION = "v3.2.5 (Omega Hardened - PingPulse)";
+const VERSION = "v3.2.6 (Omega Hardened - Stable)";
 
 
 function getEngineConfig(engine: 'M2M' | 'HYBRID' | 'NITRO') {
@@ -1339,7 +1339,7 @@ ${capturedLogsRef.current.join('\n')}
                     if (pulseIntervalRef.current) clearInterval(pulseIntervalRef.current);
                     setStatus('transferring');
                     
-                    const NUM_PIPES = 8; // Optimized for mobile browser limits
+                    const NUM_PIPES = 6; // Optimized for mobile browser limits
                     pipeControllersRef.current = [];
 
                     for (let p = 0; p < NUM_PIPES; p++) {
@@ -1467,17 +1467,24 @@ ${capturedLogsRef.current.join('\n')}
                     setTotalFiles(filesInfo.length);
                     setStatus('transferring');
                     
-                    const NUM_PIPES = 8;
-                    const pipeStreams = [];
+                    const NUM_PIPES = 6;
+                    pipeControllersRef.current = [];
+                    const pipePromises = [];
                     for(let p=0; p<NUM_PIPES; p++) {
-                        try {
-                            const res = await fetch(`${CLOUDFLARE_RELAY_URL}/${normalizedRoom}/${p}`);
-                            if (!res.ok) throw new Error(`Status ${res.status}`);
-                            pipeStreams.push(res.body!);
-                        } catch (err: any) {
-                            logDebug(`Î“ÃœÃ¡âˆ©â••Ã… [PIPE] GET Failed on Pipe ${p}: ${err.message}`);
-                        }
+                        pipePromises.push(
+                            fetch(`${CLOUDFLARE_RELAY_URL}/${normalizedRoom}/${p}`)
+                                .then(res => {
+                                    if (!res.ok) throw new Error(`Pipe ${p} Failed: ${res.status}`);
+                                    return res.body!;
+                                })
+                                .catch(err => {
+                                    logDebug(`Î“ÃœÃ¡âˆ©â••Ã… [PIPE] GET Failed: ${err.message}`);
+                                    return null;
+                                })
+                        );
                     }
+
+                    const pipeStreams = (await Promise.all(pipePromises)).filter(s => s !== null);
 
                     if (pipeStreams.length === 0) {
                         logDebug("Î“ÃœÃ¡âˆ©â••Ã… [OMEGA] No Pipes connected. Aborting.");
