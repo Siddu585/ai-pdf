@@ -32,7 +32,7 @@ export async function importSessionKey(base64Key) {
  * Encrypts a single file into a framed stream: [4-byte length][Ciphertext]
  */
 export function encryptFileStream(file, keyObj, overrideChunkSize) {
-    const CHUNK_SIZE = overrideChunkSize || (window as any).__TURBO_CHUNK_SIZE__ || 128 * 1024;
+    const CHUNK_SIZE = overrideChunkSize || window.__TURBO_CHUNK_SIZE__ || 128 * 1024;
     let offset = 0;
     let chunkIndex = 0;
 
