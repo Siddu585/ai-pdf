@@ -43,7 +43,7 @@ const CLOUDFLARE_RELAY_URL = 'https://turbodrop-stream-relay.siddhantjangam33.wo
 // v02.2.63 (Tachyon Omega - Zenith Surgical) - 5 Surgical Patches (Rollback Debounce, Migration Guard, Active BDP Gate, MTU Floor Removal, NACK Throttling)
 // v02.2.64 (Tachyon Omega - Gate Unblocker) - GPE 8MB Floor Removal + ICE-based activePipeCount + Unified BDP Formula
 // v02.2.65 (Tachyon Omega - MTU Shield) - File-start MTU grace period + Permanent pipe retirement + Dispatch rate telemetry
-const VERSION = "v3.2.0 (Cloudflare Stream Engine - Overdrive Edition)";
+const VERSION = "v3.2.1 (Cloudflare Stream Engine - Cellular Warrior)";
 
 
 function getEngineConfig(engine: 'M2M' | 'HYBRID' | 'NITRO') {
@@ -1348,24 +1348,22 @@ ${capturedLogsRef.current.join('\n')}
                         logDebug(`[BYPASS SENDER] Multiplexing File ${idx + 1}/${fileList.length}: ${file.name}`);
                         setStatus('transferring');
                         
-                        const NUM_PIPES = 6; // v02.2.48: Overdrive Parallelism
-                        const partSize = Math.ceil(file.size / NUM_PIPES);
-                        const pipePromises = [];
-
                         for (let p = 0; p < NUM_PIPES; p++) {
                             const start = p * partSize;
                             const end = Math.min(file.size, (p + 1) * partSize);
                             if (start >= file.size && p > 0) continue; 
 
                             const slice = file.slice(start, end);
-                            const stream = encryptFileStream(slice, keyObj);
 
                             pipePromises.push((async (pIdx) => {
                                 let attempts = 0;
-                                const MAX_ATTEMPTS = 3;
+                                const MAX_ATTEMPTS = 5; // v03.2.1: Increased for Cellular Resilience
                                 const attemptPost = async () => {
                                     const controller = new AbortController();
-                                    const timeout = setTimeout(() => controller.abort(), 15000); // 15s watchdog for Overdrive
+                                    const timeout = setTimeout(() => controller.abort(), 45000); // 45s Cellular-Grade Watchdog
+
+                                    // v03.2.1: CRITICAL - Recreate stream for every retry to avoid "Disturbed Stream" error
+                                    const stream = encryptFileStream(slice, keyObj);
 
                                     try {
                                         const res = await fetch(`${CLOUDFLARE_RELAY_URL}/${finalRoomId}/${pIdx}`, {
@@ -1384,8 +1382,8 @@ ${capturedLogsRef.current.join('\n')}
                                         clearTimeout(timeout);
                                         attempts++;
                                         if (attempts < MAX_ATTEMPTS) {
-                                            logDebug(`[BYPASS SENDER] Pipe ${pIdx} Retrying...`);
-                                            await new Promise(r => setTimeout(r, 500));
+                                            logDebug(`[BYPASS SENDER] Pipe ${pIdx} Stalled/Disturbed. Fresh Retry ${attempts}...`);
+                                            await new Promise(r => setTimeout(r, 1000));
                                             return await attemptPost();
                                         } else throw err;
                                     }
@@ -2675,10 +2673,10 @@ ${capturedLogsRef.current.join('\n')}
 
                                     pipePromises.push((async (pIdx) => {
                                         let attempts = 0;
-                                        const MAX_ATTEMPTS = 5; 
+                                        const MAX_ATTEMPTS = 8; // v03.2.1: Maximum Cellular Persistence
                                         const attemptGet = async (): Promise<Blob> => {
                                             const controller = new AbortController();
-                                            const timeout = setTimeout(() => controller.abort(), 20000); // 20s watchdog for Overdrive
+                                            const timeout = setTimeout(() => controller.abort(), 45000); // 45s Cellular-Grade Watchdog
 
                                             try {
                                                 const res = await fetch(`${CLOUDFLARE_RELAY_URL}/${normalizedRoom}/${pIdx}`, {
@@ -2697,8 +2695,8 @@ ${capturedLogsRef.current.join('\n')}
                                                 clearTimeout(timeout);
                                                 attempts++;
                                                 if (attempts < MAX_ATTEMPTS) {
-                                                    logDebug(`[BYPASS RECEIVER] Pipe ${pIdx} Stalled. Retrying...`);
-                                                    await new Promise(r => setTimeout(r, 800));
+                                                    logDebug(`[BYPASS RECEIVER] Pipe ${pIdx} Stalled on Cellular. Retry ${attempts}...`);
+                                                    await new Promise(r => setTimeout(r, 1500));
                                                     return await attemptGet();
                                                 } else throw err;
                                             }
