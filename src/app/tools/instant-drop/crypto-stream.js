@@ -31,18 +31,23 @@ export async function importSessionKey(base64Key) {
 /**
  * Encrypts a single file into a framed stream: [4-byte length][Ciphertext]
  */
-export function encryptFileStream(file, keyObj) {
-    const CHUNK_SIZE = (window as any).__TURBO_CHUNK_SIZE__ || 128 * 1024;
-    const fileReader = file.stream().getReader();
+export function encryptFileStream(file, keyObj, overrideChunkSize) {
+    const CHUNK_SIZE = overrideChunkSize || (window as any).__TURBO_CHUNK_SIZE__ || 128 * 1024;
+    let offset = 0;
     let chunkIndex = 0;
 
     return new ReadableStream({
         async pull(controller) {
-            const { done, value } = await fileReader.read();
-            if (done) {
+            if (offset >= file.size) {
                 controller.close();
                 return;
             }
+            
+            const slice = file.slice(offset, Math.min(offset + CHUNK_SIZE, file.size));
+            const buffer = await slice.arrayBuffer();
+            const value = new Uint8Array(buffer);
+            offset += value.length;
+
             const iv = new Uint8Array(12);
             new DataView(iv.buffer).setUint32(8, chunkIndex++, true);
             try {
@@ -56,7 +61,7 @@ export function encryptFileStream(file, keyObj) {
                 controller.error(err);
             }
         },
-        cancel() { fileReader.cancel(); }
+        cancel() { }
     });
 }
 
