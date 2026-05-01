@@ -43,7 +43,7 @@ const CLOUDFLARE_RELAY_URL = 'https://turbodrop-stream-relay.siddhantjangam33.wo
 // v02.2.63 (Tachyon Omega - Zenith Surgical) - 5 Surgical Patches (Rollback Debounce, Migration Guard, Active BDP Gate, MTU Floor Removal, NACK Throttling)
 // v02.2.64 (Tachyon Omega - Gate Unblocker) - GPE 8MB Floor Removal + ICE-based activePipeCount + Unified BDP Formula
 // v02.2.65 (Tachyon Omega - MTU Shield) - File-start MTU grace period + Permanent pipe retirement + Dispatch rate telemetry
-const VERSION = "v3.2.4 (Omega Engine - Continuous Multiplex)";
+const VERSION = "v3.2.5 (Omega Hardened - PingPulse)";
 
 
 function getEngineConfig(engine: 'M2M' | 'HYBRID' | 'NITRO') {
@@ -145,6 +145,12 @@ const [engineMode, setEngineMode] = useState<'M2M' | 'HYBRID' | 'NITRO'>('NITRO'
     const [transferSpeed, setTransferSpeed] = useState<number | null>(null); // MB/s
     const lastTotalBytesRef = useRef(0); // v02.2.79: For accurate delta calculation
     const [wsConnected, setWsConnected] = useState(false); // v02.1.72: Signal Pulse
+    
+    // v3.2.5 (OMEGA Hardened): Peer Discovery & Pulse State
+    const [peerFound, setPeerFound] = useState(false);
+    const pulseIntervalRef = useRef<any>(null);
+    const heartbeatIntervalRef = useRef<any>(null);
+    const sendHandshakeRef = useRef<(() => void) | null>(null);
 
     // v02.2.28: Background Persistence Heartbeat (Android Throttling Fix)
     // requestAnimationFrame is prioritized by mobile OS even in some background states.
@@ -264,7 +270,6 @@ const [engineMode, setEngineMode] = useState<'M2M' | 'HYBRID' | 'NITRO'>('NITRO'
     const isActive = useRef(false);
     const fileInputRef = useRef<HTMLInputElement>(null);
     const roomRef = useRef<string | null>(null);
-    const heartbeatIntervalRef = useRef<any>(null);
     const workerRef = useRef<Worker | null>(null);
     const totalReceivedChunksCountRef = useRef(0); // v02.1.39 (Patch 12): Lightweight Flow Control
     const hasReceivedFileDoneRef = useRef<Record<number, boolean>>({}); // v02.2.73: Atomic Per-File P2P Sync Map
@@ -461,20 +466,46 @@ const [engineMode, setEngineMode] = useState<'M2M' | 'HYBRID' | 'NITRO'>('NITRO'
         }
         
         // 2. Fallback to reliable WebSocket if WebRTC fails
-        if (wsRef.current?.readyState === WebSocket.OPEN) {
-            try { wsRef.current.send(msgStr); return true; } catch(e) {}
+        if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
+            try { 
+                wsRef.current.send(msgStr); 
+                return true; 
+            } catch(e: any) {
+                logDebug(`[SIGNAL] WS Send Failed: ${e.message}`);
+            }
+        } else {
+            logDebug(`[SIGNAL] No Active Channel for: ${payload.type} (WS State: ${wsRef.current?.readyState})`);
         }
 
         return false;
     }
 
+    function startHeartbeat(ws: WebSocket) {
+        if (heartbeatIntervalRef.current) clearInterval(heartbeatIntervalRef.current);
+        heartbeatIntervalRef.current = setInterval(() => {
+            if (ws.readyState === WebSocket.OPEN) {
+                ws.send(JSON.stringify({ type: 'ping', ts: Date.now() }));
+            }
+        }, 15000); // 15s Heartbeat to keep Render/Cloudflare alive
+    }
+
+    function stopHeartbeat() {
+        if (heartbeatIntervalRef.current) {
+            clearInterval(heartbeatIntervalRef.current);
+            heartbeatIntervalRef.current = null;
+        }
+    }
+
     function disconnectEverything() {
         logDebug(`${VERSION}: Full Multiplexed Session Reset...`);
+        stopHeartbeat();
+        if (pulseIntervalRef.current) clearInterval(pulseIntervalRef.current);
         if (wsRef.current) { try { wsRef.current.close(); } catch(e) {} wsRef.current = null; }
         peersRef.current.forEach(p => { if (p) try { p.close(); } catch (e) {} });
         peersRef.current = [];
         resetSessionRefs();
         releaseWakeLock(); 
+        setPeerFound(false);
     }
 
     const resetSessionRefs = (isRecovery = false) => {
@@ -1249,7 +1280,7 @@ ${capturedLogsRef.current.join('\n')}
     };
 
 
-    // --- SENDER LOGIC (Turbo Drop 3.2.4 Omega) ---
+    // --- SENDER LOGIC (Turbo Drop 3.2.5 Omega Hardened) ---
     const startSending = async (selectedFiles: FileList | File[]) => {
         try {
             disconnectEverything();
@@ -1266,11 +1297,13 @@ ${capturedLogsRef.current.join('\n')}
             setRoomId(finalRoomId);
             roomRef.current = finalRoomId;
             
-            logDebug(`[OMEGA SENDER] Initializing 12 Persistent Pipes: ${finalRoomId}`);
+            logDebug(`[OMEGA SENDER] Initializing 8 Persistent Pipes: ${finalRoomId}`);
             const ws = new WebSocket(`${BACKEND_WS_URL}/ws/drop/${finalRoomId}/sender`);
             wsRef.current = ws;
             
             const sendHandshake = () => {
+                if (ws.readyState !== WebSocket.OPEN) return;
+                logDebug(`[OMEGA] Pulsing Handshake...`);
                 ws.send(JSON.stringify({ 
                     type: 'sender-ready', 
                     roomId: finalRoomId, 
@@ -1279,17 +1312,34 @@ ${capturedLogsRef.current.join('\n')}
                     totalSize: fileList.reduce((acc, f) => acc + f.size, 0)
                 }));
             };
+            sendHandshakeRef.current = sendHandshake;
 
-            ws.onopen = () => sendHandshake();
+            ws.onopen = () => {
+                setWsConnected(true);
+                sendHandshake();
+                startHeartbeat(ws);
+                // v3.2.5: Auto-Pulse until peer responds or timeout
+                pulseIntervalRef.current = setInterval(() => {
+                    if (statusRef.current === 'waiting') sendHandshake();
+                }, 3000);
+            };
+
             ws.onmessage = async (e) => {
                 const data = JSON.parse(e.data);
-                if (data.type === 'peer-connected') sendHandshake();
+                if (data.type === 'peer-connected') {
+                    logDebug("[OMEGA] Peer Detected. Dispatching Handshake...");
+                    sendHandshake();
+                }
                 
                 if (data.type === 'receiver-ready') {
+                    if (statusRef.current === 'transferring') return; // Anti-Bounce
+                    
                     logDebug(`[OMEGA SENDER] Receiver Ready. Ignition...`);
+                    setPeerFound(true);
+                    if (pulseIntervalRef.current) clearInterval(pulseIntervalRef.current);
                     setStatus('transferring');
                     
-                    const NUM_PIPES = 12; 
+                    const NUM_PIPES = 8; // Optimized for mobile browser limits
                     pipeControllersRef.current = [];
 
                     for (let p = 0; p < NUM_PIPES; p++) {
@@ -1301,13 +1351,16 @@ ${capturedLogsRef.current.join('\n')}
 
                         (async (pIdx) => {
                             try {
-                                await fetch(`${CLOUDFLARE_RELAY_URL}/${finalRoomId}/${pIdx}`, {
+                                const res = await fetch(`${CLOUDFLARE_RELAY_URL}/${finalRoomId}/${pIdx}`, {
                                     method: 'POST',
                                     body: stream,
                                     //@ts-ignore
                                     duplex: 'half'
                                 });
-                            } catch (err) {}
+                                if (!res.ok) logDebug(`Î“ÃœÃ¡âˆ©â••Ã… [PIPE] POST Failed on Pipe ${pIdx}: ${res.status}`);
+                            } catch (err: any) {
+                                logDebug(`Î“ÃœÃ¡âˆ©â••Ã… [PIPE] Fatal on Pipe ${pIdx}: ${err.message}`);
+                            }
                         })(p);
                     }
 
@@ -1316,41 +1369,64 @@ ${capturedLogsRef.current.join('\n')}
 
                     // Continuous Dispatcher
                     (async () => {
-                        for (let i = 0; i < fileList.length; i++) {
-                            const file = fileList[i];
-                            logDebug(`[OMEGA] Dispatching: ${file.name}`);
-                            setCurrentFileIndex(i);
+                        try {
+                            let absoluteOffset = 0;
+                            const totalBytes = fileList.reduce((a, f) => a + f.size, 0);
                             
-                            const partSize = Math.ceil(file.size / NUM_PIPES);
-                            const filePartPromises = [];
+                            for (let i = 0; i < fileList.length; i++) {
+                                const file = fileList[i];
+                                logDebug(`[OMEGA] Dispatching: ${file.name}`);
+                                setCurrentFileIndex(i);
+                                
+                                const partSize = Math.ceil(file.size / NUM_PIPES);
+                                const filePartPromises = [];
 
-                            for (let p = 0; p < NUM_PIPES; p++) {
-                                const start = p * partSize;
-                                const end = Math.min(file.size, (p + 1) * partSize);
-                                if (start >= file.size && p > 0) continue;
+                                for (let p = 0; p < NUM_PIPES; p++) {
+                                    const start = p * partSize;
+                                    const end = Math.min(file.size, (p + 1) * partSize);
+                                    if (start >= file.size && p > 0) continue;
 
-                                const slice = file.slice(start, end);
-                                const fileStream = encryptFileStream(slice, keyObj, i, p, start, 256 * 1024);
-                                const reader = fileStream.getReader();
+                                    const slice = file.slice(start, end);
+                                    // Encryption logic stays same
+                                    const fileStream = encryptFileStream(slice, keyObj, i, p, start, 256 * 1024);
+                                    const reader = fileStream.getReader();
 
-                                filePartPromises.push((async () => {
-                                    while (true) {
-                                        const { done, value } = await reader.read();
-                                        if (done) break;
-                                        pipeControllersRef.current[p].enqueue(value);
-                                        totalSentBytesRef.current += value.length;
-                                        setTotalSentBytes(totalSentBytesRef.current);
-                                    }
-                                })());
+                                    filePartPromises.push((async () => {
+                                        while (true) {
+                                            const { done, value } = await reader.read();
+                                            if (done) break;
+                                            if (pipeControllersRef.current[p]) {
+                                                pipeControllersRef.current[p].enqueue(value);
+                                            }
+                                            totalSentBytesRef.current += value.length;
+                                            setTotalSentBytes(totalSentBytesRef.current);
+                                            setProgress(Math.round((totalSentBytesRef.current / totalBytes) * 100));
+                                        }
+                                    })());
+                                }
+                                await Promise.all(filePartPromises);
                             }
-                            await Promise.all(filePartPromises);
+                            
+                            pipeControllersRef.current.forEach(c => { try { c.close(); } catch(e) {} });
+                            setStatus('done');
+                            logDebug(`[OMEGA] Batch Complete.`);
+                        } catch (err: any) {
+                            logDebug(`Î“ÃœÃ¡âˆ©â••Ã… [DISPATCHER] Fatal: ${err.message}`);
+                            setStatus('disconnected');
                         }
-                        
-                        pipeControllersRef.current.forEach(c => { try { c.close(); } catch(e) {} });
-                        setStatus('done');
-                        logDebug(`[OMEGA] Batch Complete.`);
                     })();
                 }
+            };
+
+            ws.onerror = (e) => {
+                logDebug(`Î“ÃœÃ¡âˆ©â••Ã… [OMEGA] WebSocket Error: ${e}`);
+                setWsConnected(false);
+            };
+
+            ws.onclose = () => {
+                logDebug("[OMEGA] WebSocket Closed.");
+                setWsConnected(false);
+                stopHeartbeat();
             };
         } catch (fatal: any) { logDebug(`[OMEGA] Fatal: ${fatal.message}`); }
     };
@@ -1368,25 +1444,46 @@ ${capturedLogsRef.current.join('\n')}
             const ws = new WebSocket(`${BACKEND_WS_URL}/ws/drop/${normalizedRoom}/receiver`);
             wsRef.current = ws;
             
-            ws.onopen = () => ws.send(JSON.stringify({ type: 'receiver-ready' }));
+            ws.onopen = () => {
+                setWsConnected(true);
+                logDebug("[OMEGA] Pulsing Receiver-Ready...");
+                ws.send(JSON.stringify({ type: 'receiver-ready' }));
+                startHeartbeat(ws);
+            };
             ws.onmessage = async (e) => {
                 const data = JSON.parse(e.data);
-                if (data.type === 'peer-connected') ws.send(JSON.stringify({ type: 'receiver-ready' }));
+                if (data.type === 'peer-connected') {
+                    if (ws.readyState === WebSocket.OPEN) {
+                        logDebug("[OMEGA] Peer Detected. Pulsing Receiver-Ready...");
+                        ws.send(JSON.stringify({ type: 'receiver-ready' }));
+                    }
+                }
                 
                 if (data.type === 'sender-ready' && data.sessionKey) {
+                    if (statusRef.current === 'transferring') return; // Anti-Bounce
                     logDebug(`[OMEGA RECEIVER] Handshake Verified. Syncing Pipes...`);
                     const keyObj = await importSessionKey(data.sessionKey);
                     const filesInfo = data.files;
                     setTotalFiles(filesInfo.length);
                     setStatus('transferring');
                     
-                    const NUM_PIPES = 12;
-                    const pipePromises = [];
+                    const NUM_PIPES = 8;
+                    const pipeStreams = [];
                     for(let p=0; p<NUM_PIPES; p++) {
-                        pipePromises.push(fetch(`${CLOUDFLARE_RELAY_URL}/${normalizedRoom}/${p}`).then(r => r.body!));
+                        try {
+                            const res = await fetch(`${CLOUDFLARE_RELAY_URL}/${normalizedRoom}/${p}`);
+                            if (!res.ok) throw new Error(`Status ${res.status}`);
+                            pipeStreams.push(res.body!);
+                        } catch (err: any) {
+                            logDebug(`Î“ÃœÃ¡âˆ©â••Ã… [PIPE] GET Failed on Pipe ${p}: ${err.message}`);
+                        }
                     }
 
-                    const pipeStreams = await Promise.all(pipePromises);
+                    if (pipeStreams.length === 0) {
+                        logDebug("Î“ÃœÃ¡âˆ©â••Ã… [OMEGA] No Pipes connected. Aborting.");
+                        setStatus('disconnected');
+                        return;
+                    }
 
                     // Reassembly Loop
                     (async () => {
@@ -1844,7 +1941,10 @@ Buffer-Bloat Grade: ${d.bufferBloatGrade}
                                             variant="outline" 
                                             size="sm" 
                                             className="text-indigo-600 border-indigo-200 hover:bg-indigo-50 gap-2 mx-auto"
-                                            onClick={() => sendControlMsg({ type: 'sender-ready', isMobile: isMobileDevice() })}
+                                            onClick={() => {
+                                                logDebug("[OMEGA] Manual Discovery Pulse Triggered.");
+                                                if (sendHandshakeRef.current) sendHandshakeRef.current();
+                                            }}
                                         >
                                             <RefreshCw className="w-4 h-4" />
                                             Force Discovery Pulse
