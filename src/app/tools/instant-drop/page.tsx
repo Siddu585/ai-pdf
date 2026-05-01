@@ -27,7 +27,7 @@ import { Navbar } from "@/components/layout/Navbar";
 import { Footer } from "@/components/layout/Footer";
 import { useUsage } from "@/hooks/useUsage";
 import { PaywallModal } from "@/components/layout/PaywallModal";
-import { generateSessionKey, importSessionKey, encryptFileStream, decryptNetworkStream } from './crypto-stream';
+import { generateSessionKey, importSessionKey, encryptFileStream, decryptContinuousStream } from './crypto-stream';
 const CLOUDFLARE_RELAY_URL = 'https://turbodrop-stream-relay.siddhantjangam33.workers.dev/relay';
 
 // v02.2.10.6d (NMI Protocol) - Fix Fatal NACK ReferenceError
@@ -209,6 +209,7 @@ const [engineMode, setEngineMode] = useState<'M2M' | 'HYBRID' | 'NITRO'>('NITRO'
     const gpeBlockedSinceRef = useRef<number | null>(null); // v02.1.56: Deadlock Safety
     const lastProgressTimeRef = useRef<number>(Date.now()); // v02.1.77: Deadlock Buster
     const lastChannelIndexRef = useRef(0); // v02.2.71: Persistent Round Robin
+    const pipeControllersRef = useRef<ReadableStreamDefaultController[]>([]); // v3.2.4: Omega Persistent Controllers
     
     // v02.2.68: Fix 3 & 5 â€” Performance Caching Refs
     const cachedOpenChannelsRef = useRef<RTCDataChannel[] | null>(null);
@@ -482,6 +483,10 @@ const [engineMode, setEngineMode] = useState<'M2M' | 'HYBRID' | 'NITRO'>('NITRO'
             clearTimeout(stallWatchdogRef.current);
             stallWatchdogRef.current = null;
         }
+        
+        // v3.2.4: Close persistent pipes
+        pipeControllersRef.current.forEach(c => { try { c.close(); } catch(e) {} });
+        pipeControllersRef.current = [];
         
         // v02.1.67: Atomic Cleanup of old objects before clearing refs
         dataChannelsRef.current.forEach(dc => { if (dc) try { dc.close(); } catch(e) {} });
@@ -1297,9 +1302,8 @@ ${capturedLogsRef.current.join('\n')}
     };
 
 
-    // --- SENDER LOGIC (Turbo Drop 2.0) ---
+    // --- SENDER LOGIC (Turbo Drop 3.2.4 Omega) ---
     const startSending = async (selectedFiles: FileList | File[]) => {
-        // --- CLOUD RELAY BYPASS (SENDER) ---
         if (true) { 
             try {
                 disconnectEverything();
@@ -1316,100 +1320,95 @@ ${capturedLogsRef.current.join('\n')}
                 setRoomId(finalRoomId);
                 roomRef.current = finalRoomId;
                 
-                logDebug(`[BYPASS SENDER] Connecting to WS: ${finalRoomId}`);
+                logDebug(`[OMEGA SENDER] Initializing 12 Persistent Pipes: ${finalRoomId}`);
                 const ws = new WebSocket(`${BACKEND_WS_URL}/ws/drop/${finalRoomId}/sender`);
                 wsRef.current = ws;
                 
                 const sendHandshake = () => {
-                    const filesInfo = fileList.map(f => ({ name: f.name, size: f.size }));
                     ws.send(JSON.stringify({ 
                         type: 'sender-ready', 
                         roomId: finalRoomId, 
                         sessionKey: keyString,
-                        files: filesInfo,
+                        files: fileList.map(f => ({ name: f.name, size: f.size })),
                         totalSize: fileList.reduce((acc, f) => acc + f.size, 0)
                     }));
                 };
 
-                ws.onopen = () => {
-                    logDebug(`[BYPASS SENDER] WS Open. Sending handshake for ${fileList.length} files.`);
-                    sendHandshake();
-                };
-                
-                ws.onerror = (e) => logDebug(`[BYPASS SENDER] WS Error: ${e}`);
-                ws.onclose = () => logDebug(`[BYPASS SENDER] WS Closed`);
-                
+                ws.onopen = () => sendHandshake();
                 ws.onmessage = async (e) => {
                     const data = JSON.parse(e.data);
-
-                    if (data.type === 'peer-connected') {
-                        sendHandshake();
-                    }
-
-                    if (data.type === 'ready-for-next') {
-                        const idx = data.index;
-                        if (idx >= fileList.length) return;
-                        
-                        const file = fileList[idx];
-                        logDebug(`[BYPASS SENDER] Multiplexing File ${idx + 1}/${fileList.length}: ${file.name}`);
+                    if (data.type === 'peer-connected') sendHandshake();
+                    
+                    if (data.type === 'receiver-ready') {
+                        logDebug(`[OMEGA SENDER] Receiver Ready. Ignition...`);
                         setStatus('transferring');
                         
-                        // v03.2.3: Adaptive Payload Calibration (Constrained Reality)
-                        // If we are on a slow/high-latency link, use fewer but 'heavier' pipes to bypass TCP Slow-Start
-                        const isCellularConstraint = diagnosticMetricsRef.current.latency > 150 || diagnosticMetricsRef.current.throughput < 2;
-                        const NUM_PIPES = (window as any).__TURBO_PIPES__ || (isCellularConstraint ? 3 : 6);
-                        const partSize = Math.ceil(file.size / NUM_PIPES);
+                        const NUM_PIPES = 12; // Omega always uses 12 pipes for maximum saturation
                         const pipePromises = [];
-                        
-                        // Adaptive Chunking: 1MB for Cellular, 128KB for WiFi
-                        const adaptiveChunkSize = (window as any).__TURBO_CHUNK_SIZE__ || (isCellularConstraint ? 1024 * 1024 : 128 * 1024);
-                        
-                        for (let p = 0; p < NUM_PIPES; p++) {
-                            const start = p * partSize;
-                            const end = Math.min(file.size, (p + 1) * partSize);
-                            if (start >= file.size && p > 0) continue; 
 
-                            const slice = file.slice(start, end);
+                        for (let p = 0; p < NUM_PIPES; p++) {
+                            const stream = new ReadableStream({
+                                start(controller) {
+                                    pipeControllersRef.current[p] = controller;
+                                }
+                            });
 
                             pipePromises.push((async (pIdx) => {
-                                let attempts = 0;
-                                const MAX_ATTEMPTS = 5; 
-                                const attemptPost = async () => {
-                                    const controller = new AbortController();
-                                    const timeout = setTimeout(() => controller.abort(), 90000); // 90s Ultra-Stable Watchdog
-
-                                    // v03.2.3: Injecting adaptive chunk size into the encryption stream
-                                    const stream = encryptFileStream(slice, keyObj, adaptiveChunkSize);
-
-                                    try {
-                                        const res = await fetch(`${CLOUDFLARE_RELAY_URL}/${finalRoomId}/${pIdx}`, {
-                                            method: 'POST',
-                                            body: stream,
-                                            signal: controller.signal,
-                                            //@ts-ignore
-                                            duplex: 'half'
-                                        });
-                                        clearTimeout(timeout);
-                                        if (!res.ok) throw new Error(`Status ${res.status}`);
-                                        
-                                        // Update UI Piston (Show 6 pistons)
-                                        if (pIdx < 12) diagnosticMetricsRef.current.pistonStats[pIdx] = { speed: 10, health: 'green' };
-                                    } catch (err: any) {
-                                        clearTimeout(timeout);
-                                        attempts++;
-                                        if (attempts < MAX_ATTEMPTS) {
-                                            logDebug(`[BYPASS SENDER] Pipe ${pIdx} Stalled/Disturbed. Fresh Retry ${attempts}...`);
-                                            await new Promise(r => setTimeout(r, 1000));
-                                            return await attemptPost();
-                                        } else throw err;
-                                    }
-                                };
-                                await attemptPost();
+                                try {
+                                    await fetch(`${CLOUDFLARE_RELAY_URL}/${finalRoomId}/${pIdx}`, {
+                                        method: 'POST',
+                                        body: stream,
+                                        //@ts-ignore
+                                        duplex: 'half'
+                                    });
+                                } catch (err) {}
                             })(p));
                         }
 
-                        try {
-                            await Promise.all(pipePromises);
+                        // Wait for streams to be ready
+                        await new Promise(r => setTimeout(r, 500));
+
+                        // Continuous Dispatcher
+                        (async () => {
+                            for (let i = 0; i < fileList.length; i++) {
+                                const file = fileList[i];
+                                logDebug(`[OMEGA] Blasting File ${i + 1}/${fileList.length}: ${file.name}`);
+                                setCurrentFileIndex(i);
+                                
+                                const partSize = Math.ceil(file.size / NUM_PIPES);
+                                const filePartPromises = [];
+
+                                for (let p = 0; p < NUM_PIPES; p++) {
+                                    const start = p * partSize;
+                                    const end = Math.min(file.size, (p + 1) * partSize);
+                                    if (start >= file.size && p > 0) continue;
+
+                                    const slice = file.slice(start, end);
+                                    const fileStream = encryptFileStream(slice, keyObj, i, p, start, 1024 * 1024); // v3.2.4: Pass absolute start offset
+                                    const reader = fileStream.getReader();
+
+                                    filePartPromises.push((async () => {
+                                        while (true) {
+                                            const { done, value } = await reader.read();
+                                            if (done) break;
+                                            pipeControllersRef.current[p].enqueue(value);
+                                            totalSentBytesRef.current += value.length;
+                                        }
+                                    })());
+                                }
+                                await Promise.all(filePartPromises);
+                                logDebug(`[OMEGA] File ${i + 1} Done. No gap transition...`);
+                            }
+                            
+                            // Close all pipes
+                            pipeControllersRef.current.forEach(c => c.close());
+                            setStatus('done');
+                        })();
+                    }
+                };
+                return;
+            } catch (fatal) { logDebug(`[OMEGA] Fatal: ${fatal}`); }
+        }
                             logDebug(`[BYPASS SENDER] File ${idx + 1} multiplexed successfully.`);
                             if (idx === fileList.length - 1) setStatus('done');
                         } catch (err: any) {
@@ -2668,77 +2667,69 @@ ${capturedLogsRef.current.join('\n')}
                         setCryptoKeyStr(data.sessionKey);
                         const keyObj = await importSessionKey(data.sessionKey);
                         const totalSize = data.totalSize || 0;
-                        let processedSize = 0;
-                        const batchResults = [];
+                        const filesInfo = data.files || [];
+                        setTotalFiles(filesInfo.length);
+                        
+                        const NUM_PIPES = 12;
+                        const pipePromises = [];
+                        const reassemblyBuffers = new Map(); // Map<FileIdx, Uint8Array>
+                        const reassemblyProgress = new Map(); // Map<FileIdx, number>
+                        const batchResults: any[] = [];
 
-                        try {
-                            for (let i = 0; i < data.files.length; i++) {
-                                const fileMeta = data.files[i];
-                                logDebug(`[BYPASS RECEIVER] Overdrive Fetch File ${i + 1}/${data.files.length}`);
-                                
-                                const isCellularConstraint = diagnosticMetricsRef.current.latency > 150 || diagnosticMetricsRef.current.throughput < 2;
-                                const NUM_PIPES = (window as any).__TURBO_PIPES__ || (isCellularConstraint ? 3 : 6); // v02.2.48: Overdrive Parallelism
-                                const partSize = Math.ceil(fileMeta.size / NUM_PIPES);
-                                const pipePromises = [];
+                        logDebug(`[OMEGA RECEIVER] Spawning 12 Parallel Fetchers...`);
+                        
+                        for (let p = 0; p < NUM_PIPES; p++) {
+                            pipePromises.push((async (pIdx) => {
+                                try {
+                                    const res = await fetch(`${CLOUDFLARE_RELAY_URL}/${normalizedRoom}/${pIdx}`);
+                                    if (res.ok && res.body) {
+                                        await decryptContinuousStream(res.body, keyObj, (chunk) => {
+                                            const { fileIdx, byteOffset, data, isEOF, pipeIdx } = chunk;
+                                            
+                                            // Update Piston UI
+                                            if (pipeIdx < 12) diagnosticMetricsRef.current.pistonStats[pipeIdx] = { speed: 12, health: 'green' };
 
-                                ws.send(JSON.stringify({ type: 'ready-for-next', index: i }));
-                                await new Promise(r => setTimeout(r, isCellularConstraint ? 800 : 300)); // More handshake time for cellular
+                                            if (isEOF) return;
 
-                                for (let p = 0; p < NUM_PIPES; p++) {
-                                    const startOffset = p * partSize;
-                                    if (startOffset >= fileMeta.size && p > 0) continue;
-
-                                    pipePromises.push((async (pIdx) => {
-                                        let attempts = 0;
-                                        const MAX_ATTEMPTS = 10; // v03.2.3: Maximum Constrained Persistence
-                                        const attemptGet = async (): Promise<Blob> => {
-                                            const controller = new AbortController();
-                                            const timeout = setTimeout(() => controller.abort(), 90000); // 90s Ultra-Stable Watchdog
-
-                                            try {
-                                                const res = await fetch(`${CLOUDFLARE_RELAY_URL}/${normalizedRoom}/${pIdx}`, {
-                                                    signal: controller.signal
-                                                });
-                                                clearTimeout(timeout);
-                                                if (res.ok && res.body) {
-                                                    return await decryptNetworkStream(res.body, keyObj, totalSize, (absBytes: number) => {
-                                                        const pct = Math.min(99, Math.round((absBytes / totalSize) * 100));
-                                                        setProgress(pct);
-                                                        // Update UI Piston
-                                                        if (pIdx < 12) diagnosticMetricsRef.current.pistonStats[pIdx] = { speed: 12, health: 'green' };
-                                                    }, processedSize + (pIdx * partSize));
-                                                } else throw new Error(`Status ${res.status}`);
-                                            } catch (err: any) {
-                                                clearTimeout(timeout);
-                                                attempts++;
-                                                if (attempts < MAX_ATTEMPTS) {
-                                                    logDebug(`[BYPASS RECEIVER] Pipe ${pIdx} Stalled on Cellular. Retry ${attempts}...`);
-                                                    await new Promise(r => setTimeout(r, 1500));
-                                                    return await attemptGet();
-                                                } else throw err;
+                                            if (!reassemblyBuffers.has(fileIdx)) {
+                                                const meta = filesInfo[fileIdx];
+                                                reassemblyBuffers.set(fileIdx, new Uint8Array(meta.size));
+                                                reassemblyProgress.set(fileIdx, 0);
                                             }
-                                        };
-                                        return await attemptGet();
-                                    })(p));
+                                            
+                                            const buf = reassemblyBuffers.get(fileIdx);
+                                            const currentProg = reassemblyProgress.get(fileIdx);
+                                            
+                                            if (data) {
+                                                if (byteOffset + data.length <= buf.length) {
+                                                    buf.set(data, byteOffset); // Omega: Absolute slotting
+                                                    const newProg = currentProg + data.length;
+                                                    reassemblyProgress.set(fileIdx, newProg);
+                                                    
+                                                    const totalDone = Array.from(reassemblyProgress.values()).reduce((a, b) => a + b, 0);
+                                                    setProgress(Math.min(99, Math.round((totalDone / totalSize) * 100)));
+                                                    
+                                                    if (newProg >= filesInfo[fileIdx].size) {
+                                                        const blob = new Blob([buf], { type: 'application/octet-stream' });
+                                                        if (!batchResults.find(r => r.name === filesInfo[fileIdx].name)) {
+                                                            batchResults.push({ name: filesInfo[fileIdx].name, blob });
+                                                            setReceivedFiles([...batchResults]);
+                                                            reassembledCount.current++;
+                                                            logDebug(`[OMEGA] Reassembled ${filesInfo[fileIdx].name}`);
+                                                            if (reassembledCount.current >= filesInfo.length) setStatus('done');
+                                                        }
+                                                    }
+                                                }
+                                            }
+                                        });
+                                    }
+                                } catch (err) {
+                                    logDebug(`[OMEGA] Pipe ${pIdx} Error: ${err.message}`);
                                 }
-
-                                const blobs = await Promise.all(pipePromises);
-                                batchResults.push({ name: fileMeta.name, blob: new Blob(blobs) });
-                                processedSize += fileMeta.size;
-                                reassembledCount.current++; 
-                                setReceivedFiles([...batchResults]);
-                                
-                                await new Promise(r => setTimeout(r, 100)); // v03.2.0: 0.1s OVERDRIVE Cooldown
-                                
-                                // Reset pistons for next file
-                                for(let k=0; k<6; k++) diagnosticMetricsRef.current.pistonStats[k] = { speed: 0, health: 'amber' };
-                            }
-                            logDebug(`[BYPASS RECEIVER] Multiplex Batch Complete!`);
-                            setStatus('done'); // v02.2.48: Force transition to Success State
-                        } catch (err: any) {
-                            logDebug(`[BYPASS RECEIVER] MULTIPLEX FATAL: ${err.message}`);
-                            setStatus('error');
+                            })(p));
                         }
+                        
+                        ws.send(JSON.stringify({ type: 'receiver-ready' }));
                     }
                 };
             } catch (fatal:any) {
