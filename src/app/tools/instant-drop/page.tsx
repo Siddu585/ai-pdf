@@ -43,7 +43,7 @@ const CLOUDFLARE_RELAY_URL = 'https://turbodrop-stream-relay.siddhantjangam33.wo
 // v02.2.63 (Tachyon Omega - Zenith Surgical) - 5 Surgical Patches (Rollback Debounce, Migration Guard, Active BDP Gate, MTU Floor Removal, NACK Throttling)
 // v02.2.64 (Tachyon Omega - Gate Unblocker) - GPE 8MB Floor Removal + ICE-based activePipeCount + Unified BDP Formula
 // v02.2.65 (Tachyon Omega - MTU Shield) - File-start MTU grace period + Permanent pipe retirement + Dispatch rate telemetry
-const VERSION = "v3.0.7 (Cloudflare Stream Engine - Autonomous Recovery)";
+const VERSION = "v3.1.0 (Cloudflare Stream Engine - Quad-Multiplex)";
 
 
 function getEngineConfig(engine: 'M2M' | 'HYBRID' | 'NITRO') {
@@ -1345,40 +1345,54 @@ ${capturedLogsRef.current.join('\n')}
                         if (idx >= fileList.length) return;
                         
                         const file = fileList[idx];
-                        logDebug(`[BYPASS SENDER] Streaming File ${idx + 1}/${fileList.length}: ${file.name}`);
+                        logDebug(`[BYPASS SENDER] Multiplexing File ${idx + 1}/${fileList.length}: ${file.name}`);
                         setStatus('transferring');
                         
-                        let attempts = 0;
-                        const MAX_ATTEMPTS = 3;
+                        const NUM_PIPES = 4;
+                        const partSize = Math.ceil(file.size / NUM_PIPES);
+                        const pipePromises = [];
 
-                        const attemptPost = async () => {
-                            try {
-                                const stream = encryptFileStream(file, keyObj);
-                                const res = await fetch(`${CLOUDFLARE_RELAY_URL}/${finalRoomId}`, {
-                                    method: 'POST',
-                                    body: stream,
-                                    //@ts-ignore
-                                    duplex: 'half'
-                                });
-                                if (res.ok) {
-                                    logDebug(`[BYPASS SENDER] File ${idx + 1} sent successfully.`);
-                                    if (idx === fileList.length - 1) setStatus('done');
-                                } else {
-                                    throw new Error(`Status ${res.status}`);
-                                }
-                            } catch (err: any) {
-                                attempts++;
-                                if (attempts < MAX_ATTEMPTS) {
-                                    logDebug(`[BYPASS SENDER] Retrying File ${idx + 1} (Attempt ${attempts + 1})...`);
-                                    await new Promise(r => setTimeout(r, 2000));
-                                    await attemptPost();
-                                } else {
-                                    logDebug(`[BYPASS SENDER] POST FETCH FATAL: ${err.message}`);
-                                    setStatus('error');
-                                }
-                            }
-                        };
-                        await attemptPost();
+                        for (let p = 0; p < NUM_PIPES; p++) {
+                            const start = p * partSize;
+                            const end = Math.min(file.size, (p + 1) * partSize);
+                            if (start >= file.size && p > 0) continue; 
+
+                            const slice = file.slice(start, end);
+                            const stream = encryptFileStream(slice, keyObj);
+
+                            pipePromises.push((async (pIdx) => {
+                                let attempts = 0;
+                                const MAX_ATTEMPTS = 3;
+                                const attemptPost = async () => {
+                                    try {
+                                        const res = await fetch(`${CLOUDFLARE_RELAY_URL}/${finalRoomId}/${pIdx}`, {
+                                            method: 'POST',
+                                            body: stream,
+                                            //@ts-ignore
+                                            duplex: 'half'
+                                        });
+                                        if (!res.ok) throw new Error(`Status ${res.status}`);
+                                    } catch (err: any) {
+                                        attempts++;
+                                        if (attempts < MAX_ATTEMPTS) {
+                                            logDebug(`[BYPASS SENDER] Pipe ${pIdx} Retrying...`);
+                                            await new Promise(r => setTimeout(r, 1500));
+                                            return await attemptPost();
+                                        } else throw err;
+                                    }
+                                };
+                                await attemptPost();
+                            })(p));
+                        }
+
+                        try {
+                            await Promise.all(pipePromises);
+                            logDebug(`[BYPASS SENDER] File ${idx + 1} multiplexed successfully.`);
+                            if (idx === fileList.length - 1) setStatus('done');
+                        } catch (err: any) {
+                            logDebug(`[BYPASS SENDER] MULTIPLEX FATAL: ${err.message}`);
+                            setStatus('error');
+                        }
                     }
                 };
             } catch (fatal:any) {
@@ -2637,46 +2651,52 @@ ${capturedLogsRef.current.join('\n')}
                         try {
                             for (let i = 0; i < data.files.length; i++) {
                                 const fileMeta = data.files[i];
-                                logDebug(`[BYPASS RECEIVER] Fetching File ${i + 1}/${data.files.length}: ${fileMeta.name}`);
+                                logDebug(`[BYPASS RECEIVER] Multiplex Fetch File ${i + 1}/${data.files.length}`);
                                 
-                                let attempts = 0;
-                                const MAX_ATTEMPTS = 3;
+                                const NUM_PIPES = 4;
+                                const partSize = Math.ceil(fileMeta.size / NUM_PIPES);
+                                const pipePromises = [];
 
-                                const attemptGet = async (): Promise<Blob> => {
-                                    try {
-                                        ws.send(JSON.stringify({ type: 'ready-for-next', index: i }));
-                                        await new Promise(r => setTimeout(r, 1000)); // Worker reset grace
-                                        
-                                        const res = await fetch(`${CLOUDFLARE_RELAY_URL}/${normalizedRoom}`);
-                                        if (res.ok && res.body) {
-                                            return await decryptNetworkStream(res.body, keyObj, totalSize, (absBytes: number) => {
-                                                const pct = Math.min(99, Math.round((absBytes / totalSize) * 100));
-                                                setProgress(pct);
-                                            }, processedSize);
-                                        } else {
-                                            throw new Error(`Status ${res.status}`);
-                                        }
-                                    } catch (err: any) {
-                                        attempts++;
-                                        if (attempts < MAX_ATTEMPTS) {
-                                            logDebug(`[BYPASS RECEIVER] Retrying File ${i + 1} (Attempt ${attempts + 1})...`);
-                                            await new Promise(r => setTimeout(r, 2000));
-                                            return await attemptGet();
-                                        } else {
-                                            throw err;
-                                        }
-                                    }
-                                };
+                                ws.send(JSON.stringify({ type: 'ready-for-next', index: i }));
+                                await new Promise(r => setTimeout(r, 1000));
 
-                                const blob = await attemptGet();
-                                batchResults.push({ name: fileMeta.name, blob });
+                                for (let p = 0; p < NUM_PIPES; p++) {
+                                    const startOffset = p * partSize;
+                                    if (startOffset >= fileMeta.size && p > 0) continue;
+
+                                    pipePromises.push((async (pIdx) => {
+                                        let attempts = 0;
+                                        const MAX_ATTEMPTS = 3;
+                                        const attemptGet = async (): Promise<Blob> => {
+                                            try {
+                                                const res = await fetch(`${CLOUDFLARE_RELAY_URL}/${normalizedRoom}/${pIdx}`);
+                                                if (res.ok && res.body) {
+                                                    return await decryptNetworkStream(res.body, keyObj, totalSize, (absBytes: number) => {
+                                                        const pct = Math.min(99, Math.round((absBytes / totalSize) * 100));
+                                                        setProgress(pct);
+                                                    }, processedSize + (pIdx * partSize));
+                                                } else throw new Error(`Status ${res.status}`);
+                                            } catch (err: any) {
+                                                attempts++;
+                                                if (attempts < MAX_ATTEMPTS) {
+                                                    await new Promise(r => setTimeout(r, 1500));
+                                                    return await attemptGet();
+                                                } else throw err;
+                                            }
+                                        };
+                                        return await attemptGet();
+                                    })(p));
+                                }
+
+                                const blobs = await Promise.all(pipePromises);
+                                batchResults.push({ name: fileMeta.name, blob: new Blob(blobs) });
                                 processedSize += fileMeta.size;
                                 setReceivedFiles([...batchResults]);
                             }
-                            logDebug(`[BYPASS RECEIVER] Batch complete! ${batchResults.length} files received.`);
+                            logDebug(`[BYPASS RECEIVER] Multiplex Batch Complete!`);
                             setStatus('done-waiting');
                         } catch (err: any) {
-                            logDebug(`[BYPASS RECEIVER] BATCH FATAL ERROR: ${err.message}`);
+                            logDebug(`[BYPASS RECEIVER] MULTIPLEX FATAL: ${err.message}`);
                             setStatus('error');
                         }
                     }
