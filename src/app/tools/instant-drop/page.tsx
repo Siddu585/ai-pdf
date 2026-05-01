@@ -43,7 +43,7 @@ const CLOUDFLARE_RELAY_URL = 'https://turbodrop-stream-relay.siddhantjangam33.wo
 // v02.2.63 (Tachyon Omega - Zenith Surgical) - 5 Surgical Patches (Rollback Debounce, Migration Guard, Active BDP Gate, MTU Floor Removal, NACK Throttling)
 // v02.2.64 (Tachyon Omega - Gate Unblocker) - GPE 8MB Floor Removal + ICE-based activePipeCount + Unified BDP Formula
 // v02.2.65 (Tachyon Omega - MTU Shield) - File-start MTU grace period + Permanent pipe retirement + Dispatch rate telemetry
-const VERSION = "v3.1.2 (Cloudflare Stream Engine - Stream Watchdog)";
+const VERSION = "v3.2.0 (Cloudflare Stream Engine - Overdrive Edition)";
 
 
 function getEngineConfig(engine: 'M2M' | 'HYBRID' | 'NITRO') {
@@ -1348,7 +1348,7 @@ ${capturedLogsRef.current.join('\n')}
                         logDebug(`[BYPASS SENDER] Multiplexing File ${idx + 1}/${fileList.length}: ${file.name}`);
                         setStatus('transferring');
                         
-                        const NUM_PIPES = 4;
+                        const NUM_PIPES = 6; // v02.2.48: Overdrive Parallelism
                         const partSize = Math.ceil(file.size / NUM_PIPES);
                         const pipePromises = [];
 
@@ -1365,7 +1365,7 @@ ${capturedLogsRef.current.join('\n')}
                                 const MAX_ATTEMPTS = 3;
                                 const attemptPost = async () => {
                                     const controller = new AbortController();
-                                    const timeout = setTimeout(() => controller.abort(), 20000); // 20s watchdog
+                                    const timeout = setTimeout(() => controller.abort(), 15000); // 15s watchdog for Overdrive
 
                                     try {
                                         const res = await fetch(`${CLOUDFLARE_RELAY_URL}/${finalRoomId}/${pIdx}`, {
@@ -1378,14 +1378,14 @@ ${capturedLogsRef.current.join('\n')}
                                         clearTimeout(timeout);
                                         if (!res.ok) throw new Error(`Status ${res.status}`);
                                         
-                                        // Update UI Piston
-                                        diagnosticMetricsRef.current.pistonStats[pIdx] = { speed: 5, health: 'green' };
+                                        // Update UI Piston (Show 6 pistons)
+                                        if (pIdx < 12) diagnosticMetricsRef.current.pistonStats[pIdx] = { speed: 10, health: 'green' };
                                     } catch (err: any) {
                                         clearTimeout(timeout);
                                         attempts++;
                                         if (attempts < MAX_ATTEMPTS) {
                                             logDebug(`[BYPASS SENDER] Pipe ${pIdx} Retrying...`);
-                                            await new Promise(r => setTimeout(r, 1000));
+                                            await new Promise(r => setTimeout(r, 500));
                                             return await attemptPost();
                                         } else throw err;
                                     }
@@ -2660,14 +2660,14 @@ ${capturedLogsRef.current.join('\n')}
                         try {
                             for (let i = 0; i < data.files.length; i++) {
                                 const fileMeta = data.files[i];
-                                logDebug(`[BYPASS RECEIVER] Multiplex Fetch File ${i + 1}/${data.files.length}`);
+                                logDebug(`[BYPASS RECEIVER] Overdrive Fetch File ${i + 1}/${data.files.length}`);
                                 
-                                const NUM_PIPES = 4;
+                                const NUM_PIPES = 6; // v02.2.48: Overdrive Parallelism
                                 const partSize = Math.ceil(fileMeta.size / NUM_PIPES);
                                 const pipePromises = [];
 
                                 ws.send(JSON.stringify({ type: 'ready-for-next', index: i }));
-                                await new Promise(r => setTimeout(r, 1200));
+                                await new Promise(r => setTimeout(r, 300)); // v03.2.0: Slashed handshake delay
 
                                 for (let p = 0; p < NUM_PIPES; p++) {
                                     const startOffset = p * partSize;
@@ -2675,10 +2675,10 @@ ${capturedLogsRef.current.join('\n')}
 
                                     pipePromises.push((async (pIdx) => {
                                         let attempts = 0;
-                                        const MAX_ATTEMPTS = 5; // More retries for receiver
+                                        const MAX_ATTEMPTS = 5; 
                                         const attemptGet = async (): Promise<Blob> => {
                                             const controller = new AbortController();
-                                            const timeout = setTimeout(() => controller.abort(), 25000); // 25s watchdog
+                                            const timeout = setTimeout(() => controller.abort(), 20000); // 20s watchdog for Overdrive
 
                                             try {
                                                 const res = await fetch(`${CLOUDFLARE_RELAY_URL}/${normalizedRoom}/${pIdx}`, {
@@ -2690,15 +2690,15 @@ ${capturedLogsRef.current.join('\n')}
                                                         const pct = Math.min(99, Math.round((absBytes / totalSize) * 100));
                                                         setProgress(pct);
                                                         // Update UI Piston
-                                                        diagnosticMetricsRef.current.pistonStats[pIdx] = { speed: 8, health: 'green' };
+                                                        if (pIdx < 12) diagnosticMetricsRef.current.pistonStats[pIdx] = { speed: 12, health: 'green' };
                                                     }, processedSize + (pIdx * partSize));
                                                 } else throw new Error(`Status ${res.status}`);
                                             } catch (err: any) {
                                                 clearTimeout(timeout);
                                                 attempts++;
                                                 if (attempts < MAX_ATTEMPTS) {
-                                                    logDebug(`[BYPASS RECEIVER] Pipe ${pIdx} Stalled/Failed. Retrying...`);
-                                                    await new Promise(r => setTimeout(r, 1500));
+                                                    logDebug(`[BYPASS RECEIVER] Pipe ${pIdx} Stalled. Retrying...`);
+                                                    await new Promise(r => setTimeout(r, 800));
                                                     return await attemptGet();
                                                 } else throw err;
                                             }
@@ -2710,11 +2710,13 @@ ${capturedLogsRef.current.join('\n')}
                                 const blobs = await Promise.all(pipePromises);
                                 batchResults.push({ name: fileMeta.name, blob: new Blob(blobs) });
                                 processedSize += fileMeta.size;
-                                reassembledCount.current++; // v02.1.25: Critical UI Sync for Reassembly Status
+                                reassembledCount.current++; 
                                 setReceivedFiles([...batchResults]);
                                 
+                                await new Promise(r => setTimeout(r, 100)); // v03.2.0: 0.1s OVERDRIVE Cooldown
+                                
                                 // Reset pistons for next file
-                                for(let k=0; k<4; k++) diagnosticMetricsRef.current.pistonStats[k] = { speed: 0, health: 'amber' };
+                                for(let k=0; k<6; k++) diagnosticMetricsRef.current.pistonStats[k] = { speed: 0, health: 'amber' };
                             }
                             logDebug(`[BYPASS RECEIVER] Multiplex Batch Complete!`);
                             setStatus('done'); // v02.2.48: Force transition to Success State
