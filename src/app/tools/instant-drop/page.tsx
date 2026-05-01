@@ -43,7 +43,7 @@ const CLOUDFLARE_RELAY_URL = 'https://turbodrop-stream-relay.siddhantjangam33.wo
 // v02.2.63 (Tachyon Omega - Zenith Surgical) - 5 Surgical Patches (Rollback Debounce, Migration Guard, Active BDP Gate, MTU Floor Removal, NACK Throttling)
 // v02.2.64 (Tachyon Omega - Gate Unblocker) - GPE 8MB Floor Removal + ICE-based activePipeCount + Unified BDP Formula
 // v02.2.65 (Tachyon Omega - MTU Shield) - File-start MTU grace period + Permanent pipe retirement + Dispatch rate telemetry
-const VERSION = "v3.2.1 (Cloudflare Stream Engine - Cellular Warrior)";
+const VERSION = "v3.2.2 (Cloudflare Stream Engine - Calibration Hub)";
 
 
 function getEngineConfig(engine: 'M2M' | 'HYBRID' | 'NITRO') {
@@ -1348,7 +1348,7 @@ ${capturedLogsRef.current.join('\n')}
                         logDebug(`[BYPASS SENDER] Multiplexing File ${idx + 1}/${fileList.length}: ${file.name}`);
                         setStatus('transferring');
                         
-                        const NUM_PIPES = 6;
+                        const NUM_PIPES = (window as any).__TURBO_PIPES__ || 6;
                         const partSize = Math.ceil(file.size / NUM_PIPES);
                         const pipePromises = [];
                         
@@ -2664,7 +2664,7 @@ ${capturedLogsRef.current.join('\n')}
                                 const fileMeta = data.files[i];
                                 logDebug(`[BYPASS RECEIVER] Overdrive Fetch File ${i + 1}/${data.files.length}`);
                                 
-                                const NUM_PIPES = 6; // v02.2.48: Overdrive Parallelism
+                                const NUM_PIPES = (window as any).__TURBO_PIPES__ || 6; // v02.2.48: Overdrive Parallelism
                                 const partSize = Math.ceil(fileMeta.size / NUM_PIPES);
                                 const pipePromises = [];
 
