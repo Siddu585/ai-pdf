@@ -233,6 +233,8 @@ const [engineMode, setEngineMode] = useState<'M2M' | 'HYBRID' | 'NITRO'>('NITRO'
         protocol: "udp" as "udp" | "tcp",
         workerLag: 0,
         bdp: 0,
+        latency: 0, // v03.2.3: For Adaptive Scaling
+        throughput: 0, // v03.2.3: For Adaptive Scaling
         pistonStats: Array(PIPES).fill({ speed: 0, health: 'green' }),
         isChaosMode: false
     });
@@ -1204,6 +1206,10 @@ ${capturedLogsRef.current.join('\n')}
             // MB/s calculation (delta / 1024 / 1024)
             const mbps = Number((delta / (1024 * 1024)).toFixed(2));
             setTransferSpeed(mbps);
+            
+            // v03.2.3: Sync metrics for adaptive scaling
+            diagnosticMetricsRef.current.throughput = mbps;
+            diagnosticMetricsRef.current.latency = (avgRTTRef.current || 0) * 1000;
             
             // Update BDP metrics
             diagnosticMetricsRef.current.bdp = mbps * (avgRTTRef.current || 0.1);
