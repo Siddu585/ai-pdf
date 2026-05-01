@@ -43,7 +43,7 @@ const CLOUDFLARE_RELAY_URL = 'https://turbodrop-stream-relay.siddhantjangam33.wo
 // v02.2.63 (Tachyon Omega - Zenith Surgical) - 5 Surgical Patches (Rollback Debounce, Migration Guard, Active BDP Gate, MTU Floor Removal, NACK Throttling)
 // v02.2.64 (Tachyon Omega - Gate Unblocker) - GPE 8MB Floor Removal + ICE-based activePipeCount + Unified BDP Formula
 // v02.2.65 (Tachyon Omega - MTU Shield) - File-start MTU grace period + Permanent pipe retirement + Dispatch rate telemetry
-const VERSION = "v3.1.0 (Cloudflare Stream Engine - Quad-Multiplex)";
+const VERSION = "v3.1.1 (Cloudflare Stream Engine - Cloud-Multiplex Pro)";
 
 
 function getEngineConfig(engine: 'M2M' | 'HYBRID' | 'NITRO') {
@@ -1364,19 +1364,28 @@ ${capturedLogsRef.current.join('\n')}
                                 let attempts = 0;
                                 const MAX_ATTEMPTS = 3;
                                 const attemptPost = async () => {
+                                    const controller = new AbortController();
+                                    const timeout = setTimeout(() => controller.abort(), 20000); // 20s watchdog
+
                                     try {
                                         const res = await fetch(`${CLOUDFLARE_RELAY_URL}/${finalRoomId}/${pIdx}`, {
                                             method: 'POST',
                                             body: stream,
+                                            signal: controller.signal,
                                             //@ts-ignore
                                             duplex: 'half'
                                         });
+                                        clearTimeout(timeout);
                                         if (!res.ok) throw new Error(`Status ${res.status}`);
+                                        
+                                        // Update UI Piston
+                                        diagnosticMetricsRef.current.pistonStats[pIdx] = { speed: 5, health: 'green' };
                                     } catch (err: any) {
+                                        clearTimeout(timeout);
                                         attempts++;
                                         if (attempts < MAX_ATTEMPTS) {
                                             logDebug(`[BYPASS SENDER] Pipe ${pIdx} Retrying...`);
-                                            await new Promise(r => setTimeout(r, 1500));
+                                            await new Promise(r => setTimeout(r, 1000));
                                             return await attemptPost();
                                         } else throw err;
                                     }
@@ -2658,7 +2667,7 @@ ${capturedLogsRef.current.join('\n')}
                                 const pipePromises = [];
 
                                 ws.send(JSON.stringify({ type: 'ready-for-next', index: i }));
-                                await new Promise(r => setTimeout(r, 1000));
+                                await new Promise(r => setTimeout(r, 1200));
 
                                 for (let p = 0; p < NUM_PIPES; p++) {
                                     const startOffset = p * partSize;
@@ -2666,19 +2675,29 @@ ${capturedLogsRef.current.join('\n')}
 
                                     pipePromises.push((async (pIdx) => {
                                         let attempts = 0;
-                                        const MAX_ATTEMPTS = 3;
+                                        const MAX_ATTEMPTS = 5; // More retries for receiver
                                         const attemptGet = async (): Promise<Blob> => {
+                                            const controller = new AbortController();
+                                            const timeout = setTimeout(() => controller.abort(), 25000); // 25s watchdog
+
                                             try {
-                                                const res = await fetch(`${CLOUDFLARE_RELAY_URL}/${normalizedRoom}/${pIdx}`);
+                                                const res = await fetch(`${CLOUDFLARE_RELAY_URL}/${normalizedRoom}/${pIdx}`, {
+                                                    signal: controller.signal
+                                                });
+                                                clearTimeout(timeout);
                                                 if (res.ok && res.body) {
                                                     return await decryptNetworkStream(res.body, keyObj, totalSize, (absBytes: number) => {
                                                         const pct = Math.min(99, Math.round((absBytes / totalSize) * 100));
                                                         setProgress(pct);
+                                                        // Update UI Piston
+                                                        diagnosticMetricsRef.current.pistonStats[pIdx] = { speed: 8, health: 'green' };
                                                     }, processedSize + (pIdx * partSize));
                                                 } else throw new Error(`Status ${res.status}`);
                                             } catch (err: any) {
+                                                clearTimeout(timeout);
                                                 attempts++;
                                                 if (attempts < MAX_ATTEMPTS) {
+                                                    logDebug(`[BYPASS RECEIVER] Pipe ${pIdx} Stalled/Failed. Retrying...`);
                                                     await new Promise(r => setTimeout(r, 1500));
                                                     return await attemptGet();
                                                 } else throw err;
@@ -2692,6 +2711,8 @@ ${capturedLogsRef.current.join('\n')}
                                 batchResults.push({ name: fileMeta.name, blob: new Blob(blobs) });
                                 processedSize += fileMeta.size;
                                 setReceivedFiles([...batchResults]);
+                                // Reset pistons for next file
+                                for(let k=0; k<4; k++) diagnosticMetricsRef.current.pistonStats[k] = { speed: 0, health: 'amber' };
                             }
                             logDebug(`[BYPASS RECEIVER] Multiplex Batch Complete!`);
                             setStatus('done-waiting');
