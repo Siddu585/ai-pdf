@@ -43,7 +43,7 @@ const CLOUDFLARE_RELAY_URL = 'https://turbodrop-stream-relay.siddhantjangam33.wo
 // v02.2.63 (Tachyon Omega - Zenith Surgical) - 5 Surgical Patches (Rollback Debounce, Migration Guard, Active BDP Gate, MTU Floor Removal, NACK Throttling)
 // v02.2.64 (Tachyon Omega - Gate Unblocker) - GPE 8MB Floor Removal + ICE-based activePipeCount + Unified BDP Formula
 // v02.2.65 (Tachyon Omega - MTU Shield) - File-start MTU grace period + Permanent pipe retirement + Dispatch rate telemetry
-const VERSION = "v3.1.1 (Cloudflare Stream Engine - Cloud-Multiplex Pro)";
+const VERSION = "v3.1.2 (Cloudflare Stream Engine - Stream Watchdog)";
 
 
 function getEngineConfig(engine: 'M2M' | 'HYBRID' | 'NITRO') {
@@ -2710,12 +2710,14 @@ ${capturedLogsRef.current.join('\n')}
                                 const blobs = await Promise.all(pipePromises);
                                 batchResults.push({ name: fileMeta.name, blob: new Blob(blobs) });
                                 processedSize += fileMeta.size;
+                                reassembledCount.current++; // v02.1.25: Critical UI Sync for Reassembly Status
                                 setReceivedFiles([...batchResults]);
+                                
                                 // Reset pistons for next file
                                 for(let k=0; k<4; k++) diagnosticMetricsRef.current.pistonStats[k] = { speed: 0, health: 'amber' };
                             }
                             logDebug(`[BYPASS RECEIVER] Multiplex Batch Complete!`);
-                            setStatus('done-waiting');
+                            setStatus('done'); // v02.2.48: Force transition to Success State
                         } catch (err: any) {
                             logDebug(`[BYPASS RECEIVER] MULTIPLEX FATAL: ${err.message}`);
                             setStatus('error');

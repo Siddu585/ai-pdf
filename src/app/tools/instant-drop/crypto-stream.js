@@ -72,7 +72,12 @@ export async function decryptNetworkStream(networkStream, keyObj, expectedSize, 
 
     async function readExact(n) {
         while (overflow.length < n) {
-            const { done, value } = await reader.read();
+            const readPromise = reader.read();
+            const timeoutPromise = new Promise((_, reject) => 
+                setTimeout(() => reject(new Error("Stream Stall")), 20000)
+            );
+            
+            const { done, value } = await Promise.race([readPromise, timeoutPromise]);
             if (done) return null;
             const joined = new Uint8Array(overflow.length + value.length);
             joined.set(overflow);
