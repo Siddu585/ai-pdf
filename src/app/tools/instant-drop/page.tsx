@@ -589,32 +589,7 @@ const [engineMode, setEngineMode] = useState<'M2M' | 'HYBRID' | 'NITRO'>('NITRO'
                 break;
             case 'rx-progress':
                 if (modeRef.current === 'send' && currentFileIndex === msg.fileIdx) {
-                    const prog = Math.min(100, (msg.chunksReceived / msg.totalChunks) * 100);
-                    setProgress(Math.round(prog));
-                }
-                break;
-            case 'file-done-ack':
-                if (modeRef.current === 'send') {
-                    hasReceivedFileDoneRef.current[msg.fileIdx] = true;
-                    logDebug(`Sender: Received Signal-ACK for File-${msg.fileIdx}. Barrier unlocked.`);
-                }
-                break;
-            case 'sync-poke':
-                if (modeRef.current === 'receive') {
-                    logDebug(`Receiver: Received Sync-Poke for File-${msg.fileIdx}. Re-broadcasting completion status...`);
-                    triggerFileCompletion(msg.fileIdx);
-                }
-                break;
-            case 'nack':
-                if (modeRef.current === 'send') {
-                    // v02.2.10.7: NACK Bloom Deduplication
-                    const nackKey = `${msg.fileIdx}-${msg.chunkIdx}`;
-                    if (!nackQueueRef.current.has(nackKey)) {
-                        nackQueueRef.current.set(nackKey, { fileIdx: msg.fileIdx, chunkIdx: msg.chunkIdx, ts: Date.now() });
-                        if (nackQueueRef.current.size % 50 === 0) {
-                            logDebug(`â‰¡Æ’Ã´Ã‘ NACK Queue Growth: ${nackQueueRef.current.size} unique pending resends.`);
-                        }
-                    }
+                    setProgress(Math.round(msg.progress || 0));
                 }
                 break;
             case 'batch-eof':
@@ -756,34 +731,7 @@ ${capturedLogsRef.current.join('\n')}
                     logDebug("Sent Remote Diagnostic Dump.");
                 }
                 break;
-            case 'emergency-data':
-                if (modeRef.current === 'receive') {
-                    // v02.2.40: Extract binary from base64 or direct JSON
-                    if (msg.payload) {
-                        try {
-                            const binary = Uint8Array.from(atob(msg.payload), c => c.charCodeAt(0));
-                            handleIncomingData(binary.buffer, -1); // Use -1 to signal Tunnel
-                            if (!useEmergencyTunnel) setUseEmergencyTunnel(true);
-                        } catch (e) {}
-                    }
-                }
-                break;
-            case 'force-tunnel':
-                if (modeRef.current === 'send') {
-                    logDebug("â‰¡Æ’ÃœÃ‡ Remote REQUEST: Forcing Emergency Tunnel Mode.");
-                    setUseEmergencyTunnel(true);
-                }
-                break;
-            case 'direct-link':
-                if (msg.targetId === signalIdRef.current) {
-                    logDebug("â‰¡Æ’Ã¶Ã¹ MATRIX LINK: Connection request received.");
-                    if (modeRef.current === 'receive') {
-                        wsRef.current?.send(JSON.stringify({ type: 'receiver-ready', isMobile: isMobileDevice() }));
-                    } else if (modeRef.current === 'send') {
-                        // Start test sequence if linked
-                        (window as any).__RUN_STRESS_TEST__(1, 60);
-                    }
-                }
+            case 'pong':
                 break;
             case 'diagnostic-dump':
                 if (modeRef.current === 'receive') {
@@ -1287,7 +1235,6 @@ ${capturedLogsRef.current.join('\n')}
             }
             diagnosticMetricsRef.current.pistonStats = newPistonStats;
         };
-        
         const timer = setInterval(pollStats, 1000);
         return () => clearInterval(timer);
     }, [status, transferSpeed]);
@@ -1304,1776 +1251,187 @@ ${capturedLogsRef.current.join('\n')}
 
     // --- SENDER LOGIC (Turbo Drop 3.2.4 Omega) ---
     const startSending = async (selectedFiles: FileList | File[]) => {
-        if (true) { 
-            try {
-                disconnectEverything();
-                const fileList = Array.from(selectedFiles);
-                setFiles(fileList);
-                filesRef.current = fileList;
-                setMode('send');
-                setStatus('waiting');
+        try {
+            disconnectEverything();
+            const fileList = Array.from(selectedFiles);
+            setFiles(fileList);
+            filesRef.current = fileList;
+            setMode('send');
+            setStatus('waiting');
 
-                const { keyObj, keyString } = await generateSessionKey();
-                setCryptoKeyStr(keyString);
-                
-                const finalRoomId = (roomRef.current || Math.floor(100000 + Math.random() * 900000).toString()).toUpperCase().trim();
-                setRoomId(finalRoomId);
-                roomRef.current = finalRoomId;
-                
-                logDebug(`[OMEGA SENDER] Initializing 12 Persistent Pipes: ${finalRoomId}`);
-                const ws = new WebSocket(`${BACKEND_WS_URL}/ws/drop/${finalRoomId}/sender`);
-                wsRef.current = ws;
-                
-                const sendHandshake = () => {
-                    ws.send(JSON.stringify({ 
-                        type: 'sender-ready', 
-                        roomId: finalRoomId, 
-                        sessionKey: keyString,
-                        files: fileList.map(f => ({ name: f.name, size: f.size })),
-                        totalSize: fileList.reduce((acc, f) => acc + f.size, 0)
-                    }));
-                };
-
-                ws.onopen = () => sendHandshake();
-                ws.onmessage = async (e) => {
-                    const data = JSON.parse(e.data);
-                    if (data.type === 'peer-connected') sendHandshake();
-                    
-                    if (data.type === 'receiver-ready') {
-                        logDebug(`[OMEGA SENDER] Receiver Ready. Ignition...`);
-                        setStatus('transferring');
-                        
-                        const NUM_PIPES = 12; // Omega always uses 12 pipes for maximum saturation
-                        const pipePromises = [];
-
-                        for (let p = 0; p < NUM_PIPES; p++) {
-                            const stream = new ReadableStream({
-                                start(controller) {
-                                    pipeControllersRef.current[p] = controller;
-                                }
-                            });
-
-                            pipePromises.push((async (pIdx) => {
-                                try {
-                                    await fetch(`${CLOUDFLARE_RELAY_URL}/${finalRoomId}/${pIdx}`, {
-                                        method: 'POST',
-                                        body: stream,
-                                        //@ts-ignore
-                                        duplex: 'half'
-                                    });
-                                } catch (err) {}
-                            })(p));
-                        }
-
-                        // Wait for streams to be ready
-                        await new Promise(r => setTimeout(r, 500));
-
-                        // Continuous Dispatcher
-                        (async () => {
-                            for (let i = 0; i < fileList.length; i++) {
-                                const file = fileList[i];
-                                logDebug(`[OMEGA] Blasting File ${i + 1}/${fileList.length}: ${file.name}`);
-                                setCurrentFileIndex(i);
-                                
-                                const partSize = Math.ceil(file.size / NUM_PIPES);
-                                const filePartPromises = [];
-
-                                for (let p = 0; p < NUM_PIPES; p++) {
-                                    const start = p * partSize;
-                                    const end = Math.min(file.size, (p + 1) * partSize);
-                                    if (start >= file.size && p > 0) continue;
-
-                                    const slice = file.slice(start, end);
-                                    const fileStream = encryptFileStream(slice, keyObj, i, p, start, 1024 * 1024); // v3.2.4: Pass absolute start offset
-                                    const reader = fileStream.getReader();
-
-                                    filePartPromises.push((async () => {
-                                        while (true) {
-                                            const { done, value } = await reader.read();
-                                            if (done) break;
-                                            pipeControllersRef.current[p].enqueue(value);
-                                            totalSentBytesRef.current += value.length;
-                                        }
-                                    })());
-                                }
-                                await Promise.all(filePartPromises);
-                                logDebug(`[OMEGA] File ${i + 1} Done. No gap transition...`);
-                            }
-                            
-                            // Close all pipes
-                            pipeControllersRef.current.forEach(c => c.close());
-                            setStatus('done');
-                        })();
-                    }
-                };
-                return;
-            } catch (fatal) { logDebug(`[OMEGA] Fatal: ${fatal}`); }
-        }
-                            logDebug(`[BYPASS SENDER] File ${idx + 1} multiplexed successfully.`);
-                            if (idx === fileList.length - 1) setStatus('done');
-                        } catch (err: any) {
-                            logDebug(`[BYPASS SENDER] MULTIPLEX FATAL: ${err.message}`);
-                            setStatus('error');
-                        }
-                    }
-                };
-            } catch (fatal:any) {
-                logDebug(`[BYPASS SENDER] FATAL SYNC ERROR: ${fatal.message}`);
-            }
-            return;
-        }
-        // --- END BYPASS ---
-
-        disconnectEverything();
-        const fileList = Array.from(selectedFiles);
-        setFiles(fileList);
-        filesRef.current = fileList;
-        setMode('send');
-        setStatus('waiting');
-
-        // v02.2.31: Room Persistence Fix (Prevents desync during remote testing)
-        // v02.2.35: Force Uppercase Normalization (Case-Insensitive Signaling)
-        const finalRoomId = (roomRef.current || Math.floor(100000 + Math.random() * 900000).toString()).toUpperCase().trim();
-        setRoomId(finalRoomId);
-        roomRef.current = finalRoomId;
-
-        // v02.1.33: Lockdown screen to prevent background throttling
-        await requestWakeLock();
-        startTimeRef.current = Date.now(); // v02.2.10.7: Start Scaling Clock
-
-        // v02.1.20: Backend Wake-Up Pre-flight
-        logDebug("Attempting to wake up signaling server...");
-        try { await fetch(`${BACKEND_HTTP_URL}/api/health`).catch(() => {}); } catch (e) {}
-
-        let attempts = 0;
-        const connect = () => {
-            attempts++;
-            logDebug(`Connecting to signaling server (Attempt ${attempts}/3)...`);
+            const { keyObj, keyString } = await generateSessionKey();
+            setCryptoKeyStr(keyString);
+            
+            const finalRoomId = (roomRef.current || Math.floor(100000 + Math.random() * 900000).toString()).toUpperCase().trim();
+            setRoomId(finalRoomId);
+            roomRef.current = finalRoomId;
+            
+            logDebug(`[OMEGA SENDER] Initializing 12 Persistent Pipes: ${finalRoomId}`);
             const ws = new WebSocket(`${BACKEND_WS_URL}/ws/drop/${finalRoomId}/sender`);
             wsRef.current = ws;
             
-            ws.onerror = () => logDebug(`Sender WS Connection Error (Attempt ${attempts})`);
-            ws.onclose = (e) => {
-                logDebug(`Sender WS Closed (Code: ${e.code}, Reason: ${e.reason || 'None'}).`);
-                setWsConnected(false); // v02.1.74: Pulse Sync
-                if (heartbeatIntervalRef.current) clearInterval(heartbeatIntervalRef.current);
-                if (attempts < 3 && statusRef.current === 'connecting') {
-                    logDebug("Retrying connection in 2s...");
-                    setTimeout(connect, 2000);
-                } else if (attempts >= 3) {
-                    setStatus('error');
-                    logDebug("Î“Â¥Ã® Persistent Signaling Failure after 3 attempts.");
-                }
+            const sendHandshake = () => {
+                ws.send(JSON.stringify({ 
+                    type: 'sender-ready', 
+                    roomId: finalRoomId, 
+                    sessionKey: keyString,
+                    files: fileList.map(f => ({ name: f.name, size: f.size })),
+                    totalSize: fileList.reduce((acc, f) => acc + f.size, 0)
+                }));
             };
 
-            ws.onopen = () => {
-                logDebug("Sender WS Opened. Waiting for peer...");
-                setWsConnected(true); // v02.1.74: Pulse Sync
-                const heartbeat = setInterval(() => {
-                    if (ws.readyState === WebSocket.OPEN) {
-                        ws.send(JSON.stringify({ type: 'ping' }));
-                        
-                        // v02.2.38: Aggressive Sender Pulse (2s announcement)
-                        if (statusRef.current === 'waiting') {
-                            ws.send(JSON.stringify({ 
-                                type: 'sender-ready', 
-                                roomId: finalRoomId, 
-                                isMobile: isMobileDevice() 
-                            }));
-                        }
-                    }
-                    
-                    // v02.2.39: Re-trigger offer if stuck in waiting for 10s
-                    const timeSinceStart = Date.now() - (startTimeRef.current || 0);
-                    if (statusRef.current === 'waiting' && timeSinceStart > 10000 && timeSinceStart % 5000 < 2000) {
-                        logDebug("â‰¡Æ’Â¢â–‘âˆ©â••Ã… Tachyon Glue: Re-broadcasting sender availability...");
-                        ws.send(JSON.stringify({ type: 'sender-ready', roomId: finalRoomId, isMobile: true }));
-                    }
-
-                    // v02.2.10.7: Visual Pulse logic - trigger a minor UI update to prevent backgrounding
-                    if (statusRef.current === 'transferring') setProgress(p => p);
-                }, 2000); // 2s for extreme resilience
-                heartbeatIntervalRef.current = heartbeat;
-            };
-
-            ws.onmessage = (event) => {
-                const dataStr = event.data;
-                (async () => {
-                    logDebug("Sender WS Message: " + dataStr);
-                    try {
-                        const data = JSON.parse(dataStr);
-                        if (data.type === 'peer-connected') {
-                            logDebug("Peer joined, waiting for receiver-ready signal...");
-                        } else if (data.type === 'receiver-ready') {
-                            // v02.1.67: Sentinel Handshake Lock
-                            remoteCapabilityRef.current.isMobile = !!data.isMobile; // Capture Peer Capability
-                            // v02.1.68: Added 'connecting' status guard to prevent redundant resets during ICE.
-                            if (isActive.current || isInitializingRef.current || statusRef.current === 'connecting') {
-                                logDebug(`Î“ÃœÃ¡âˆ©â••Ã… Receiver Ready Sig Ignored: status=${statusRef.current} init=${isInitializingRef.current}`);
-                                return;
-                            }
-                            const isM2M = isMobileDevice() && !!data.isMobile;
-                            const activeEngine = isM2M ? 'M2M' : (isMobileDevice() || !!data.isMobile) ? 'HYBRID' : 'NITRO';
-                            const config = getEngineConfig(activeEngine);
-                            logDebug(`Receiver is READY. Initializing ${config.pipes}x Parallel WebRTC Pipes...`);
-                            isInitializingRef.current = true; // Lock the handshake
-                            setStatus('connecting');
-                            resetSessionRefs(); 
-                            
-                            // v02.2.23: Explicit Screen Persistence Handshake (Satisfy Gesture Policy)
-                            requestWakeLock();
-                            
-                            // v02.2.26: [FINAL-SYNC] Refined Synchronous Handshake
-                            // Reverted async handler to prevent mobile event swallow
-                            // v02.2.68: Fix 6 â€” Pre-retire Pipes 4â€“11 for Cross-Carrier M2M
-                            const isLocal = typeof window !== 'undefined' && (window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1');
-                            if (isM2M && !isLocal) {
-                                logDebug('M2M Cross-Carrier: Pre-retiring Pipes 4–11, using 4-pipe configuration');
-                                for (let p = 4; p < PIPES; p++) {
-                                    pipeGenerationRef.current[p] = 99; // Mark as permanently retired
-                                    diagnosticMetricsRef.current.pistonStats[p] = { speed: 0, health: 'red' };
-                                }
-                            }
-
-                            const startStaggeredHandshake = async () => {
-                                // v02.2.80: Unified config-driven setup for M2M
-                                const setupCount = config.pipes;
-                                for (let i = 0; i < setupCount; i++) {
-                                    setupWebRTC(ws, true, i);
-                                    if (i === 0) await new Promise(resolve => setTimeout(resolve, 300));
-                                    if ((i + 1) % 4 === 0 && i < setupCount - 1) {
-                                        // v02.2.83: [FIX 2] Reduced Batch Cooldown (60ms vs 600ms) for M2M
-                                        const cooldown = isM2M ? 60 : 600;
-                                        await new Promise(resolve => setTimeout(resolve, cooldown));
-                                    } else {
-                                        await new Promise(resolve => setTimeout(resolve, isM2M ? 20 : 50));
-                                    }
-                                }
-                            };
-                            startStaggeredHandshake();
-                        } else if (data.type === 'answer') {
-                            const pIdx = data.type === 'answer' ? (data.pipeIdx || 0) : 0;
-                            const rawGen = data.gen;
-                            // v02.2.62 Prompt001 Fix 4: Number-safe Gen Guard
-                            const gen = Number.isFinite(+rawGen) ? +rawGen : 1;
-                            if (gen !== pipeGenerationRef.current[pIdx]) return;
-                            try {
-                                const peer = peersRef.current[pIdx];
-                                if (!peer || peer.signalingState !== 'have-local-offer') return;
-                                await peer.setRemoteDescription(new RTCSessionDescription(data.sdp));
-                                remoteDescriptionSetsRef.current[pIdx] = true;
-                                for (const candidate of iceBuffersRef.current[pIdx]) {
-                                    try { await peer.addIceCandidate(new RTCIceCandidate(candidate)); } catch (e) {}
-                                }
-                                iceBuffersRef.current[pIdx] = [];
-                            } catch (e: any) { logDebug(`Î“Â¥Ã® Pipe-${pIdx} Answer Error: ${e.message}`); }
-                        } else if (data.type === 'ice-candidate') {
-                            const pIdx = data.pipeIdx || 0;
-                            const rawGen = data.gen;
-                            // v02.2.62 Prompt001 Fix 4: Number-safe Gen Guard
-                            const gen = Number.isFinite(+rawGen) ? +rawGen : 1;
-                            if (gen !== pipeGenerationRef.current[pIdx]) return;
-                            if (!remoteDescriptionSetsRef.current[pIdx]) {
-                                iceBuffersRef.current[pIdx].push(data.candidate);
-                            } else {
-                                try { await peersRef.current[pIdx]?.addIceCandidate(new RTCIceCandidate(data.candidate)); } catch (e) {}
-                            }
-                        } else if (data.type === 'flow' && data.status === 'ready') {
-                            isReceiverReadyRef.current = true;
-                        }
-                        
-                        handleControlMessage(data);
-                    } catch (err: any) {
-                        logDebug("Î“Â¥Ã® Sender WS Msg Error: " + err.message);
-                    }
-                })();
-            };
-            
-            // v02.2.32: Manual Pulse Interval (Fallback)
-            const pulse = setInterval(() => {
-                if (ws.readyState === WebSocket.OPEN && statusRef.current === 'waiting') {
-                    ws.send(JSON.stringify({ type: 'sender-ready', isMobile: isMobileDevice() }));
-                }
-            }, 5000);
-            return () => clearInterval(pulse);
-        };
-
-        connect();
-    };
-
-    const setupWebRTC = async (ws: WebSocket, isSender: boolean, pipeIdx: number, useFallback = false) => {
-        try {
-            // v02.1.79: Generation Isolation
-            pipeGenerationRef.current[pipeIdx]++;
-            const gen = pipeGenerationRef.current[pipeIdx];
-            logDebug(`Setting up RTCPeerConnection Pipe-${pipeIdx} (Gen ${gen}), isSender: ${isSender}, fallback: ${useFallback}`);
-            
-            // Initializing per-pipe state
-            remoteDescriptionSetsRef.current[pipeIdx] = false;
-            iceBuffersRef.current[pipeIdx] = [];
-
-            // v02.1.39: Parallel Signaling reset
-            // DELETED Reset logic from setupWebRTC to prevent race conditions.
-            // All resets now handled by resetSessionRefs() called once per session.
-
-            const currentRelays = (!useFallback && relayServersRef.current && relayServersRef.current.length > 0) 
-                                    ? relayServersRef.current 
-                                    : [...ICE_SERVERS.iceServers];
-                                    
-            // v02.2.46: Staggered ICE Ignition (Bypass Carrier STUN Rate-Limiter)
-            const ignitionDelay = isSender ? (pipeIdx * 150) : 0;
-            await new Promise(r => setTimeout(r, ignitionDelay));
-
-            // v02.1.39: Hybrid Anchor Strategy 
-            // v02.2.21: Engine-Aware Pipe Expansion
-            const isSelfMobile = isMobileDevice();
-            const isM2M = isSelfMobile && remoteCapabilityRef.current.isMobile;
-            const engine = isM2M ? 'M2M' : (isSelfMobile || remoteCapabilityRef.current.isMobile) ? 'HYBRID' : 'NITRO';
-            const config = getEngineConfig(engine);
-            
-            // Allow expansion up to engine limit
-            if (pipeIdx >= config.pipes) return;
-
-            const isLocal = typeof window !== 'undefined' && (window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1');
-            let pipePolicy: RTCIceTransportPolicy = (useFallback || (pipeIdx === 0 && !isLocal && isM2M)) ? 'relay' : 'all';
-            
-            const peer = new RTCPeerConnection({ 
-                iceServers: currentRelays,
-                iceTransportPolicy: pipePolicy,
-                iceCandidatePoolSize: 10 // v02.1.72: Speed up handshake
-            });
-            // v02.1.69: Atomic Peer Rollover (Anti-Leak)
-            if (peersRef.current[pipeIdx]) {
-                try { peersRef.current[pipeIdx].close(); } catch(e) {}
-            }
-            peersRef.current[pipeIdx] = peer;
-
-            // v02.2.56: Accelerated M2M Resuscitator (1.5s vs 4.0s)
-            // v02.2.60: Guarded Migration Handshake (Fix A)
-            // v02.2.62 Prompt001 Fix 3: Accelerated 1.5s Resuscitator + Restored HSFC Rollback
-            const pipeConnectTime = Date.now();
-            if (resuscitatorTimersRef.current[pipeIdx]) clearTimeout(resuscitatorTimersRef.current[pipeIdx]);
-            resuscitatorTimersRef.current[pipeIdx] = setTimeout(() => {
-                const pc = peersRef.current[pipeIdx];
-                if (pc && (pc.iceConnectionState === 'new' || pc.iceConnectionState === 'checking')) {
-                    const isM2M = isMobileDevice() && remoteCapabilityRef.current.isMobile;
-                    
-                    // Fix A: Only migrate if the pipe has actually confirmed stable data flow
-                    const isPipeReadyForMigration = () => {
-                        const elapsed = Date.now() - pipeConnectTime;
-                        // For M2M, we require 200ms grace + at least 1 statistical byte confirmed
-                        return elapsed > 200 && (diagnosticMetricsRef.current.pistonStats[pipeIdx]?.speed || 0) > 0;
-                    };
-
-                    const hangTimeout = isM2M ? 1500 : 4000;
-                    logDebug(`âš ï¸ Pipe-${pipeIdx} HANG [Carrier Black-Hole] detected. Resuscitating after ${hangTimeout}ms...`);
-                    try { 
-                        // v02.2.65: Permanent retirement for Pipes 4+ after Gen 2 failure
-                        // Stops wasteful signaling churn â€” these pipes never connect on cross-carrier 4G
-                        if (pipeIdx >= 4 && pipeGenerationRef.current[pipeIdx] >= 2) {
-                            logDebug(`ðŸª¦ Pipe-${pipeIdx} permanently retired [Carrier Black-Hole, Gen ${pipeGenerationRef.current[pipeIdx]}]`);
-                            resuscitatorTimersRef.current[pipeIdx] = null;
-                            diagnosticMetricsRef.current.pistonStats[pipeIdx] = { speed: 0, health: 'red' };
-                            return; // do not call setupWebRTC again
-                        }
-
-                        // v02.2.60: Use the Guard to prevent rollback loops on unstable pipes
-                        if (isM2M && !isPipeReadyForMigration()) {
-                            logDebug(`ðŸ›¡ï¸ Guarded Migration: Pipe-${pipeIdx} unstable. Delaying resuscitation...`);
-                            return; 
-                        }
-
-                        pc.restartIce(); 
-                        // v02.2.62 Prompt001: RESTORED HSFC ROLLBACK
-                        // v02.2.58: Debounce â€” if a rollback already fired within 3s, suppress this one.
-                        // Without debounce, 8 simultaneously hung pipes fire 8 rollbacks to byte 0.
-                        if (modeRef.current === 'send') {
-                            const now = Date.now();
-                            if (now - lastRollbackAtRef.current > 3000) {
-                                const lastCleared = diagnosticMetricsRef.current.bytesCleared || 0;
-                                logDebug(`ðŸ›¡ï¸ HSFC ROLLBACK: Signaling rollback to last known-good byte: ${lastCleared}`);
-                                rollbackTriggerRef.current = lastCleared;
-                                lastRollbackAtRef.current = now;
-                            } else {
-                                logDebug(`ðŸ›¡ï¸ HSFC ROLLBACK suppressed (debounce): Pipe-${pipeIdx} within 3s window`);
-                            }
-                        }
-                    } catch (e) {}
-                }
-            }, (isMobileDevice() && remoteCapabilityRef.current.isMobile) ? 1500 : 4000); // v02.2.83: [FIX 3] 1.5s M2M Resuscitator
-
-            if (!useFallback && isSender && (pipeIdx >= 0)) {
-                // v02.1.69: Symmetric Escalation Watchdog (Sender-Only)
-                const escalationTimeout = (pipeIdx === 0) ? 25 * 1000 : 15 * 1000;
-                setTimeout(() => {
-                    const pc = peersRef.current[pipeIdx];
-                    if (pc && (pc.iceConnectionState === 'new' || pc.iceConnectionState === 'checking')) {
-                        logDebug(`Î“ÃœÃ¡âˆ©â••Ã… Pipe-${pipeIdx} Stuck in ${pc.iceConnectionState}. Escalating to Relay Fallback...`);
-                        pc.close();
-                        
-                        // v02.2.29: Three-Strikes Pipe Retirement
-                        // If we are already generational (Gen 2+), skip and retire the pipe.
-                        if (pipeGenerationRef.current[pipeIdx] > 2) {
-                            logDebug(`â‰¡Æ’Â¢Ã­âˆ©â••Ã… Pipe-${pipeIdx} Retired [3-Strikes FAIL]`);
-                            diagnosticMetricsRef.current.pistonStats[pipeIdx] = { speed: 0, health: 'red' };
-                            return;
-                        }
-
-                        // v02.2.28: Signaling Storm Debounce
-                        // Stagger the relay escalation to prevent crashing the signaling thread or the mobile CPU.
-                        const staggeredDelay = (pipeIdx % 4) * 500;
-                        setTimeout(() => {
-                            if (ws.readyState === WebSocket.OPEN) {
-                                setupWebRTC(ws, isSender, pipeIdx, true);
-                            }
-                        }, staggeredDelay);
-                    }
-                }, escalationTimeout);
-            }
-
-            if (isSender) {
-                const startIdx = pipeIdx * CHANNELS_PER_PIPE;
-                for (let i = 0; i < CHANNELS_PER_PIPE; i++) {
-                    const channelIdx = startIdx + i;
-                    // v02.2.10: Unordered Transport (Bypasses HoL Blocking)
-                    const dc = peer.createDataChannel(`data-${channelIdx}`, {
-                        ordered: false,
-                        maxRetransmits: 0, // v02.1.95: Eliminate HOL blocking for bulk data
-                        // @ts-ignore
-                        priority: 'high'
-                    });
-                    dataChannelsRef.current[channelIdx] = dc;
-                    setupDataChannel(dc, channelIdx);
-                    // v02.2.10.8: Saturate 10MB/s pipe (16MB threshold for smooth flow)
-                    dc.bufferedAmountLowThreshold = 16 * 1024 * 1024;
-                }
-            } else {
-                peer.ondatachannel = (e) => {
-                    const label = e.channel.label;
-                    const index = parseInt(label.split('-').pop() || '0');
-                    logDebug(`Receiver: DataChannel ${index} Received on Pipe-${pipeIdx} (Adopted)`);
-                    dataChannelsRef.current[index] = e.channel;
-                    setupDataChannel(e.channel, index);
-                };
-
-                // Flow control timer
-                if (pipeIdx === 0) {
-                    // Unshackled Flow: Ensure sender knows we are alive and ready to burst
-                    const flowTimer = setInterval(() => {
-                        if (ws.readyState === WebSocket.OPEN) {
-                            ws.send(JSON.stringify({ type: 'flow', status: 'ready' }));
-                        }
-                    }, 500); // Reduced to 500ms for more responsive flow
-                    peer.addEventListener('connectionstatechange', () => {
-                        if (peer.connectionState === 'disconnected' || peer.connectionState === 'failed' || peer.connectionState === 'closed') {
-                            clearInterval(flowTimer);
-                        }
-                    });
-                }
-            }
-
-            peer.oniceconnectionstatechange = () => {
-                logDebug(`Pipe-${pipeIdx} ICE State: ${peer.iceConnectionState}`);
-                // v02.2.28: STOP the resuscitator if we are connected or finished
-                if (peer.iceConnectionState === 'connected' || peer.iceConnectionState === 'completed') {
-                    // v02.2.58: Record pipe connection time for Migration Guard
-                    pipeConnectedAtRef.current[pipeIdx] = Date.now();
-                    
-                    if (resuscitatorTimersRef.current[pipeIdx]) {
-                        clearTimeout(resuscitatorTimersRef.current[pipeIdx]);
-                        resuscitatorTimersRef.current[pipeIdx] = null;
-                        logDebug(`âœ… Pipe-${pipeIdx} Resuscitator Stand-down.`);
-                        
-                        // v02.2.29: Piston-Gated Metadata Catch-up (Async)
-                        // Send metadata ONCE per successful pipe open to minimize noise.
-                        if (isSender && lastMetadataRef.current) {
-                            setTimeout(() => {
-                                const openChannels = Array.from({ length: CHANNELS_PER_PIPE }).map((_, i) => dataChannelsRef.current[(pipeIdx * CHANNELS_PER_PIPE) + i]).filter(dc => dc && dc.readyState === 'open');
-                                if (openChannels[0]) {
-                                    logDebug(`--- [QUASAR] Sync Metadata snapshot for Pipe-${pipeIdx} ---`);
-                                    openChannels[0].send(JSON.stringify(lastMetadataRef.current));
-                                }
-                            }, 50);
-                        }
-                    }
-                }
+            ws.onopen = () => sendHandshake();
+            ws.onmessage = async (e) => {
+                const data = JSON.parse(e.data);
+                if (data.type === 'peer-connected') sendHandshake();
                 
-                if (peer.iceConnectionState === 'disconnected' || peer.iceConnectionState === 'failed') {
-                    diagnosticMetricsRef.current.pistonStats[pipeIdx] = { speed: 0, health: 'red' };
-                    try { peer.restartIce(); } catch (e) {}
-                }
-            };
-
-            // v02.2.10: Proactive Dead-Pipe Pruning (Log-Aware 701 Detector)
-            peer.onicecandidateerror = (e: any) => {
-                if (e.errorCode === 701) {
-                    logDebug(`â‰¡Æ’Â¢â–‘âˆ©â••Ã… ICE Candidate Error (Pipe-${pipeIdx}): ${e.errorCode} - ${e.errorText} [${e.url}]`);
-                    // Immediate health downgrade to avoid load-balancing onto blocked relay
-                    diagnosticMetricsRef.current.pistonStats[pipeIdx] = { speed: 0, health: 'red' };
-                }
-            };
-
-            peer.onicecandidate = (e) => {
-                if (e.candidate) {
-                    const cand = e.candidate.toJSON ? e.candidate.toJSON() : e.candidate;
-                    ws.send(JSON.stringify({ type: 'ice-candidate', pipeIdx, gen, candidate: cand }));
-                }
-            };
-
-            // v02.1.70: Deep ICE Error Tracker (NMI Diagnostics)
-            // @ts-ignore
-            peer.onicecandidateerror = (e: any) => {
-                logDebug(`â‰¡Æ’Â¢â–‘âˆ©â••Ã… ICE Candidate Error (Pipe-${pipeIdx}): ${e.errorCode} - ${e.errorText} [${e.url}]`);
-            };
-
-            if (isSender) {
-                const offer = await peer.createOffer({ offerToReceiveAudio: false, offerToReceiveVideo: false });
-                await peer.setLocalDescription(offer);
-                ws.send(JSON.stringify({ type: 'offer', pipeIdx, gen, sdp: peer.localDescription }));
-            }
-        } catch (err: any) {
-            logDebug(`Î“Â¥Ã® Pipe-${pipeIdx} Error: ${err.message}`);
-        }
-    };
-
-    // (Legacy synchronous processJsonMsg obsoleted by v02.0.22 Pipeline Engine)
-
-    const setupDataChannel = (dc: RTCDataChannel, channelIdx: number) => {
-        dc.binaryType = 'arraybuffer';
-
-        dc.onopen = () => {
-            logDebug(`Î“Â£Ã  DataChannel ${channelIdx} OPEN (Mode: ${modeRef.current})`);
-            
-            if (modeRef.current === 'send' && currentTransferRef.current) {
-                logDebug(`--- [SYNC] Catch-up Metadata for Channel-${channelIdx} ---`);
-                try {
-                    dc.send(JSON.stringify({
-                        type: 'metadata',
-                        ...currentTransferRef.current
-                    }));
-                } catch(e) {}
-            }
-
-            const openCount = dataChannelsRef.current.filter(c => c && c.readyState === 'open').length;
-            if (openCount >= 1 && modeRef.current === 'send' && !isActive.current) {
-                logDebug(`DataChannel(s) OPEN (${openCount}/${CHANNELS}) - Tachyon Start Triggered (v10.5)`);
-                isActive.current = true;
-                setTimeout(() => {
-                    logDebug("Starting Ultimate-Gold parallel transfer...");
+                if (data.type === 'receiver-ready') {
+                    logDebug(`[OMEGA SENDER] Receiver Ready. Ignition...`);
                     setStatus('transferring');
-                    lastBytesRef.current = 0;
-                    if (speedTimerRef.current) clearInterval(speedTimerRef.current);
                     
-                    let prevBytes = 0;
-                    setInterval(async () => {
-                        const currentTotal = totalSentBytesRef.current + totalReceivedBytesRef.current;
-                        const speed = ((currentTotal - prevBytes) / 5 / 1024 / 1024).toFixed(2);
-                        const speedNum = parseFloat(speed) || 0.001;
-                        currentMBpsRef.current = speedNum;
-                        setTransferSpeed(speedNum); 
-                        
-                        const statsLogs: string[] = [];
-                        for (let i = 0; i < peersRef.current.length; i++) {
-                            const peer = peersRef.current[i];
-                            if (peer) {
-                                try {
-                                    const stats = await peer.getStats();
-                                    stats.forEach(report => {
-                                        if (report.type === 'candidate-pair' && report.state === 'succeeded') {
-                                            statsLogs.push(`Pipe-${i}: RTT=${report.currentRoundTripTime} [${report.localCandidateId} <=> ${report.remoteCandidateId}]`);
-                                        }
-                                    });
-                                } catch(e) {}
+                    const NUM_PIPES = 12; 
+                    pipeControllersRef.current = [];
+
+                    for (let p = 0; p < NUM_PIPES; p++) {
+                        const stream = new ReadableStream({
+                            start(controller) {
+                                pipeControllersRef.current[p] = controller;
                             }
-                        }
-                        if (statsLogs.length > 0) {
-                            logDebug("--- WebRTC Stats (Sentinel Multi-Pipe) ---");
-                            statsLogs.forEach(l => logDebug(l));
-                        }
-
-                        console.log(`%c [HYDRA MONITOR] INSTANT SPEED: ${speed} MB/s`, "color: #00ff00; font-weight: bold;");
-                        
-                        const chunksThisCycle = chunksSentSinceScaleRef.current;
-                        chunksSentSinceScaleRef.current = 0; // v02.2.81: Reset after sampling
-                        const effectiveMBps = (chunksThisCycle * dynamicChunkSizeRef.current / 5 / 1024 / 1024).toFixed(2);
-                        logDebug(`ðŸ“Š Dispatch: ~${chunksThisCycle} chunks/5s (${effectiveMBps} MB/s effective), MTU=${Math.round(dynamicChunkSizeRef.current/1024)}KB, Gate=${(gpeInFlightBytesRef.current/1024/1024).toFixed(1)}MB in-flight`);
-
-                        prevBytes = currentTotal;
-                    }, 5000);
-
-                    startFileTransfer();
-                }, 500);
-            }
-        };
-
-        dc.onmessage = (e) => {
-            if (modeRef.current === 'receive') {
-                handleIncomingData(e.data, channelIdx);
-            } else {
-                // v02.2.72: Binary Signal Parser (Nitro-RTC)
-                if (e.data instanceof ArrayBuffer) {
-                    const view = new DataView(e.data);
-                    
-                    // Tachyon RTC-ACK â‰¡Æ’Ã´â•‘ P2P Sync (v02.2.73)
-                    if (view.byteLength === 8 && view.getUint16(0) === 0xFFFF && view.getUint16(2) === 0xEEEE) {
-                        const payload = view.getUint32(4, true);
-                        const isDone = (payload & 0x80000000) !== 0;
-                        // v02.2.83: 32-bit Drain Pulse (Full Payload Clearance)
-                        const cleared = (payload & 0xFFFFFFFF) & 0x00FFFFFF; // Extract bytes from lower 24-bits
-                        gpeInFlightBytesRef.current = Math.max(0, gpeInFlightBytesRef.current - cleared);
-                        
-                        if (isDone) {
-                            const ackFileIdx = (payload >> 16) & 0x7FFF;
-                            hasReceivedFileDoneRef.current[ackFileIdx] = true;
-                            logDebug(`[HYDRA MONITOR] P2P-SYNC Confirmed: File-${ackFileIdx}`);
-                        }
-                        return;
-                    }
-
-                    // Legacy Handshake / Generation Checks
-                    if (view.byteLength >= 8) {
-                        const chunkIdx = view.getUint32(4, true);
-                        const fileIdx = view.getUint32(0, true);
-                        if (chunkIdx === 0xFFFFFFFB) { // Batch-ACK Pulsar
-                            logDebug("Sender: Tachyon Handshake received! Closing loop.");
-                            setStatus('done');
-                            return;
-                        }
-                    }
-                }
-                
-                if (typeof e.data === 'string') {
-                    try {
-                        const msg = JSON.parse(e.data);
-                        handleControlMessage(msg);
-                    } catch(e) {}
-                }
-            }
-        };
-        dc.onclose = () => {
-            console.log("DataChannel Closed");
-            // v02.1.39 (Patch 3): Do NOT set isActive=false on channel close.
-            // A mid-batch channel close (e.g. pipe ICE restart) was killing
-            // the for-loop after the first file, preventing remaining files from sending.
-            // isActive is only set false at the end of startFileTransfer().
-            if (statusRef.current !== 'done' && statusRef.current !== 'done-waiting' && statusRef.current !== 'transferring') {
-                setStatus('disconnected');
-            }
-            // Stop speed timer
-            if (speedTimerRef.current) { clearInterval(speedTimerRef.current); speedTimerRef.current = null; }
-            setTransferSpeed(null);
-        };
-    };
-
-    // v02.1.70: Autonomous Test Mode Hook (NMI)
-    useEffect(() => {
-        if (typeof window === 'undefined') return;
-        const params = new URLSearchParams(window.location.search);
-        if (params.get('test') === 'true') {
-            const testMode = params.get('mode');
-            setTimeout(() => {
-                if (testMode === 'receiver') {
-                    logDebug("â‰¡Æ’Ã±Ã» NMI: Auto-starting Receiver Mode...");
-                    setMode('receive');
-                } else if (testMode === 'sender') {
-                    logDebug("â‰¡Æ’Ã±Ã» NMI: Auto-starting Sender Mode...");
-                    setMode('send');
-                }
-            }, 2000);
-        }
-    }, [setMode]);
-
-    const startFileTransfer = async () => {
-        const currentFiles = filesRef.current;
-        if (currentFiles.length === 0) return;
-        isActive.current = true;
-        isInitializingRef.current = false; // v02.1.68: Unlock handshake ONLY once transfer loop starts.
-        setStatus('transferring');
-        
-        // v02.2.23: Satisfy mobile browser gesture policy for Wake Lock
-        requestWakeLock();
-        
-        // v02.2.10.8: NAT Warm-up Pulse (200ms)
-        await new Promise(resolve => setTimeout(resolve, 200));
-        logDebug("Î“Â£Ã  NAT WARMED: Starting High-Speed Batch broadcast.");
-
-        // v02.2.84: [FIX 3] M2M Induction Gate - Wait for at least 3 pipes to stabilize before data flow
-        const isSelfMobile = isMobileDevice();
-        const isM2M = isSelfMobile && remoteCapabilityRef.current.isMobile;
-        if (isM2M) {
-            logDebug("M2M Mode: Awaiting minimum 3 pipes for stable induction...");
-            const startWait = Date.now();
-            while (isActive.current && Date.now() - startWait < 8000) {
-                const connectedCount = peersRef.current.filter(p => p && p.iceConnectionState === 'connected').length;
-                if (connectedCount >= 3) break;
-                await new Promise(resolve => setTimeout(resolve, 300));
-            }
-            logDebug(`M2M Mode: Induction ready (${peersRef.current.filter(p => p && p.iceConnectionState === 'connected').length} connected).`);
-        }
-
-        // v02.1.39 (Patch 6): Initial Metadata Sweep (Redundant)
-        // v02.2.83: DEPRECATED LEGACY FLOOD - Metadata is now exclusively sequencing-driven
-        // broadcastMetadata();
-        
-        for (let i = 0; i < currentFiles.length; i++) {
-            if (!isActive.current) break;
-            const file = currentFiles[i];
-            currentTransferRef.current = { name: file.name, size: file.size, index: i };
-            totalSentBytesRef.current = 0;
-            setCurrentFileIndex(i);
-            
-            // v02.2.29: Create Immutable Snapshot for late-joiners
-            const meta = {
-                type: 'metadata',
-                name: file.name,
-                size: file.size,
-                fileType: file.type,
-                currentIdx: i,
-                totalFiles: currentFiles.length,
-                isParallel: true,
-                parallelChannels: dataChannelsRef.current.length,
-                // v02.2.44: Atomic Handshake Checksum
-                checksum: (file.name.length + file.size) % 9999
-            };
-            lastMetadataRef.current = meta;
-
-            // v02.2.80: [PROMPT 08] Metadata Sequencing + Sequential P2P Burst
-            logDebug(`Sender: Sending Pipelined Metadata for ${file.name}`);
-            sendControlMsg(meta);
-
-            // v02.2.80: Self-Contained Parallel Transfer with Integrated GPE Drain
-            await transferFileP2PParallelSnapshot(file, i);
-
-            if (!isActive.current && statusRef.current !== 'done' && statusRef.current !== 'done-waiting') {
-                logDebug("Sender: Transfer loop interrupted by Sentinel reset. Aborting finalization chain.");
-                return;
-            }
-        }
-        
-        // v02.1.37: 12-Channel EOF Broadcast (Redundancy)
-        const batchEofPkt = new Uint8Array(12);
-        const batchView = new DataView(batchEofPkt.buffer);
-        batchView.setUint16(0, 0, true); // v02.2.10.9: Nitro Standard
-        batchView.setUint16(2, 0, true); 
-        batchView.setUint32(4, 0xFFFFFFFD, true); // Batch-EOF
-        batchView.setUint32(8, currentFiles.length, true);
-        dataChannelsRef.current.forEach(dc => {
-            if (dc.readyState === 'open') {
-                dc.send(batchEofPkt);
-                try { dc.send(JSON.stringify({ type: 'batch-eof', totalFiles: currentFiles.length })); } catch(e) {}
-            }
-        });
-        sendControlMsg({ type: 'batch-eof', totalFiles: currentFiles.length });
-        
-        logDebug("Sender: Batch sent. Awaiting receiver verification (Ready ACK)...");
-        setStatus('done-waiting'); 
-
-        // v02.2.43: Sentinel Flight Report (Sender)
-        if (typeof window !== 'undefined') {
-            (window as any).__TACHYON_FLIGHT_REPORTS__ = (window as any).__TACHYON_FLIGHT_REPORTS__ || [];
-            (window as any).__TACHYON_FLIGHT_REPORTS__.push({
-                type: 'sender',
-                room: roomId,
-                time: Date.now(),
-                fileCount: currentFiles.length,
-                totalSent: totalSentBytesRef.current,
-                tunnel: useEmergencyTunnel,
-                logs: capturedLogsRef.current.slice(-20)
-            });
-        }
-        const waitForAck = () => new Promise<void>((resolve) => {
-            const dcHandler = (e: MessageEvent) => {
-                if (e.data instanceof ArrayBuffer && e.data.byteLength >= 8) {
-                    const view = new DataView(e.data);
-                    const chunkIdx = view.getUint32(4, true);
-                    if (chunkIdx === 0xFFFFFFFB) { // Batch-ACK Pulsar
-                        logDebug("Sender: Received P2P Batch-ACK! Transfer Confirmed.");
-                        cleanup();
-                        resolve();
-                    }
-                }
-            };
-
-            const wsHandler = (e: any) => {
-                if (e.detail.type === 'batch-ack' || e.detail.type === 'verification-complete') {
-                    logDebug("Sender: Received Signaling Batch-ACK! Transfer Confirmed.");
-                    cleanup();
-                    resolve();
-                }
-            };
-
-            // Post-Transmission NACK Drainer
-            const nackInterval = setInterval(() => {
-                if (nackQueueRef.current.size > 0 && isActive.current) {
-                    const openChannels = dataChannelsRef.current.filter(dc => dc && dc.readyState === 'open');
-                    if (openChannels.length === 0) return;
-
-                    // v02.2.58: Backoff NACK drain rate based on healthy active pipe count.
-                    // Under rollback-storm conditions (< 4 good pipes), slowing to 50ms
-                    // prevents ~1600 signals/sec from backing up the flow-control WS channel.
-                    const goodPipes = Array.from({ length: PIPES }, (_, i) =>
-                        (diagnosticMetricsRef.current.pistonStats[i]?.health !== 'red' &&
-                         pipeSentBytesRef.current[i] > 0) ? 1 : 0
-                    ).reduce((acc: number, val: number) => acc + val, 0);
-                    // Throttle: only drain on this tick if we win the lottery based on health
-                    const drainRoll = Math.random();
-                    if (goodPipes < 4 && drainRoll > 0.25) return;
-                    if (goodPipes < 8 && drainRoll > 0.6) return;
-
-                    for(let i=0; i < openChannels.length; i++) {
-                        if (nackQueueRef.current.size === 0) break;
-                        const nextEntry = nackQueueRef.current.entries().next().value;
-                        if (nextEntry) {
-                            const [key, nack] = nextEntry;
-                            nackQueueRef.current.delete(key);
-                            if (nack) {
-                                const cacheKey = `${nack.fileIdx}_${nack.chunkIdx}`;
-                                const cachedPacket = senderChunkCacheRef.current.get(cacheKey);
-                                if (cachedPacket) {
-                                    try {
-                                        openChannels[i].send(cachedPacket as any);
-                                    } catch(e) {}
-                                }
-                            }
-                        }
-                    }
-                }
-            }, 20); // v02.2.10.8: Rapid NACK Draining (20ms)
-            const cleanup = () => {
-                clearInterval(nackInterval);
-                window.removeEventListener('webrtc-sender-msg', wsHandler);
-                dataChannelsRef.current.forEach(dc => {
-                    if (dc) dc.removeEventListener('message', dcHandler);
-                });
-            };
-
-            window.addEventListener('webrtc-sender-msg', wsHandler);
-            dataChannelsRef.current.forEach(dc => {
-                if (dc) dc.addEventListener('message', dcHandler);
-            });
-
-            // Increased safety net to 90s for ultra-high latency (6.8s case).
-            setTimeout(() => {
-                cleanup();
-                if (statusRef.current === 'done-waiting') {
-                    logDebug('Sender: 90s Handshake Safety Net triggered.');
-                }
-                resolve();
-            }, 90 * 1000);
-        });
-
-        await waitForAck();
-
-        setStatus('done');
-        isActive.current = false;
-    };
- 
-    const transferFileP2PParallelSnapshot = async (file: File, index: number) => {
-        // v02.2.68: Fix 1 â€” Pre-read Entire File for M2M (Zero-Yield Hot Path)
-        const isSelfMobile = isMobileDevice();
-        const isM2M = isSelfMobile && remoteCapabilityRef.current.isMobile;
-        const config = getEngineConfig(isM2M ? 'M2M' : 'NITRO');
-        let fileBuffer: Uint8Array | null = null;
-        if (isM2M && file.size <= 150 * 1024 * 1024) {
-             const ab = await file.arrayBuffer();
-             fileBuffer = new Uint8Array(ab);
-             logDebug(`M2M Buffer-Load: ${(file.size/1024/1024).toFixed(1)}MB loaded into memory`);
-        }
-        const stream = fileBuffer ? null : file.stream();
-        let reader = stream ? stream.getReader() : null;
-        
-        // v02.1.91: Adaptive MTU Probing
-        let byteOffset = isResumingRef.current ? lastSuccessfulChunkIdxRef.current : 0; 
-        let chunkSeqIdx = 0; 
-        isResumingRef.current = false;
-
-        logDebug(`Sender: ${VERSION} ${byteOffset > 0 ? 'RESUMING' : 'Quasar Start (Omega-Final)'} for ${file.name} (Size: ${file.size} bytes)`);
-        
-        // v02.1.52 (Patch 25.2): GPE Counter Reset
-        gpeInFlightBytesRef.current = 0;
-        // v02.2.65: Stamp file start time for MTU startup grace
-        currentFileStartTimeRef.current = Date.now();
-
-        // Skip to offset if resuming
-        if (byteOffset > 0) {
-            let skipped = 0;
-            if (reader) {
-                while (skipped < byteOffset) {
-                    const { value } = await reader.read();
-                    if (!value) break;
-                    skipped += value.byteLength;
-                }
-            }
-        }
-
-        let currentChunkResidual: Uint8Array | null = null;
-        let pendingChunk: { data: Uint8Array, seq: number, offset: number } | null = null;
-
-        // v02.2.82: [FIX 3] Pre-allocate 32 packet buffers (Change 4 from plan)
-        const MAX_MTU = 65536;
-        const packetBufs = Array.from({ length: 32 }, () => new Uint8Array(12 + MAX_MTU));
-
-        while (byteOffset < file.size || pendingChunk) {
-            if (!isActive.current) return;
-
-            // v02.2.46: HSFC Rollback Execution
-            if (rollbackTriggerRef.current !== null) {
-                const targetOffset = rollbackTriggerRef.current;
-                rollbackTriggerRef.current = null;
-                if (targetOffset < byteOffset) {
-                    logDebug(`â‰¡Æ’Ã¶Ã¤ ROLLBACK IN PROGRESS: ${byteOffset} -> ${targetOffset}`);
-                    byteOffset = targetOffset;
-                    pendingChunk = null;
-                    currentChunkResidual = null;
-                    // Re-initialize reader to seek to targetOffset (only if not using memory buffer)
-                    if (reader) {
-                        try { reader.cancel(); } catch(e) {}
-                        const newStream = file.stream();
-                        const newReader = newStream.getReader();
-                        let skipped = 0;
-                        while (skipped < byteOffset) {
-                            const { value, done } = await newReader.read();
-                            if (done) break;
-                            skipped += value.byteLength;
-                        }
-                        reader = newReader;
-                    }
-                }
-            }
-
-            // v02.2.10.9: Smoothed RTT for Scaling
-            const smoothedRTT = rttBufferRef.current.length > 0 
-                ? rttBufferRef.current.reduce((a, b) => a + b) / rttBufferRef.current.length 
-                : 0.1;
-            
-            const isSelfMobile = isMobileDevice();
-            const isM2M = isSelfMobile && remoteCapabilityRef.current.isMobile;
-            const activeEngine = isM2M ? 'M2M' : (isSelfMobile || remoteCapabilityRef.current.isMobile) ? 'HYBRID' : 'NITRO';
-            const config = getEngineConfig(activeEngine);
-
-            // v02.2.78: [FIX 6 & 1] Hard-Stable GPE & Decoupled Pacer (Prompt 07)
-            const NITRO_THRESHOLD = config.pacerThreshold;
-            const FIXED_GPE_WINDOW = 96 * 1024 * 1024; 
-            // v02.2.83: [FIX 1] Adaptive M2M GPE Gate (4x BDP Scaling)
-            const currentGate = isM2M 
-                ? Math.max(32 * 1024 * 1024, smoothedRTT * 10 * 1024 * 1024 * 4) 
-                : FIXED_GPE_WINDOW;
-            // v02.2.85: [FIX 1] Restore 96-Channel Concurrency for 10MB/s (Remove v82 Cap)
-            const targetChannelLimit = Math.max(32, config.pipes * CHANNELS_PER_PIPE); 
-            const isGPEBlocked = gpeInFlightBytesRef.current > currentGate; 
-
-            if (isGPEBlocked && chunkSeqIdx % 50 === 0) {
-                logDebug(`ðŸ›°ï¸  GPE ENFORCEMENT: Burst Pause. In-Flight: ${(gpeInFlightBytesRef.current / 1024 / 1024).toFixed(2)}MB / Limit: ${(currentGate / 1024 / 1024).toFixed(2)}MB`);
-            }
-            
-            let targetPipeCount = Math.min(config.pipes, getAdaptivePipeCount(smoothedRTT, activeEngine));
-            if (targetPipeCount !== lastScaleRef.current) {
-                logDebug(`â‰¡Æ’Ã´Ã­ ADAPTIVE SCALE: RTT=${smoothedRTT.toFixed(3)}s -> Concurrency: ${targetPipeCount} Pipes (${targetChannelLimit} Channels)`);
-                lastScaleRef.current = targetPipeCount;
-            }
-
-            // v02.2.68: Fix 3 â€” Hoist O(96) Computations Out of Hot Path
-            if (!cachedOpenChannelsRef.current || Date.now() - channelCacheTsRef.current > 10) {
-                cachedOpenChannelsRef.current = [];
-                cachedTotalBufferedRef.current = 0;
-                for (let i = 0; i < targetChannelLimit; i++) {
-                    const dc = dataChannelsRef.current[i];
-                    if (dc && dc.readyState === 'open') {
-                        cachedOpenChannelsRef.current.push(dc);
-                        cachedTotalBufferedRef.current += dc.bufferedAmount;
-                    }
-                }
-                channelCacheTsRef.current = Date.now();
-            }
-            const openChannels = cachedOpenChannelsRef.current;
-            const totalBuffered = cachedTotalBufferedRef.current;
-            
-
-
-            // v02.2.18: GPE-SCTP Sync Pulse (Ghost Byte fix)
-            // Periodically sync the in-flight counter with the receiver's actual "cleared" bytes.
-            if (chunkSeqIdx % 100 === 0 && chunkSeqIdx > 0) {
-                const receiverCleared = diagnosticMetricsRef.current.bytesCleared || 0;
-                const estimatedInFlight = totalSentBytesRef.current - receiverCleared;
-                // If there's a massive discrepancy (more than 32MB), we sync to reality.
-                if (Math.abs(gpeInFlightBytesRef.current - estimatedInFlight) > 32 * 1024 * 1024) {
-                    logDebug(`â‰¡Æ’Ã´Ã­ [SYNC] GPE In-Flight Corrected: ${Math.round(gpeInFlightBytesRef.current/1024)}KB -> ${Math.round(estimatedInFlight/1024)}KB`);
-                    gpeInFlightBytesRef.current = Math.max(0, estimatedInFlight);
-                }
-            }
-
-            // v02.2.19: [PACER_GUARD] Hardware-First Override (Deadlock Buster)
-            // If totalBuffered is extremely low (< 1MB), we NEVER block, even if GPE says 64MB in-flight.
-            // This rescues the engine from desynced counters which previously froze the transfer.
-            const hardwareStalled = isM2M ? false : (totalBuffered > NITRO_THRESHOLD);
-            const gpeStalled = isGPEBlocked && totalBuffered > 2048 * 1024;
-            
-            if (openChannels.length === 0 || hardwareStalled || gpeStalled) {
-                blockedLoopCount.current++;
-                if (blockedLoopCount.current % 5000 === 0 && totalBuffered > NITRO_THRESHOLD) {
-                    logDebug(`â‰¡Æ’ÃœÃ‡ NITRO FLOW HANG: Buffer=${(totalBuffered / 1024 / 1024).toFixed(1)}MB / Threshold=${(NITRO_THRESHOLD / 1024 / 1024).toFixed(1)}MB`);
-                }
-                
-                // Use bufferedamountlow for zero-latency wakeup if possible
-                if (totalBuffered > NITRO_THRESHOLD) {
-                    const dc = openChannels[0];
-                    if (dc) {
-                        dc.bufferedAmountLowThreshold = NITRO_THRESHOLD / 4;
-                        await new Promise(resolve => {
-                            const handler = () => {
-                                dc.removeEventListener('bufferedamountlow', handler);
-                                resolve(null);
-                            };
-                            dc.addEventListener('bufferedamountlow', handler);
-                            // v02.2.78: [FIX 2] 2ms Pacer Delay (Eliminate 100ms micro-stalls)
-                            setTimeout(handler, 2); 
                         });
-                    }
-                }
-                
-                if (blockedLoopCount.current > 50) {
-                    // v02.2.71: Reduction to 5ms yield for higher goodput
-                    await new Promise(resolve => setTimeout(resolve, 5)); 
-                }
-                continue; 
-            } else {
-                blockedLoopCount.current = 0;
-            }
 
-            // v02.2.78: [FIX 8] GPE False-Block Recovery (Self-Correction)
-            if (gpeInFlightBytesRef.current > currentGate * 1.2) {
-                logDebug(`ðŸ›¡ï¸  GPE False-Block Reset: ${Math.round(gpeInFlightBytesRef.current/1024)}KB -> ${Math.round((currentGate * 0.8)/1024)}KB`);
-                gpeInFlightBytesRef.current = currentGate * 0.8;
-            }
-
-            if (isGPEBlocked) {
-                if (!gpeBlockedSinceRef.current) gpeBlockedSinceRef.current = Date.now();
-                if (Date.now() - gpeBlockedSinceRef.current > 15000) {
-                    logDebug("Î“ÃœÃ¡âˆ©â••Ã… GPE Deadlock detected (15s). Performing Emergency Heartbeat...");
-                    sendControlMsg({ type: 'heartbeat', ts: Date.now() }); 
-                    gpeBlockedSinceRef.current = Date.now();
-                }
-            } else {
-                gpeBlockedSinceRef.current = null;
-            }
-
-            // v02.2.80: [PROMPT 10] Real-time RTT & Saturation Tuning
-            const rttSafe = Math.min(...rttBufferRef.current.filter(r => r > 0), 1.0);
-            const rttMs = rttSafe * 1000;
-            // v02.2.85: [FIX 2] Unified BDP Saturation (The v64 "Gate Unblocker" Secret)
-            // Instead of static 3MB, we scale per-channel buffer to hold 2x BDP share.
-            const totalTargetBDP = smoothedRTT * 10 * 1024 * 1024; // 10MB/s BDP
-            const perChannelBDP = totalTargetBDP / targetChannelLimit;
-            const M2M_SATURATION = Math.max(128 * 1024, perChannelBDP * 2.5); // 2.5x Window for jitter absorption
-            
-            const saturationThreshold = isM2M ? M2M_SATURATION : Math.min(32 * 1024 * 1024, Math.max(8 * 1024 * 1024, (rttMs / 50) * 8 * 1024 * 1024));
-
-            let burstSent = 0;
-            // v02.2.82: [FIX 1] Structured Round-Robin (Remove selectedDC entirely)
-            if (!isGPEBlocked && openChannels.length > 0) {
-                // v02.2.82: Iterate up to 32 channels per burst for M2M efficiency
-                const scanLimit = Math.min(openChannels.length, targetChannelLimit);
-                
-                for (let b = 0; b < scanLimit && (byteOffset < file.size || pendingChunk); b++) {
-                    if (gpeInFlightBytesRef.current >= currentGate) break; // [FIX 1] Break when Gate saturated
-
-                    const testIdx = (lastChannelIndexRef.current + b) % openChannels.length;
-                    const dc = openChannels[testIdx];
-                    if (!dc || dc.readyState !== 'open') continue;
-
-                    // v02.2.82: [FIX 1] Saturation Skip
-                    if (dc.bufferedAmount > saturationThreshold) continue;
-
-                    const pipeIdx = Math.floor(testIdx / CHANNELS_PER_PIPE);
-                    const health = diagnosticMetricsRef.current.pistonStats[pipeIdx]?.health || 'green';
-                    const pipeMsAlive = Date.now() - (pipeConnectedAtRef.current[pipeIdx] || 0);
-                    const pipeHasSentData = pipeSentBytesRef.current[pipeIdx] > 0;
-                    if (health === 'red' || (!pipeHasSentData && pipeMsAlive < 200)) {
-                        if (pipeIdx > 3) continue; // v02.2.80: Reserve Pipes 0-3 for unstable/unready sends
+                        (async (pIdx) => {
+                            try {
+                                await fetch(`${CLOUDFLARE_RELAY_URL}/${finalRoomId}/${pIdx}`, {
+                                    method: 'POST',
+                                    body: stream,
+                                    //@ts-ignore
+                                    duplex: 'half'
+                                });
+                            } catch (err) {}
+                        })(p);
                     }
 
-                    // --- CHUNK ACQUISITION ---
-                    let currentChunk: { data: Uint8Array, seq: number, offset: number } | null = null;
-                    if (pendingChunk) {
-                        currentChunk = pendingChunk;
-                        pendingChunk = null;
-                    } else if (byteOffset < file.size) {
-                        const targetSize = dynamicChunkSizeRef.current;
-                        if (fileBuffer) {
-                            const end = Math.min(byteOffset + targetSize, file.size);
-                            currentChunk = { data: fileBuffer.subarray(byteOffset, end), seq: chunkSeqIdx, offset: byteOffset };
-                        } else if (reader) {
-                             // v02.2.80: Preservation of reader-path buffering
-                            if (currentChunkResidual && currentChunkResidual.length >= targetSize) {
-                                currentChunk = { data: currentChunkResidual.slice(0, targetSize), seq: chunkSeqIdx, offset: byteOffset };
-                                currentChunkResidual = currentChunkResidual.length > targetSize ? currentChunkResidual.slice(targetSize) : null;
-                            } else {
-                                try {
-                                    const { value, done } = await reader.read();
-                                    if (done) {
-                                        if (currentChunkResidual) {
-                                            currentChunk = { data: currentChunkResidual, seq: chunkSeqIdx, offset: byteOffset };
-                                            currentChunkResidual = null;
-                                        }
-                                    } else {
-                                        let combined: Uint8Array;
-                                        if (currentChunkResidual) {
-                                            combined = new Uint8Array(currentChunkResidual.length + value.length);
-                                            combined.set(currentChunkResidual);
-                                            combined.set(value, currentChunkResidual.length);
-                                        } else {
-                                            combined = value;
-                                        }
-                                        currentChunkResidual = combined;
-                                        if (currentChunkResidual.length >= targetSize) {
-                                            currentChunk = { data: currentChunkResidual.slice(0, targetSize), seq: chunkSeqIdx, offset: byteOffset };
-                                            currentChunkResidual = currentChunkResidual.length > targetSize ? currentChunkResidual.slice(targetSize) : null;
-                                        } else {
-                                            currentChunk = { data: currentChunkResidual, seq: chunkSeqIdx, offset: byteOffset };
-                                            currentChunkResidual = null;
-                                        }
+                    // Stability Grace Period
+                    await new Promise(r => setTimeout(r, 800));
+
+                    // Continuous Dispatcher
+                    (async () => {
+                        for (let i = 0; i < fileList.length; i++) {
+                            const file = fileList[i];
+                            logDebug(`[OMEGA] Dispatching: ${file.name}`);
+                            setCurrentFileIndex(i);
+                            
+                            const partSize = Math.ceil(file.size / NUM_PIPES);
+                            const filePartPromises = [];
+
+                            for (let p = 0; p < NUM_PIPES; p++) {
+                                const start = p * partSize;
+                                const end = Math.min(file.size, (p + 1) * partSize);
+                                if (start >= file.size && p > 0) continue;
+
+                                const slice = file.slice(start, end);
+                                const fileStream = encryptFileStream(slice, keyObj, i, p, start, 256 * 1024);
+                                const reader = fileStream.getReader();
+
+                                filePartPromises.push((async () => {
+                                    while (true) {
+                                        const { done, value } = await reader.read();
+                                        if (done) break;
+                                        pipeControllersRef.current[p].enqueue(value);
+                                        totalSentBytesRef.current += value.length;
+                                        setTotalSentBytes(totalSentBytesRef.current);
                                     }
-                                } catch(e) {}
+                                })());
                             }
+                            await Promise.all(filePartPromises);
                         }
-                    }
-
-                    if (!currentChunk) break;
-                    const { data: chunkData, seq: currentSeq, offset: currentOffset } = currentChunk;
-                    const currentGen = pipeGenerationRef.current[pipeIdx] || 1;
-                    
-                    // v02.2.80: [PROMPT 08] Zero-GC Header & Packet Sync
-                    headerViewRef.current.setUint16(0, index, true);
-                    headerViewRef.current.setUint16(2, currentGen, true);
-                    headerViewRef.current.setUint32(4, currentSeq, true); 
-                    headerViewRef.current.setUint32(8, currentOffset, true); 
-
-                    try {
-                        // v02.2.82: [FIX 3] Pre-allocated Buffer Piling (32 slots)
-                        const buf = packetBufs[b % 32];
-                        buf.set(headerBufRef.current, 0);
-                        buf.set(chunkData, 12);
                         
-                        // v02.2.82: [FIX 3] Subarray for send (Zero-Copy)
-                        const packet = buf.subarray(0, 12 + chunkData.byteLength);
-                        dc.send(packet as any);
-                        
-                        // v02.2.82: [FIX 3] .slice() for NACK cache (Avoid pool corruption)
-                        const cacheKey = `${index}_${currentSeq}`;
-                        senderChunkCacheRef.current.set(cacheKey, buf.slice(0, 12 + chunkData.byteLength));
-                        if (senderChunkCacheRef.current.size > 2048) {
-                            const k = senderChunkCacheRef.current.keys().next().value;
-                            if (k) senderChunkCacheRef.current.delete(k);
-                        }
-
-                        totalSentBytesRef.current += packet.byteLength;
-                        gpeInFlightBytesRef.current += packet.byteLength; 
-                        byteOffset += chunkData.byteLength; 
-                        chunkSeqIdx++;
-                        burstSent++;
-                        diagnosticMetricsRef.current.pistonStats[pipeIdx].speed += packet.byteLength;
-                        
-                        lastChunkSeqRef.current = currentSeq;
-                        lastProgressTimeRef.current = Date.now();
-                        // v02.2.81: Receiver-State Progress Sync (Prevents UI Leap-ahead)
-                        const confirmedBytes = Math.max(0, byteOffset - gpeInFlightBytesRef.current);
-                        const progress = Math.min(99, (confirmedBytes / file.size) * 100);
-                        setProgress(progress);
-
-                    } catch (e: any) {
-                        pendingChunk = currentChunk;
-                        break; 
-                    }
+                        pipeControllersRef.current.forEach(c => { try { c.close(); } catch(e) {} });
+                        setStatus('done');
+                        logDebug(`[OMEGA] Batch Complete.`);
+                    })();
                 }
-            }
-            lastChannelIndexRef.current = (lastChannelIndexRef.current + Math.max(1, burstSent)) % openChannels.length;
-
-                if (burstSent === 0) {
-                    // v02.2.81: [PROMPT 08] Winner-Takes-All Multi-Channel Wakeup
-                    // We wait for ANY of the first 4 channels of each pipe to clear.
-                    const wakeupChannels = openChannels.filter((_, idx) => idx % CHANNELS_PER_PIPE < 4).slice(0, 16);
-                    if (wakeupChannels.length > 0) {
-                        await Promise.race([
-                            ...wakeupChannels.map(wdc => new Promise(resolve => {
-                                wdc.bufferedAmountLowThreshold = saturationThreshold / 2;
-                                const h = () => { wdc.removeEventListener('bufferedamountlow', h); resolve(null); };
-                                wdc.addEventListener('bufferedamountlow', h);
-                                setTimeout(h, isM2M ? 2 : 15); // v02.2.83: Ultra-Low Wait (2ms) for M2M throughput
-                            })),
-                            new Promise(resolve => setTimeout(resolve, isM2M ? 2 : 5)) // Event loop breath (v02.2.83)
-                        ]);
-                    } else {
-                        await new Promise(resolve => setTimeout(resolve, 10));
-                    }
-                    continue;
-                }
-
-                // v02.2.40: WebSocket Tunnel Fallback (If P2P Stalled)
-                if ((openChannels.length === 0 || useEmergencyTunnel) && pendingChunk) {
-                    const { data: chunkData, seq: currentSeq, offset: currentOffset } = pendingChunk;
-                    const currentGen = pipeGenerationRef.current[0] || 1;
-                    const packet = new Uint8Array(12 + chunkData.byteLength);
-                    const view = new DataView(packet.buffer);
-                    view.setUint16(0, index, true);
-                    view.setUint16(2, currentGen, true);
-                    view.setUint32(4, currentSeq, true); 
-                    view.setUint32(8, currentOffset, true); 
-                    packet.set(chunkData, 12);
-
-                    try {
-                        // Binary to Base64 (Render WebSocket compatibility)
-                        let binary = "";
-                        const bytes = new Uint8Array(packet);
-                        for (let i = 0; i < bytes.byteLength; i++) binary += String.fromCharCode(bytes[i]);
-                        const base64 = btoa(binary);
-                        
-                        if (wsRef.current?.readyState === WebSocket.OPEN) {
-                            wsRef.current.send(JSON.stringify({ 
-                                type: 'emergency-data', 
-                                payload: base64,
-                                seq: currentSeq 
-                            }));
-                            
-                            totalSentBytesRef.current += packet.byteLength;
-                            byteOffset += chunkData.byteLength; 
-                            chunkSeqIdx++;
-                            pendingChunk = null;
-                            if (!useEmergencyTunnel) setUseEmergencyTunnel(true);
-                            if (currentSeq % 10 === 0) logDebug(`â‰¡Æ’Â¢Ã­âˆ©â••Ã… Emergency Tunnel Sent: Chunk-${currentSeq}`);
-                            
-                            // v02.2.41: Rate-Limit Tunnel (15ms delay per 16KB)
-                            await new Promise(resolve => setTimeout(resolve, 15));
-                        }
-                    } catch (e) {}
-                }
-            }
-
-        setProgress(100);
-
-        // v02.1.92: Multi-Pipe EOF Broadcast (Byte-Offset Aware)
-        const eofPacket = new Uint8Array(12);
-        const eofView = new DataView(eofPacket.buffer);
-        eofView.setUint16(0, index, true); // v02.2.10.9: Nitro Standard
-        eofView.setUint16(2, 0, true);
-        eofView.setUint32(4, 0xFFFFFFFE, true); // Sector EOF
-        eofView.setUint32(8, chunkSeqIdx, true); // Total chunks sent
-        
-        dataChannelsRef.current.forEach(dc => {
-            if (dc?.readyState === 'open') {
-                dc.send(eofPacket);
-            }
-        });
-
-        // v02.2.81: [SYNC] Multi-Dimensional Integrity Barrier
-        // Ensures: 1. Network Queue Clear (<512KB), 2. NACK Queue Clear (Empty), 3. Receiver reassembly DONE.
-        const drainStart = Date.now();
-        const MIN_INTER_FILE_GAP_MS = 500;
-        const BARRIER_TIMEOUT_MS = 45000; // 45s deep re-send buffer
-        
-        while (isActive.current) {
-            const elapsed = Date.now() - drainStart;
-            const inFlight = gpeInFlightBytesRef.current;
-            const nackCount = nackQueueRef.current.size;
-            const isConfirmed = hasReceivedFileDoneRef.current[index];
-
-            if (inFlight < 512 * 1024 && nackCount === 0 && isConfirmed && elapsed >= MIN_INTER_FILE_GAP_MS) {
-                break;
-            }
-            
-            if (elapsed % 1000 < 50) {
-                 logDebug(`[SYNC BARRIER] File-${index}: InFlight=${(inFlight/1024).toFixed(0)}KB, Holes=${nackCount}, Confirmed=${isConfirmed}`);
-                 // Periodic poke if missing sync
-                 if (!isConfirmed && elapsed > 5000) {
-                      sendControlMsg({ type: 'sync-poke', fileIdx: index });
-                 }
-            }
-
-            if (elapsed >= BARRIER_TIMEOUT_MS) {
-                logDebug(`[SYNC BARRIER] Timeout! Forced Move-on for File-${index}.`);
-                break; 
-            }
-            await new Promise(resolve => setTimeout(resolve, 50));
-        }
-        
-        logDebug(`Sender: Data pipelined AND confirmed for ${file.name}. Barrier Cleared.`);
+            };
+        } catch (fatal: any) { logDebug(`[OMEGA] Fatal: ${fatal.message}`); }
     };
-
-    // --- RECEIVER LOGIC (Turbo Drop 2.0) ---
-    // v02.1.71: Signal Sentinel Heartbeat
-    useEffect(() => {
-        if (status === 'disconnected') return;
-        const interval = setInterval(() => {
-            if (wsRef.current?.readyState === WebSocket.OPEN) {
-                // v02.2.17: Debounced Signal Ready (Reduce Radio Wake-up Pollution)
-                wsRef.current.send(JSON.stringify({ type: 'heartbeat', ts: Date.now() }));
-            }
-        }, 10000); // 10s Heartbeat for lower overhead
-        return () => clearInterval(interval);
-    }, [status]);
-    
-    // v02.2.82: [FIX 4] Receiver-side Progress Report Pulse (fixes UI de-sync symptom)
-    useEffect(() => {
-        if (mode !== 'receive' || (status !== 'transferring' && status !== 'connecting')) return;
-        const interval = setInterval(() => {
-            if (wsRef.current?.readyState === WebSocket.OPEN) {
-                // Emit progress for all active reassemblies
-                reassemblyMapRef.current.forEach((bitset, fileIdx) => {
-                    const total = expectedChunksMapRef.current.get(fileIdx) || 1;
-                    sendControlMsg({
-                        type: 'rx-progress',
-                        fileIdx: fileIdx,
-                        chunksReceived: bitset.size,
-                        totalChunks: total
-                    });
-                });
-            }
-        }, 500);
-        return () => clearInterval(interval);
-    }, [mode, status]);
 
     const joinRoom = async (roomName: string) => {
-        // --- CLOUD RELAY BYPASS (RECEIVER) ---
-        if (true) {
-            try {
-                disconnectEverything();
-                setMode('receive');
-                setStatus('connecting');
-                const normalizedRoom = roomName.toUpperCase().trim();
-                setRoomId(normalizedRoom);
-                roomRef.current = normalizedRoom;
-                
-                logDebug(`[BYPASS RECEIVER] Connecting to WS: ${normalizedRoom}`);
-                const ws = new WebSocket(`${BACKEND_WS_URL}/ws/drop/${normalizedRoom}/receiver`);
-                wsRef.current = ws;
-                
-                ws.onopen = () => {
-                    logDebug(`[BYPASS RECEIVER] WS Open. Sending receiver-ready.`);
-                    ws.send(JSON.stringify({ type: 'receiver-ready' }));
-                };
-                
-                ws.onerror = (e) => logDebug(`[BYPASS RECEIVER] WS Error: ${e}`);
-                ws.onclose = () => logDebug(`[BYPASS RECEIVER] WS Closed`);
-                
-                ws.onmessage = async (e) => {
-                    const data = JSON.parse(e.data);
-
-                    if (data.type === 'peer-connected') {
-                        ws.send(JSON.stringify({ type: 'receiver-ready' }));
-                    }
-
-                    if (data.type === 'sender-ready' && data.sessionKey) { 
-                        if (statusRef.current === 'transferring') return;
-                        setStatus('transferring');
-                        setCryptoKeyStr(data.sessionKey);
-                        const keyObj = await importSessionKey(data.sessionKey);
-                        const totalSize = data.totalSize || 0;
-                        const filesInfo = data.files || [];
-                        setTotalFiles(filesInfo.length);
-                        
-                        const NUM_PIPES = 12;
-                        const pipePromises = [];
-                        const reassemblyBuffers = new Map(); // Map<FileIdx, Uint8Array>
-                        const reassemblyProgress = new Map(); // Map<FileIdx, number>
-                        const batchResults: any[] = [];
-
-                        logDebug(`[OMEGA RECEIVER] Spawning 12 Parallel Fetchers...`);
-                        
-                        for (let p = 0; p < NUM_PIPES; p++) {
-                            pipePromises.push((async (pIdx) => {
-                                try {
-                                    const res = await fetch(`${CLOUDFLARE_RELAY_URL}/${normalizedRoom}/${pIdx}`);
-                                    if (res.ok && res.body) {
-                                        await decryptContinuousStream(res.body, keyObj, (chunk) => {
-                                            const { fileIdx, byteOffset, data, isEOF, pipeIdx } = chunk;
-                                            
-                                            // Update Piston UI
-                                            if (pipeIdx < 12) diagnosticMetricsRef.current.pistonStats[pipeIdx] = { speed: 12, health: 'green' };
-
-                                            if (isEOF) return;
-
-                                            if (!reassemblyBuffers.has(fileIdx)) {
-                                                const meta = filesInfo[fileIdx];
-                                                reassemblyBuffers.set(fileIdx, new Uint8Array(meta.size));
-                                                reassemblyProgress.set(fileIdx, 0);
-                                            }
-                                            
-                                            const buf = reassemblyBuffers.get(fileIdx);
-                                            const currentProg = reassemblyProgress.get(fileIdx);
-                                            
-                                            if (data) {
-                                                if (byteOffset + data.length <= buf.length) {
-                                                    buf.set(data, byteOffset); // Omega: Absolute slotting
-                                                    const newProg = currentProg + data.length;
-                                                    reassemblyProgress.set(fileIdx, newProg);
-                                                    
-                                                    const totalDone = Array.from(reassemblyProgress.values()).reduce((a, b) => a + b, 0);
-                                                    setProgress(Math.min(99, Math.round((totalDone / totalSize) * 100)));
-                                                    
-                                                    if (newProg >= filesInfo[fileIdx].size) {
-                                                        const blob = new Blob([buf], { type: 'application/octet-stream' });
-                                                        if (!batchResults.find(r => r.name === filesInfo[fileIdx].name)) {
-                                                            batchResults.push({ name: filesInfo[fileIdx].name, blob });
-                                                            setReceivedFiles([...batchResults]);
-                                                            reassembledCount.current++;
-                                                            logDebug(`[OMEGA] Reassembled ${filesInfo[fileIdx].name}`);
-                                                            if (reassembledCount.current >= filesInfo.length) setStatus('done');
-                                                        }
-                                                    }
-                                                }
-                                            }
-                                        });
-                                    }
-                                } catch (err) {
-                                    logDebug(`[OMEGA] Pipe ${pIdx} Error: ${err.message}`);
-                                }
-                            })(p));
-                        }
-                        
-                        ws.send(JSON.stringify({ type: 'receiver-ready' }));
-                    }
-                };
-            } catch (fatal:any) {
-                logDebug(`[BYPASS RECEIVER] FATAL SYNC ERROR: ${fatal.message}`);
-            }
-            return;
-        }
-        // --- END BYPASS ---
-
-        disconnectEverything();
-        setRoomId(roomName);
-        roomRef.current = roomName;
-        setMode('receive');
-        setStatus('connecting');
-
-        // v02.1.33: Receiver Wake Lock
-        await requestWakeLock();
-
-        // v02.1.20: Backend Wake-Up Pre-flight
-        logDebug("Attempting to wake up signaling server...");
-        try { await fetch(`${BACKEND_HTTP_URL}/api/health`).catch(() => {}); } catch (e) {}
-
-        let attempts = 0;
-        const normalizedRoom = roomName.toUpperCase().trim();
-        const connect = () => {
-            attempts++;
-            logDebug(`Connecting to signaling server (Attempt ${attempts}/3)...`);
+        try {
+            disconnectEverything();
+            setMode('receive');
+            setStatus('connecting');
+            const normalizedRoom = roomName.toUpperCase().trim();
+            setRoomId(normalizedRoom);
+            roomRef.current = normalizedRoom;
+            
+            logDebug(`[OMEGA RECEIVER] Connecting: ${normalizedRoom}`);
             const ws = new WebSocket(`${BACKEND_WS_URL}/ws/drop/${normalizedRoom}/receiver`);
             wsRef.current = ws;
             
-            ws.onerror = () => logDebug(`Receiver WS Connection Error (Attempt ${attempts})`);
-            ws.onclose = (e) => {
-                logDebug(`Receiver WS Closed (Code: ${e.code}, Reason: ${e.reason || 'None'}).`);
-                if (heartbeatIntervalRef.current) clearInterval(heartbeatIntervalRef.current);
-                if (attempts < 3 && statusRef.current === 'connecting') {
-                    logDebug("Retrying connection in 2s...");
-                    setTimeout(connect, 2000);
-                } else if (attempts >= 3) {
-                    setStatus('error');
-                    logDebug("Î“Â¥Ã® Persistent Signaling Failure after 3 attempts.");
-                }
-            };
-
-            ws.onopen = () => {
-                logDebug("Receiver WS Opened. Signaling Ready...");
-                ws.send(JSON.stringify({ 
-                    type: 'receiver-ready', 
-                    isMobile: isMobileDevice() // v02.2.17 Capability Exchange
-                }));
-                // v02.2.35: Continuous Discovery Pulse (Receiver-Side)
-                const heartbeat = setInterval(() => {
-                    if (ws.readyState === WebSocket.OPEN) {
-                        ws.send(JSON.stringify({ type: 'ping' }));
-                        // Re-announce presence every 5s if still connecting
-                        if (statusRef.current === 'connecting') {
-                            ws.send(JSON.stringify({ type: 'receiver-ready', isMobile: isMobileDevice() }));
-                        }
-                    }
+            ws.onopen = () => ws.send(JSON.stringify({ type: 'receiver-ready' }));
+            ws.onmessage = async (e) => {
+                const data = JSON.parse(e.data);
+                if (data.type === 'peer-connected') ws.send(JSON.stringify({ type: 'receiver-ready' }));
+                
+                if (data.type === 'sender-ready' && data.sessionKey) {
+                    logDebug(`[OMEGA RECEIVER] Handshake Verified. Syncing Pipes...`);
+                    const keyObj = await importSessionKey(data.sessionKey);
+                    const filesInfo = data.files;
+                    setTotalFiles(filesInfo.length);
+                    setStatus('transferring');
                     
-                    // v02.2.38: Receiver Auto-Wake (8s stall monitor)
-                    const timeSinceLastMsg = Date.now() - flowPulseLastTsRef.current;
-                    if (statusRef.current === 'connecting' && timeSinceLastMsg > 8000) {
-                        logDebug("â‰¡Æ’ÃœÃ¦ Receiver Stall Detected: Auto-Refreshing signaling...");
-                        ws.send(JSON.stringify({ type: 'receiver-ready', isMobile: isMobileDevice(), urgent: true }));
-                        flowPulseLastTsRef.current = Date.now(); // Reset
+                    const NUM_PIPES = 12;
+                    const pipePromises = [];
+                    for(let p=0; p<NUM_PIPES; p++) {
+                        pipePromises.push(fetch(`${CLOUDFLARE_RELAY_URL}/${normalizedRoom}/${p}`).then(r => r.body!));
                     }
-                }, 5000);
-                heartbeatIntervalRef.current = heartbeat;
-            };
 
-            ws.onmessage = async (event) => {
-                try {
-                    const data = JSON.parse(event.data);
-                    if (data.type === 'offer') {
-                        const pIdx = data.pipeIdx || 0;
-                        const gen = data.gen || 0;
-                        logDebug(`Received offer for Pipe-${pIdx} (Gen ${gen})`);
+                    const pipeStreams = await Promise.all(pipePromises);
+
+                    // Reassembly Loop
+                    (async () => {
+                        const muxed = decryptContinuousStream(pipeStreams, keyObj);
+                        const reader = muxed.getReader();
+                        const resultFiles = [];
                         
-                        await setupWebRTC(ws, false, pIdx);
-                        const peer = peersRef.current[pIdx];
-                        if (!peer) return;
-
-                        await peer.setRemoteDescription(new RTCSessionDescription(data.sdp));
-                        remoteDescriptionSetsRef.current[pIdx] = true;
-                        
-                        for (const candidate of iceBuffersRef.current[pIdx]) {
-                            try { await peer.addIceCandidate(new RTCIceCandidate(candidate)); } catch (e) {}
+                        for (let i = 0; i < filesInfo.length; i++) {
+                            const info = filesInfo[i];
+                            logDebug(`[OMEGA] Reassembling: ${info.name}`);
+                            setCurrentFileIndex(i);
+                            
+                            const chunks = [];
+                            let received = 0;
+                            while (received < info.size) {
+                                const { done, value } = await reader.read();
+                                if (done) break;
+                                chunks.push(value);
+                                received += value.length;
+                                totalReceivedBytesRef.current += value.length;
+                                setProgress(Math.round((received / info.size) * 100));
+                            }
+                            resultFiles.push({ blob: new Blob(chunks), name: info.name });
+                            setReceivedFiles([...resultFiles]);
                         }
-                        iceBuffersRef.current[pIdx] = [];
-
-                        const answer = await peer.createAnswer();
-                        await peer.setLocalDescription(answer);
-                        ws.send(JSON.stringify({ type: 'answer', pipeIdx: pIdx, gen, sdp: peer.localDescription }));
-                    } else if (data.type === 'ice-candidate') {
-                        const pIdx = data.pipeIdx || 0;
-                        const gen = data.gen || 0;
-                        if (gen !== pipeGenerationRef.current[pIdx]) return;
-                        if (!remoteDescriptionSetsRef.current[pIdx]) {
-                            iceBuffersRef.current[pIdx].push(data.candidate);
-                        } else {
-                            try { await peersRef.current[pIdx]?.addIceCandidate(new RTCIceCandidate(data.candidate)); } catch (e) {}
-                        }
-                    }
-                    handleControlMessage(data);
-                } catch (err: any) {
-                    logDebug("Î“Â¥Ã® Receiver WS Error: " + err.message);
-                }
-            };
-        };
-
-        connect();
-    };
-
-    const triggerFileCompletion = (fileIdx: number) => {
-        const fileBitset = reassemblyMapRef.current.get(fileIdx);
-        const targetBlocks = expectedChunksMapRef.current.get(fileIdx);
-        
-        if (targetBlocks && fileBitset && fileBitset.size >= targetBlocks) {
-            logDebug(`Î“Â£Ã  File ${fileIdx} fully reassembled asynchronously (${fileBitset.size} chunks). Symmetry Verified.`);
-            
-            // v02.2.81: [SYNC] Redundant P2P-SYNC Broadcast
-            if (!hasSentDoneForFileRef.current[fileIdx]) {
-                const openDCs = dataChannelsRef.current.filter(c => c && c.readyState === 'open');
-                if (openDCs.length > 0) {
-                    const ackView = rtcAckViewRef.current;
-                    ackView.setUint16(0, 0xFFFF);
-                    ackView.setUint16(2, 0xEEEE);
-                    let payload = 0;
-                    payload |= 0x80000000; // DONE_FLAG
-                    payload |= ((fileIdx & 0x7FFF) << 16); 
-                    ackView.setUint32(4, payload, true);
-                    
-                    const pkt = rtcAckBufRef.current.buffer as ArrayBuffer;
-                    openDCs.forEach(dc => {
-                        try { dc.send(pkt); } catch(e) {}
-                    });
-                    
-                    // Final redundancy via signaling
-                    sendControlMsg({ type: 'file-done-ack', fileIdx: fileIdx });
-
-                    hasSentDoneForFileRef.current[fileIdx] = true;
-                    logDebug(`âœ… [HYDRA] Integrity Verified: File-${fileIdx} Multi-Channel P2P-SYNC Broadcasted.`);
-                }
-            }
-            
-            reassemblyMapRef.current.delete(fileIdx);
-            expectedChunksMapRef.current.delete(fileIdx);
-            
-            workerRef.current?.postMessage({
-                type: 'chunk',
-                fileIdx: fileIdx,
-                chunkIdx: 0xFFFFFFFE,
-                payloadCount: -1
-            });
-        }
-    };
-
-    const handleIncomingData = (data: any, _channelIdx: number) => {
-        if (!workerRef.current) return;
-
-        if (typeof data === 'string') {
-            try {
-                const msg = JSON.parse(data);
-                handleControlMessage(msg);
-            } catch (e) {}
-        } else if (data instanceof ArrayBuffer) {
-            const packetLen = data.byteLength;
-            const view = new DataView(data);
-            const fileIdx = view.getUint16(0, true);
-            const gen = view.getUint16(2, true);
-            const chunkIdx = view.getUint32(4, true);
-            const byteOffset = view.getUint32(8, true);
-            
-            // v02.2.74: Tachyon Leak-Fix (Full-Sum Byte Accounting)
-            const isDataChunk = chunkIdx < 0xFFFFFFF0;
-            const isFileEOF = chunkIdx === 0xFFFFFFFE;
-            
-            if (isDataChunk || isFileEOF) {
-                pendingAckBytesRef.current += packetLen;
-                const dc = dataChannelsRef.current[_channelIdx];
-                if (dc && dc.readyState === 'open') {
-                    rtcAckCounterRef.current++;
-                    
-                        const rtcAckCounter = rtcAckCounterRef.current;
-                        if (rtcAckCounter % 2 === 0) {
-                            const ackView = rtcAckViewRef.current;
-                            ackView.setUint16(0, 0xFFFF);
-                            ackView.setUint16(2, 0xEEEE);
-                            // v02.2.83: 24-bit Byte Drain Field (Support up to 16MB clearance per ACK)
-                            ackView.setUint32(4, (pendingAckBytesRef.current & 0x00FFFFFF), true); 
-
-                            try { 
-                                dc.send(rtcAckBufRef.current.buffer as ArrayBuffer); 
-                                pendingAckBytesRef.current = 0; 
-                            } catch(e) {}
-                        }
-                }
-            }
-
-            if (chunkIdx === 0xFFFFFFFF) return; 
-            
-            if (modeRef.current === 'receive') {
-                const pipeIdx = Math.floor(_channelIdx / CHANNELS_PER_PIPE);
-                if (gen !== pipeGenerationRef.current[pipeIdx]) return;
-            }
-
-            if (chunkIdx === 0xFFFFFFFD || chunkIdx === 0xFFFFFFFE) {
-                const payloadCount = (data.byteLength >= 12) ? view.getUint32(8, true) : -1;
-                if (chunkIdx === 0xFFFFFFFD) {
-                    expectedTotalFiles.current = payloadCount;
-                    setStatus('done-waiting'); 
-                    logDebug(`Receiver: Batch EOF received. Expected Files: ${payloadCount}`);
-                    
-                    if (doneWaitingTimeoutRef.current) clearTimeout(doneWaitingTimeoutRef.current);
-                    doneWaitingTimeoutRef.current = setTimeout(() => {
-                        if (statusRef.current === 'done-waiting') setStatus('done');
-                    }, 10000); 
-                } else if (chunkIdx === 0xFFFFFFFE) {
-                    expectedChunksMapRef.current.set(fileIdx, payloadCount);
-                    triggerFileCompletion(fileIdx);
-                } else if (chunkIdx === 0xFFFFFFFB) {
-                    // v02.2.75: Nitro-Completion Trigger
-                    if (modeRef.current === 'send' && statusRef.current === 'done-waiting') {
-                        logDebug("Sender: Received P2P Batch-ACK! Closing Session.");
                         setStatus('done');
-                        isActive.current = false;
-                    }
-                }
-                workerRef.current?.postMessage({
-                    type: 'chunk',
-                    fileIdx: fileIdx,
-                    chunkIdx: chunkIdx,
-                    payloadCount
-                });
-            } else if (chunkIdx === 0xFFFFFFF9) {
-                if (statusRef.current === 'transferring' && receivedFiles.length >= expectedTotalFiles.current && expectedTotalFiles.current !== -1) {
-                    setStatus('done');
-                }
-            } else if (chunkIdx === 0xFFFFFFFC) {
-                const now = Date.now();
-                diagnosticMetricsRef.current.workerLag = now - workerHeartbeatRef.current;
-                workerHeartbeatRef.current = now;
-                logDebug(`Receiver: Symmetry Pulse. Lag=${diagnosticMetricsRef.current.workerLag}ms`);
-            } else if (chunkIdx === 0xFFFFFFFA) {
-                const senderTs = (data.byteLength >= 16) ? view.getBigUint64(8, true) : BigInt(0);
-                if (senderTs > BigInt(0)) {
-                    sendControlMsg({ type: 'chunk-ack', ts: Number(senderTs), pipeIdx: _channelIdx });
-                }
-            } else {
-                // v02.2.10.8: Primary Data Dispatch
-                const incomingMeta = fileMetas.current.get(fileIdx);
-                if (incomingMeta?.isMobile) remoteCapabilityRef.current.isMobile = true;
-
-                if (!reassemblyMapRef.current.has(fileIdx)) {
-                    reassemblyMapRef.current.set(fileIdx, new Set());
-                }
-                reassemblyMapRef.current.get(fileIdx)!.add(chunkIdx);
-                
-                workerRef.current.postMessage({
-                    type: 'chunk',
-                    fileIdx,
-                    chunkIdx,
-                    byteOffset,
-                    originalBuffer: data,
-                    offset: 12
-                }, [data]);
-                
-                triggerFileCompletion(fileIdx);
-            }
-        }
-    };
-
-    // v02.1.39 (Patch 9): Helper logic moved to top-level scope for hoisting safety
-
-    useEffect(() => {
-        if (initialRoom && status === 'disconnected') {
-            const timer = setTimeout(() => joinRoom(initialRoom), 500);
-            return () => clearTimeout(timer);
-        }
-    }, [initialRoom]);
-
-    // v02.1.39 (Patch 23): Robust Reactive Handshake
-    useEffect(() => {
-        let ackTimer: any = null;
-        const totalFilesExpected = expectedTotalFiles.current;
-        const currentCount = reassembledCount.current; // v02.2.10.6b: Use synchronous Ref count
-        
-        // Only send success if we actually have all files reassembled
-        if (mode === 'receive' && (status === 'done' || status === 'done-waiting') && currentCount > 0 && currentCount >= totalFilesExpected) {
-            if (status !== 'done') {
-                logDebug("Receiver: Data fully reassembled. Verifying & Saving...");
-                setStatus('done');
-            }
-            
-            const sendAck = () => {
-                if (statusRef.current === 'done') {
-                    const ackPkt = new Uint8Array(12);
-                    const ackView = new DataView(ackPkt.buffer);
-                    ackView.setUint16(0, 0, true);
-                    ackView.setUint16(2, 0, true);
-                    ackView.setUint32(4, 0xFFFFFFFB, true); // Batch-ACK Pulsar
-                    ackView.setUint32(8, 0, true);
-                    dataChannelsRef.current.forEach(dc => {
-                        if (dc?.readyState === 'open') {
-                            try { dc.send(ackPkt); } catch(e) {}
-                        }
-                    });
-                    
-                    sendControlMsg({ 
-                        type: 'verification-complete', 
-                        status: 'success',
-                        count: currentCount,
-                        fileNames: receivedFiles.map(f => f.name)
-                    });
-                    sendControlMsg({ type: 'batch-ack' });
-                    ackTimer = setTimeout(sendAck, 2000); // v02.2.17: 2s Debounce (ACK Bombing Fix)
+                    })();
                 }
             };
-            sendAck();
-        }
-        return () => { if (ackTimer) clearTimeout(ackTimer); };
-    }, [status, mode, receivedFiles.length, reassembledCount.current]);
+        } catch (err: any) { logDebug(`[OMEGA] Receiver Fatal: ${err.message}`); }
+    };
 
-    // Cleanup WebRTC and WS on unmount
     useEffect(() => {
-        // v02.0.26 Prevent Mobile Sleep
         const handleVisibilityChange = () => {
             if (document.visibilityState === 'hidden') {
-                logDebug("Tab Hidden: Background Resilience Active...");
-                sendControlMsg({ type: 'heartbeat', ts: Date.now(), urgent: true });
-            } else {
-                logDebug("Tab Visible: Restoring full throughput.");
-                sendControlMsg({ type: 'flow', status: 'ready' });
+                logDebug("Tab Hidden: Maintaining persistent streams...");
             }
         };
         document.addEventListener("visibilitychange", handleVisibilityChange);
-
         return () => {
             document.removeEventListener("visibilitychange", handleVisibilityChange);
             disconnectEverything();
         };
     }, []);
 
-    // Smart save: images use native share sheet (-> Google Photos / iOS Library), docs use anchor download
     const isImageFile = (blob: Blob | null, name: string) => {
         if (!blob) return false;
         const imageTypes = ['image/jpeg', 'image/jpg', 'image/png', 'image/gif', 'image/webp', 'image/heic', 'image/heif'];

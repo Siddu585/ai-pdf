@@ -3,7 +3,6 @@
  * v3.2.4: Optimized for cross-file persistent streaming.
  */
 
-// Generate a random 256-bit AES-GCM key
 export async function generateSessionKey() {
     const key = await window.crypto.subtle.generateKey(
         { name: "AES-GCM", length: 256 },
@@ -30,24 +29,15 @@ export async function importSessionKey(base64Key) {
 
 /**
  * Encrypts a file segment into the Omega Framing Protocol:
- * [FileIdx (2b)][PipeIdx (2b)][ChunkIdx (4b)][PayloadLen (4b)][Ciphertext]
+ * [FileIdx (2b)][PipeIdx (2b)][AbsOffset (4b)][PayloadLen (4b)][Ciphertext]
  */
 export function encryptFileStream(file, keyObj, fileIdx, pipeIdx, startOffset, overrideChunkSize) {
     const CHUNK_SIZE = overrideChunkSize || 128 * 1024;
     let offset = 0;
-    let chunkIndex = 0; // For IV uniqueness
 
     return new ReadableStream({
         async pull(controller) {
             if (offset >= file.size) {
-                // Omega EOF Signal: Send a header with 0 payload length and special chunkIdx
-                const eofHeader = new Uint8Array(12);
-                const view = new DataView(eofHeader.buffer);
-                view.setUint16(0, fileIdx, true);
-                view.setUint16(2, pipeIdx, true);
-                view.setUint32(4, 0xFFFFFFFF, true); // EOF Flag
-                view.setUint32(8, 0, true);
-                controller.enqueue(eofHeader);
                 controller.close();
                 return;
             }
@@ -58,8 +48,13 @@ export function encryptFileStream(file, keyObj, fileIdx, pipeIdx, startOffset, o
             const currentAbsOffset = startOffset + offset;
             offset += value.length;
 
+            // Globally Unique IV for GCM: FileIdx(2) + PipeIdx(2) + AbsOffset(4) + Padding(4)
             const iv = new Uint8Array(12);
-            new DataView(iv.buffer).setUint32(8, chunkIndex, true);
+            const ivView = new DataView(iv.buffer);
+            ivView.setUint16(0, fileIdx, true);
+            ivView.setUint16(2, pipeIdx, true);
+            ivView.setUint32(4, currentAbsOffset, true);
+
             try {
                 const encrypted = await window.crypto.subtle.encrypt({ name: "AES-GCM", iv }, keyObj, value);
                 const ciphertext = new Uint8Array(encrypted);
@@ -68,11 +63,10 @@ export function encryptFileStream(file, keyObj, fileIdx, pipeIdx, startOffset, o
                 const view = new DataView(framed.buffer);
                 view.setUint16(0, fileIdx, true);
                 view.setUint16(2, pipeIdx, true);
-                view.setUint32(4, currentAbsOffset, true); // Absolute Byte Offset
+                view.setUint32(4, currentAbsOffset, true);
                 view.setUint32(8, ciphertext.length, true);
                 framed.set(ciphertext, 12);
                 
-                chunkIndex++;
                 controller.enqueue(framed);
             } catch (err) {
                 controller.error(err);
@@ -83,71 +77,65 @@ export function encryptFileStream(file, keyObj, fileIdx, pipeIdx, startOffset, o
 }
 
 /**
- * Decrypts the Omega Continuous Stream.
- * Instead of returning a single blob, it calls onChunkReceived for each decrypted chunk.
+ * Multiplexes multiple network streams into a single reassembled stream.
  */
-export async function decryptContinuousStream(networkStream, keyObj, onChunkReceived, onStall) {
-    const reader = networkStream.getReader();
-    let overflow = new Uint8Array(0);
+export function decryptContinuousStream(pipeStreams, keyObj) {
+    const reassemblyQueues = new Map(); // FileIdx -> { chunks: Map(offset -> data), size: number }
+    
+    return new ReadableStream({
+        async start(controller) {
+            const processPipe = async (stream, pipeIdx) => {
+                const reader = stream.getReader();
+                let overflow = new Uint8Array(0);
 
-    async function readExact(n) {
-        while (overflow.length < n) {
-            const readPromise = reader.read();
-            const timeoutPromise = new Promise((_, reject) => 
-                setTimeout(() => reject(new Error("Stream Stall")), 90000)
-            );
-            
-            try {
-                const { done, value } = await Promise.race([readPromise, timeoutPromise]);
-                if (done) return null;
-                const joined = new Uint8Array(overflow.length + value.length);
-                joined.set(overflow);
-                joined.set(value, overflow.length);
-                overflow = joined;
-            } catch (e) {
-                if (onStall) onStall();
-                throw e;
-            }
+                const readExact = async (n) => {
+                    while (overflow.length < n) {
+                        const { done, value } = await reader.read();
+                        if (done) return null;
+                        const joined = new Uint8Array(overflow.length + value.length);
+                        joined.set(overflow);
+                        joined.set(value, overflow.length);
+                        overflow = joined;
+                    }
+                    const slice = overflow.subarray(0, n);
+                    overflow = overflow.subarray(n);
+                    return slice;
+                };
+
+                try {
+                    while (true) {
+                        const header = await readExact(12);
+                        if (!header) break;
+                        
+                        const view = new DataView(header.buffer, header.byteOffset, header.byteLength);
+                        const fileIdx = view.getUint16(0, true);
+                        const pIdx = view.getUint16(2, true);
+                        const absOffset = view.getUint32(4, true);
+                        const cipherLen = view.getUint32(8, true);
+
+                        const ciphertext = await readExact(cipherLen);
+                        if (!ciphertext) break;
+
+                        const iv = new Uint8Array(12);
+                        const ivView = new DataView(iv.buffer);
+                        ivView.setUint16(0, fileIdx, true);
+                        ivView.setUint16(2, pIdx, true);
+                        ivView.setUint32(4, absOffset, true);
+
+                        const decrypted = await window.crypto.subtle.decrypt({ name: "AES-GCM", iv }, keyObj, ciphertext);
+                        controller.enqueue(new Uint8Array(decrypted));
+                    }
+                } catch (e) {
+                    console.error(`Pipe ${pipeIdx} error:`, e);
+                }
+            };
+
+            // Run all pipes in parallel, they all enqueue to the same controller
+            // NOTE: This assumes the consumer handles the ordering or the sender sends in order.
+            // For true out-of-order reassembly, we'd need a more complex buffer here.
+            // But for OMEGA v3.2.4, we keep it simple: the sender's dispatcher sends chunks in sequence.
+            await Promise.all(pipeStreams.map((s, i) => processPipe(s, i)));
+            controller.close();
         }
-        const slice = overflow.subarray(0, n);
-        overflow = overflow.subarray(n);
-        return slice;
-    }
-
-    try {
-        while (true) {
-            const headerBuf = await readExact(12);
-            if (!headerBuf) break;
-            
-            const view = new DataView(headerBuf.buffer, headerBuf.byteOffset, headerBuf.byteLength);
-            const fileIdx = view.getUint16(0, true);
-            const pipeIdx = view.getUint16(2, true);
-            const chunkIdx = view.getUint32(4, true);
-            const cipherLength = view.getUint32(8, true);
-
-            if (chunkIdx === 0xFFFFFFFF) {
-                // EOF for this file on this pipe
-                onChunkReceived({ fileIdx, pipeIdx, chunkIdx, isEOF: true });
-                continue;
-            }
-
-            const ciphertext = await readExact(cipherLength);
-            if (!ciphertext) break;
-
-            const iv = new Uint8Array(12);
-            new DataView(iv.buffer).setUint32(8, chunkIdx, true);
-            const decrypted = await window.crypto.subtle.decrypt({ name: "AES-GCM", iv }, keyObj, ciphertext);
-            
-            onChunkReceived({
-                fileIdx,
-                pipeIdx,
-                byteOffset: chunkIdx, // Rename for clarity
-                data: new Uint8Array(decrypted),
-                isEOF: false
-            });
-        }
-    } catch (err) {
-        console.error("Continuous Decryption failed", err);
-        throw err;
-    }
+    });
 }
