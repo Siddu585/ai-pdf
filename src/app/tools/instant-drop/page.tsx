@@ -1293,8 +1293,7 @@ ${capturedLogsRef.current.join('\n')}
             filesRef.current = fileList;
             setMode('send');
             setStatus('waiting');
-
-            const { keyObj, keyString } = await generateSessionKey();
+            const { keyObj, keyString } = await (generateSessionKey() as any);
             sessionKeyRef.current = keyObj;
             setCryptoKeyStr(JSON.stringify(Array.from(keyString))); // Handshake needs serializable format
             
