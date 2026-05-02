@@ -18,16 +18,25 @@ export async function generateSessionKey() {
 }
 
 export async function importSessionKey(keyData) {
-    if (keyData instanceof Uint8Array || keyData instanceof ArrayBuffer) {
+    let rawKey = keyData;
+    
+    // Handle JSON-serialized Uint8Array (common in WebSocket messages)
+    if (keyData && typeof keyData === 'object' && !(keyData instanceof Uint8Array) && !(keyData instanceof ArrayBuffer)) {
+        rawKey = new Uint8Array(Object.values(keyData));
+    } else if (Array.isArray(keyData)) {
+        rawKey = new Uint8Array(keyData);
+    }
+
+    if (rawKey instanceof Uint8Array || rawKey instanceof ArrayBuffer) {
         return await window.crypto.subtle.importKey(
             "raw",
-            keyData,
+            rawKey,
             { name: "AES-GCM" },
             true,
             ["encrypt", "decrypt"]
         );
     }
-    return keyData; // Already a CryptoKey
+    return rawKey; // Already a CryptoKey
 }
 
 /**

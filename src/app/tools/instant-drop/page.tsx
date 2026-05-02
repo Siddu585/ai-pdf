@@ -1443,9 +1443,13 @@ ${capturedLogsRef.current.join('\n')}
                                                 ivView.setUint16(2, p, true);
                                                 ivView.setBigUint64(4, fileOffset, true);
 
+                                                if (!sessionKeyRef.current) {
+                                                    logDebug("Î“ÃœÃ¡âˆ©â••Ã… [FATAL] Encryption Key Missing! Aborting Dispatch.");
+                                                    return;
+                                                }
                                                 const ciphertext = await window.crypto.subtle.encrypt(
                                                     { name: "AES-GCM", iv },
-                                                    sessionKeyRef.current!,
+                                                    sessionKeyRef.current,
                                                     value
                                                 );
 
