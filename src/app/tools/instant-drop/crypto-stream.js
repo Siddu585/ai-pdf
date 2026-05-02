@@ -118,9 +118,15 @@ export function decryptContinuousStream(pipeStreams, keyObj) {
                 };
 
                 try {
+                    let firstHeaderRead = false;
                     while (true) {
                         const header = await readExact(12);
                         if (!header) break;
+                        
+                        if (!firstHeaderRead) {
+                            console.log(`[OMEGA-RX] FIRST CHUNK HEADER RECEIVED. DATA PLANE ACTIVE.`);
+                            firstHeaderRead = true;
+                        }
                         
                         const view = new DataView(header.buffer, header.byteOffset, header.byteLength);
                         const fileIdx = view.getUint16(0, true);

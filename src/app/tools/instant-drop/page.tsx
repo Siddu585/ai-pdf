@@ -43,7 +43,7 @@ const CLOUDFLARE_RELAY_URL = 'https://turbodrop-stream-relay.siddhantjangam33.wo
 // v02.2.63 (Tachyon Omega - Zenith Surgical) - 5 Surgical Patches (Rollback Debounce, Migration Guard, Active BDP Gate, MTU Floor Removal, NACK Throttling)
 // v02.2.64 (Tachyon Omega - Gate Unblocker) - GPE 8MB Floor Removal + ICE-based activePipeCount + Unified BDP Formula
 // v02.2.65 (Tachyon Omega - MTU Shield) - File-start MTU grace period + Permanent pipe retirement + Dispatch rate telemetry
-const VERSION = "v3.2.7 (Omega Hardened - Zero-Stall)";
+const VERSION = "v3.2.7b (Omega Hardened - No Oversight)";
 
 
 function getEngineConfig(engine: 'M2M' | 'HYBRID' | 'NITRO') {
@@ -1329,6 +1329,8 @@ ${capturedLogsRef.current.join('\n')}
                 if (data.type === 'peer-connected') {
                     logDebug("[OMEGA] Peer Detected. Dispatching Handshake...");
                     sendHandshake();
+                    // v3.2.7b: Hard-sync pipe configuration
+                    sendControlMsg({ type: 'pipe-config', pipes: 2 });
                 }
                 
                 if (data.type === 'receiver-ready') {
@@ -1401,11 +1403,18 @@ ${capturedLogsRef.current.join('\n')}
                                             const { done, value } = await reader.read();
                                             if (done) break;
                                             if (pipeControllersRef.current[p]) {
-                                                // v3.2.6c: Backpressure Guard - If internal buffer is full, wait 100ms
-                                                if (((pipeControllersRef.current[p] as any).desiredSize || 0) <= 0) {
+                                                // v3.2.7b: GPE Backpressure Gating (Hard Limit: 16MB per pipe)
+                                                // This ensures the UI speed is honest and prevents browser memory saturation.
+                                                while (((pipeControllersRef.current[p] as any).desiredSize || 0) <= 0) {
                                                     await new Promise(r => setTimeout(r, 100));
                                                 }
+                                                
                                                 pipeControllersRef.current[p].enqueue(value);
+                                                diagnosticMetricsRef.current.packetsSent++;
+                                                
+                                                if (diagnosticMetricsRef.current.packetsSent % 100 === 0) {
+                                                    logDebug(`[OMEGA] Data Plane Pulse: ${diagnosticMetricsRef.current.packetsSent} packets pushed.`);
+                                                }
                                             }
                                             totalSentBytesRef.current += value.length;
                                             setTotalSentBytes(totalSentBytesRef.current);
@@ -1476,8 +1485,13 @@ ${capturedLogsRef.current.join('\n')}
                     setStatus('transferring');
                     
                     const NUM_PIPES = 2;
+                    // v3.2.7b: Initialization Guard
+                    if (pipeControllersRef.current.length > 0) {
+                        logDebug("[OMEGA] Pipes already initialized. Skipping redundant setup.");
+                        return;
+                    }
+                    
                     logDebug(`[OMEGA RECEIVER] Initializing 2 Persistent Pipes: ${normalizedRoom}`);
-                    pipeControllersRef.current = [];
                     
                     // v3.2.7: NO-OVERSIGHT SYNC - Signal ready FIRST, then open pipes.
                     // This prevents the handshake deadlock where both sides wait for each other.
