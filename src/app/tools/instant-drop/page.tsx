@@ -43,7 +43,7 @@ const CLOUDFLARE_RELAY_URL = 'https://turbodrop-stream-relay.siddhantjangam33.wo
 // v02.2.63 (Tachyon Omega - Zenith Surgical) - 5 Surgical Patches (Rollback Debounce, Migration Guard, Active BDP Gate, MTU Floor Removal, NACK Throttling)
 // v02.2.64 (Tachyon Omega - Gate Unblocker) - GPE 8MB Floor Removal + ICE-based activePipeCount + Unified BDP Formula
 // v02.2.65 (Tachyon Omega - MTU Shield) - File-start MTU grace period + Permanent pipe retirement + Dispatch rate telemetry
-const VERSION = "v3.2.6d (Omega Hardened - Stable)";
+const VERSION = "v3.2.7 (Omega Hardened - Zero-Stall)";
 
 
 function getEngineConfig(engine: 'M2M' | 'HYBRID' | 'NITRO') {
@@ -1374,8 +1374,9 @@ ${capturedLogsRef.current.join('\n')}
                             let absoluteOffset = 0;
                             const totalBytes = fileList.reduce((a, f) => a + f.size, 0);
                             
-                            // v3.2.6d: 1.5s Stabilization Delay to ensure browser connections are primed
+                            // v3.2.7: 1.5s Stabilization Delay to ensure browser connections are primed
                             await new Promise(r => setTimeout(r, 1500));
+                            logDebug("[OMEGA] Stabilization Complete. Starting Dispatch Loop...");
                             
                             for (let i = 0; i < fileList.length; i++) {
                                 const file = fileList[i];
@@ -1469,58 +1470,61 @@ ${capturedLogsRef.current.join('\n')}
                 
                 if (data.type === 'sender-ready' && data.sessionKey) {
                     if (statusRef.current === 'transferring') return; // Anti-Bounce
-                    logDebug(`[OMEGA RECEIVER] Handshake Verified. Syncing Pipes...`);
-                    const filesInfo = data.files;
                     const sessionKey = data.sessionKey;
+                    const filesInfo = data.files;
                     setTotalFiles(filesInfo.length);
                     setStatus('transferring');
                     
                     const NUM_PIPES = 2;
-                    logDebug(`[OMEGA RECEIVER] Initializing ${NUM_PIPES} Persistent Pipes: ${normalizedRoom}`);
+                    logDebug(`[OMEGA RECEIVER] Initializing 2 Persistent Pipes: ${normalizedRoom}`);
                     pipeControllersRef.current = [];
                     
+                    // v3.2.7: NO-OVERSIGHT SYNC - Signal ready FIRST, then open pipes.
+                    // This prevents the handshake deadlock where both sides wait for each other.
+                    if (ws.readyState === WebSocket.OPEN) {
+                        logDebug(`[OMEGA] Signaling Receiver-Ready over WebSocket...`);
+                        ws.send(JSON.stringify({ type: 'receiver-ready' }));
+                    }
+
                     const establishPipes = async () => {
-                        const streams: ReadableStream[] = [];
+                        logDebug(`[OMEGA] Establishing ${NUM_PIPES} Parallel Pipes...`);
+                        const pipePromises = [];
                         for(let p=0; p<NUM_PIPES; p++) {
-                            let retryCount = 0;
-                            let stream: ReadableStream | null = null;
-                            while (!stream && retryCount < 5) {
-                                try {
-                                    const res = await fetch(`${CLOUDFLARE_RELAY_URL}/${normalizedRoom}/${p}`);
-                                    if (res.ok) {
-                                        stream = res.body!;
-                                    } else {
-                                        logDebug(`Î“ÃœÃ¡âˆ©â••Ã… [PIPE ${p}] Failed (Status ${res.status}). Retrying...`);
-                                        await new Promise(r => setTimeout(r, 1000));
-                                        retryCount++;
+                            pipePromises.push((async () => {
+                                let retryCount = 0;
+                                while (retryCount < 5) {
+                                    try {
+                                        logDebug(`[PIPE ${p}] Fetching Relay Stream...`);
+                                        const res = await fetch(`${CLOUDFLARE_RELAY_URL}/${normalizedRoom}/${p}`);
+                                        if (res.ok) {
+                                            logDebug(`[PIPE ${p}] RELAY CONNECTED (Status 200).`);
+                                            return res.body!;
+                                        }
+                                        logDebug(`[PIPE ${p}] Relay Rejected (Status ${res.status}). Retrying...`);
+                                    } catch (e) {
+                                        logDebug(`[PIPE ${p}] Fetch Error: ${e}. Retrying...`);
                                     }
-                                } catch (e) {
-                                    logDebug(`Î“ÃœÃ¡âˆ©â••Ã… [PIPE ${p}] Error. Retrying...`);
                                     await new Promise(r => setTimeout(r, 1000));
                                     retryCount++;
                                 }
-                            }
-                            if (stream) streams.push(stream);
+                                return null;
+                            })());
                         }
-                        return streams;
+                        return (await Promise.all(pipePromises)).filter(s => s !== null);
                     };
 
                     const pipeStreams = await establishPipes();
+                    logDebug(`[OMEGA] Sync Complete. ${pipeStreams.length} Pipes Active.`);
 
                     if (pipeStreams.length < NUM_PIPES) {
-                        logDebug(`Î“ÃœÃ¡âˆ©â••Ã… [OMEGA] Only ${pipeStreams.length}/${NUM_PIPES} pipes ready. Deadlock likely.`);
+                        logDebug(`Î“ÃœÃ¡âˆ©â••Ã… [OMEGA] Warning: Degraded Pipe Count (${pipeStreams.length}/${NUM_PIPES}).`);
                         if (pipeStreams.length === 0) {
                             setStatus('disconnected');
                             return;
                         }
                     }
 
-                    // v3.2.6c: ONLY signal ready once pipes are established
-                    if (ws.readyState === WebSocket.OPEN) {
-                        ws.send(JSON.stringify({ type: 'receiver-ready' }));
-                    }
-
-                    const keyObj = await importSessionKey(sessionKey);
+                    const keyObj = await importSessionKey(data.sessionKey);
 
                     // Reassembly Loop
                     (async () => {
