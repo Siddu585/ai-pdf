@@ -43,7 +43,7 @@ const CLOUDFLARE_RELAY_URL = 'https://turbodrop-stream-relay.siddhantjangam33.wo
 // v02.2.63 (Tachyon Omega - Zenith Surgical) - 5 Surgical Patches (Rollback Debounce, Migration Guard, Active BDP Gate, MTU Floor Removal, NACK Throttling)
 // v02.2.64 (Tachyon Omega - Gate Unblocker) - GPE 8MB Floor Removal + ICE-based activePipeCount + Unified BDP Formula
 // v02.2.65 (Tachyon Omega - MTU Shield) - File-start MTU grace period + Permanent pipe retirement + Dispatch rate telemetry
-const VERSION = "v3.2.6c (Omega Hardened - Stable)";
+const VERSION = "v3.2.6d (Omega Hardened - Stable)";
 
 
 function getEngineConfig(engine: 'M2M' | 'HYBRID' | 'NITRO') {
@@ -1339,7 +1339,7 @@ ${capturedLogsRef.current.join('\n')}
                     if (pulseIntervalRef.current) clearInterval(pulseIntervalRef.current);
                     setStatus('transferring');
                     
-                    const NUM_PIPES = 4; // Absolute Safety Floor for Mobile (4 Pipes + WS + UI)
+                    const NUM_PIPES = 2; // Ultra-Safe Deadlock Prevention for Mobile (2 Pipes + WS + UI)
                     logDebug(`[OMEGA SENDER] Initializing ${NUM_PIPES} Persistent Pipes: ${finalRoomId}`);
                     pipeControllersRef.current = [];
 
@@ -1348,7 +1348,7 @@ ${capturedLogsRef.current.join('\n')}
                             start(controller) {
                                 pipeControllersRef.current[p] = controller;
                             }
-                        });
+                        }, { highWaterMark: 1 });
 
                         (async (pIdx) => {
                             try {
@@ -1373,6 +1373,9 @@ ${capturedLogsRef.current.join('\n')}
                         try {
                             let absoluteOffset = 0;
                             const totalBytes = fileList.reduce((a, f) => a + f.size, 0);
+                            
+                            // v3.2.6d: 1.5s Stabilization Delay to ensure browser connections are primed
+                            await new Promise(r => setTimeout(r, 1500));
                             
                             for (let i = 0; i < fileList.length; i++) {
                                 const file = fileList[i];
@@ -1472,7 +1475,7 @@ ${capturedLogsRef.current.join('\n')}
                     setTotalFiles(filesInfo.length);
                     setStatus('transferring');
                     
-                    const NUM_PIPES = 4;
+                    const NUM_PIPES = 2;
                     logDebug(`[OMEGA RECEIVER] Initializing ${NUM_PIPES} Persistent Pipes: ${normalizedRoom}`);
                     pipeControllersRef.current = [];
                     
