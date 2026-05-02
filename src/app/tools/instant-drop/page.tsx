@@ -43,7 +43,7 @@ const CLOUDFLARE_RELAY_URL = 'https://turbodrop-stream-relay.siddhantjangam33.wo
 // v02.2.63 (Tachyon Omega - Zenith Surgical) - 5 Surgical Patches (Rollback Debounce, Migration Guard, Active BDP Gate, MTU Floor Removal, NACK Throttling)
 // v02.2.64 (Tachyon Omega - Gate Unblocker) - GPE 8MB Floor Removal + ICE-based activePipeCount + Unified BDP Formula
 // v02.2.65 (Tachyon Omega - MTU Shield) - File-start MTU grace period + Permanent pipe retirement + Dispatch rate telemetry
-const VERSION = "v3.2.8 (Omega Hardened - Stable)";
+const VERSION = "v3.2.9 (Omega Hardened - Forensic)";
 
 
 function getEngineConfig(engine: 'M2M' | 'HYBRID' | 'NITRO') {
@@ -249,6 +249,8 @@ const [engineMode, setEngineMode] = useState<'M2M' | 'HYBRID' | 'NITRO'>('NITRO'
     });
     const [diagnosticMetrics, setDiagnosticMetrics] = useState(diagnosticMetricsRef.current); // v02.2.29: Corrected Init Order
     const pipeLatenciesRef = useRef<number[]>(new Array(PIPES).fill(0));
+    const pipeTrafficRef = useRef<number[]>(new Array(PIPES).fill(0)); // v3.2.9: Chunk counter per pipe
+    const pipePairingStateRef = useRef<string[]>(new Array(PIPES).fill('idle')); // v3.2.9: [idle, connected, error, stalled]
     const eventLoopIntervalRef = useRef<any>(null);
     const workerHeartbeatRef = useRef<number>(Date.now()); // v02.2.08: Worker Pulse
     const reassembledCount = useRef(0);
@@ -1352,21 +1354,35 @@ ${capturedLogsRef.current.join('\n')}
                         const stream = new ReadableStream({
                             start(controller) {
                                 pipeControllersRef.current[p] = controller;
+                                pipePairingStateRef.current[p] = 'connected';
+                                logDebug(`[OMEGA] Pipe-${p} Controller Primed. Ready for Ignition.`);
                             }
                         }, { highWaterMark: 1 });
 
                         (async (pIdx) => {
-                            try {
-                                const res = await fetch(`${CLOUDFLARE_RELAY_URL}/${finalRoomId}/${pIdx}`, {
-                                    method: 'POST',
-                                    body: stream,
-                                    //@ts-ignore
-                                    duplex: 'half'
-                                });
-                                if (!res.ok) logDebug(`Î“ÃœÃ¡âˆ©â••Ã… [PIPE] POST Failed on Pipe ${pIdx}: ${res.status}`);
-                            } catch (err: any) {
-                                logDebug(`Î“ÃœÃ¡âˆ©â••Ã… [PIPE] Fatal on Pipe ${pIdx}: ${err.message}`);
+                            let retryCount = 0;
+                            while (retryCount < 5) {
+                                try {
+                                    logDebug(`[OMEGA] Pipe-${pIdx} Launching POST Bridge...`);
+                                    const res = await fetch(`${CLOUDFLARE_RELAY_URL}/${finalRoomId}/${pIdx}`, {
+                                        method: 'POST',
+                                        body: stream,
+                                        //@ts-ignore
+                                        duplex: 'half'
+                                    });
+                                    if (res.ok) {
+                                        logDebug(`[OMEGA] Pipe-${pIdx} BRIDGE ESTABLISHED (200 OK).`);
+                                        break;
+                                    } else {
+                                        logDebug(`[OMEGA] Pipe-${pIdx} Bridge Rejected: ${res.status}. Retrying...`);
+                                    }
+                                } catch (e: any) {
+                                    logDebug(`[OMEGA] Pipe-${pIdx} Bridge Fatal: ${e.message}. Retrying...`);
+                                }
+                                await new Promise(r => setTimeout(r, 1000));
+                                retryCount++;
                             }
+                            if (retryCount >= 5) pipePairingStateRef.current[pIdx] = 'error';
                         })(p);
                     }
 
@@ -1383,6 +1399,22 @@ ${capturedLogsRef.current.join('\n')}
                             await new Promise(r => setTimeout(r, 1500));
                             logDebug("[OMEGA] Stabilization Complete. Starting Dispatch Loop...");
                             
+                            // v3.2.9: OMEGA Traffic Heartbeat (Keep-Alive)
+                            const heartbeatInterval = setInterval(() => {
+                                for (let p = 0; p < NUM_PIPES; p++) {
+                                    if (pipeControllersRef.current[p] && ((pipeControllersRef.current[p] as any).desiredSize || 0) > 0) {
+                                        // Send a synthetic 'heartbeat' chunk if idle (fileIdx: 0xFFFF, cipherLen: 0)
+                                        const hb = new Uint8Array(16); 
+                                        const hbView = new DataView(hb.buffer);
+                                        hbView.setUint16(0, 0xFFFF, true); 
+                                        hbView.setUint16(2, p, true);
+                                        hbView.setBigUint64(4, BigInt(0), true);
+                                        hbView.setUint32(12, 0, true);
+                                        pipeControllersRef.current[p].enqueue(hb);
+                                    }
+                                }
+                            }, 10000);
+
                             for (let i = 0; i < fileList.length; i++) {
                                 const file = fileList[i];
                                 logDebug(`[OMEGA] Dispatching: ${file.name}`);

@@ -119,8 +119,13 @@ export function decryptContinuousStream(pipeStreams, keyObj) {
                         const absOffset = view.getBigUint64(4, true);
                         const cipherLen = view.getUint32(12, true);
 
-                        const ciphertext = await readExact(cipherLen);
-                        if (!ciphertext) break;
+                        const ciphertext = cipherLen > 0 ? await readExact(cipherLen) : new Uint8Array(0);
+                        if (cipherLen > 0 && !ciphertext) break;
+
+                        if (fileIdx === 0xFFFF) {
+                            // Keep-alive pulse
+                            continue;
+                        }
 
                         const iv = new Uint8Array(12);
                         const ivView = new DataView(iv.buffer);
