@@ -115,6 +115,7 @@ const [engineMode, setEngineMode] = useState<'M2M' | 'HYBRID' | 'NITRO'>('NITRO'
     const [receivedFiles, setReceivedFiles] = useState<{ blob: Blob | null, name: string }[]>([]);
     const [incomingMeta, setIncomingMeta] = useState<any>(null); // New state for reactive UI labels
     const [totalSentBytes, setTotalSentBytes] = useState(0);
+    const [totalReceivedBytes, setTotalReceivedBytes] = useState(0);
     const [isStaleVersion, setIsStaleVersion] = useState(false);
     const [useEmergencyTunnel, setUseEmergencyTunnel] = useState(false); // v02.2.40 Fallback
     const [signalId] = useState(() => Math.floor(100000 + Math.random() * 900000).toString()); // v02.2.42
@@ -216,6 +217,7 @@ const [engineMode, setEngineMode] = useState<'M2M' | 'HYBRID' | 'NITRO'>('NITRO'
     const lastProgressTimeRef = useRef<number>(Date.now()); // v02.1.77: Deadlock Buster
     const lastChannelIndexRef = useRef(0); // v02.2.71: Persistent Round Robin
     const pipeControllersRef = useRef<ReadableStreamDefaultController[]>([]); // v3.2.4: Omega Persistent Controllers
+    const sessionKeyRef = useRef<CryptoKey | null>(null);
     
     // v02.2.68: Fix 3 & 5 â€” Performance Caching Refs
     const cachedOpenChannelsRef = useRef<RTCDataChannel[] | null>(null);
@@ -1291,7 +1293,8 @@ ${capturedLogsRef.current.join('\n')}
             setStatus('waiting');
 
             const { keyObj, keyString } = await generateSessionKey();
-            setCryptoKeyStr(keyString);
+            sessionKeyRef.current = keyObj;
+            setCryptoKeyStr(JSON.stringify(Array.from(keyString))); // Handshake needs serializable format
             
             const finalRoomId = (roomRef.current || Math.floor(100000 + Math.random() * 900000).toString()).toUpperCase().trim();
             setRoomId(finalRoomId);
@@ -1588,7 +1591,7 @@ ${capturedLogsRef.current.join('\n')}
                                 acc.received += chunk.length;
                                 acc.nextOffset += BigInt(chunk.length);
                                 
-                                setTotalReceivedBytes(prev => prev + chunk.length);
+                                setTotalReceivedBytes((prev: number) => prev + chunk.length);
                                 
                                 if (acc.received >= acc.info.size) {
                                     acc.completed = true;

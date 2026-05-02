@@ -8,11 +8,13 @@
 const CHUNK_SIZE = 128 * 1024; // 128KB
 
 export async function generateSessionKey() {
-    return await window.crypto.subtle.generateKey(
+    const key = await window.crypto.subtle.generateKey(
         { name: "AES-GCM", length: 256 },
         true,
         ["encrypt", "decrypt"]
     );
+    const raw = await window.crypto.subtle.exportKey("raw", key);
+    return { keyObj: key, keyString: new Uint8Array(raw) };
 }
 
 export async function importSessionKey(keyData) {
