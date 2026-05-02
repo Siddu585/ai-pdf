@@ -43,7 +43,7 @@ const CLOUDFLARE_RELAY_URL = 'https://turbodrop-stream-relay.siddhantjangam33.wo
 // v02.2.63 (Tachyon Omega - Zenith Surgical) - 5 Surgical Patches (Rollback Debounce, Migration Guard, Active BDP Gate, MTU Floor Removal, NACK Throttling)
 // v02.2.64 (Tachyon Omega - Gate Unblocker) - GPE 8MB Floor Removal + ICE-based activePipeCount + Unified BDP Formula
 // v02.2.65 (Tachyon Omega - MTU Shield) - File-start MTU grace period + Permanent pipe retirement + Dispatch rate telemetry
-const VERSION = "v3.2.6 (Omega Hardened - Stable)";
+const VERSION = "v3.2.6b (Omega Hardened - Stable)";
 
 
 function getEngineConfig(engine: 'M2M' | 'HYBRID' | 'NITRO') {
@@ -1339,7 +1339,8 @@ ${capturedLogsRef.current.join('\n')}
                     if (pulseIntervalRef.current) clearInterval(pulseIntervalRef.current);
                     setStatus('transferring');
                     
-                    const NUM_PIPES = 6; // Optimized for mobile browser limits
+                    const NUM_PIPES = 4; // Absolute Safety Floor for Mobile (4 Pipes + WS + UI)
+                    logDebug(`[OMEGA SENDER] Initializing ${NUM_PIPES} Persistent Pipes: ${finalRoomId}`);
                     pipeControllersRef.current = [];
 
                     for (let p = 0; p < NUM_PIPES; p++) {
@@ -1396,6 +1397,10 @@ ${capturedLogsRef.current.join('\n')}
                                             const { done, value } = await reader.read();
                                             if (done) break;
                                             if (pipeControllersRef.current[p]) {
+                                                // v3.2.6b: Backpressure Guard - If internal buffer is full, wait 50ms
+                                                if (((pipeControllersRef.current[p] as any).desiredSize || 0) <= 0) {
+                                                    await new Promise(r => setTimeout(r, 50));
+                                                }
                                                 pipeControllersRef.current[p].enqueue(value);
                                             }
                                             totalSentBytesRef.current += value.length;
@@ -1467,7 +1472,8 @@ ${capturedLogsRef.current.join('\n')}
                     setTotalFiles(filesInfo.length);
                     setStatus('transferring');
                     
-                    const NUM_PIPES = 6;
+                    const NUM_PIPES = 4;
+                    logDebug(`[OMEGA RECEIVER] Initializing ${NUM_PIPES} Persistent Pipes: ${normalizedRoom}`);
                     pipeControllersRef.current = [];
                     const pipePromises = [];
                     for(let p=0; p<NUM_PIPES; p++) {
@@ -1484,6 +1490,8 @@ ${capturedLogsRef.current.join('\n')}
                         );
                     }
 
+                    // v3.2.6b: Wait for at least half the pipes to be ready before starting reassembly
+                    // This prevents deadlocks if some pipes are stuck in browser queue
                     const pipeStreams = (await Promise.all(pipePromises)).filter(s => s !== null);
 
                     if (pipeStreams.length === 0) {
