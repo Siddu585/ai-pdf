@@ -43,7 +43,7 @@ const CLOUDFLARE_RELAY_URL = 'https://turbodrop-stream-relay.siddhantjangam33.wo
 // v02.2.63 (Tachyon Omega - Zenith Surgical) - 5 Surgical Patches (Rollback Debounce, Migration Guard, Active BDP Gate, MTU Floor Removal, NACK Throttling)
 // v02.2.64 (Tachyon Omega - Gate Unblocker) - GPE 8MB Floor Removal + ICE-based activePipeCount + Unified BDP Formula
 // v02.2.65 (Tachyon Omega - MTU Shield) - File-start MTU grace period + Permanent pipe retirement + Dispatch rate telemetry
-const VERSION = "v3.2.6b (Omega Hardened - Stable)";
+const VERSION = "v3.2.6c (Omega Hardened - Stable)";
 
 
 function getEngineConfig(engine: 'M2M' | 'HYBRID' | 'NITRO') {
@@ -1397,9 +1397,9 @@ ${capturedLogsRef.current.join('\n')}
                                             const { done, value } = await reader.read();
                                             if (done) break;
                                             if (pipeControllersRef.current[p]) {
-                                                // v3.2.6b: Backpressure Guard - If internal buffer is full, wait 50ms
+                                                // v3.2.6c: Backpressure Guard - If internal buffer is full, wait 100ms
                                                 if (((pipeControllersRef.current[p] as any).desiredSize || 0) <= 0) {
-                                                    await new Promise(r => setTimeout(r, 50));
+                                                    await new Promise(r => setTimeout(r, 100));
                                                 }
                                                 pipeControllersRef.current[p].enqueue(value);
                                             }
@@ -1467,38 +1467,57 @@ ${capturedLogsRef.current.join('\n')}
                 if (data.type === 'sender-ready' && data.sessionKey) {
                     if (statusRef.current === 'transferring') return; // Anti-Bounce
                     logDebug(`[OMEGA RECEIVER] Handshake Verified. Syncing Pipes...`);
-                    const keyObj = await importSessionKey(data.sessionKey);
                     const filesInfo = data.files;
+                    const sessionKey = data.sessionKey;
                     setTotalFiles(filesInfo.length);
                     setStatus('transferring');
                     
                     const NUM_PIPES = 4;
                     logDebug(`[OMEGA RECEIVER] Initializing ${NUM_PIPES} Persistent Pipes: ${normalizedRoom}`);
                     pipeControllersRef.current = [];
-                    const pipePromises = [];
-                    for(let p=0; p<NUM_PIPES; p++) {
-                        pipePromises.push(
-                            fetch(`${CLOUDFLARE_RELAY_URL}/${normalizedRoom}/${p}`)
-                                .then(res => {
-                                    if (!res.ok) throw new Error(`Pipe ${p} Failed: ${res.status}`);
-                                    return res.body!;
-                                })
-                                .catch(err => {
-                                    logDebug(`Î“ÃœÃ¡âˆ©â••Ã… [PIPE] GET Failed: ${err.message}`);
-                                    return null;
-                                })
-                        );
+                    
+                    const establishPipes = async () => {
+                        const streams: ReadableStream[] = [];
+                        for(let p=0; p<NUM_PIPES; p++) {
+                            let retryCount = 0;
+                            let stream: ReadableStream | null = null;
+                            while (!stream && retryCount < 5) {
+                                try {
+                                    const res = await fetch(`${CLOUDFLARE_RELAY_URL}/${normalizedRoom}/${p}`);
+                                    if (res.ok) {
+                                        stream = res.body!;
+                                    } else {
+                                        logDebug(`Î“ÃœÃ¡âˆ©â••Ã… [PIPE ${p}] Failed (Status ${res.status}). Retrying...`);
+                                        await new Promise(r => setTimeout(r, 1000));
+                                        retryCount++;
+                                    }
+                                } catch (e) {
+                                    logDebug(`Î“ÃœÃ¡âˆ©â••Ã… [PIPE ${p}] Error. Retrying...`);
+                                    await new Promise(r => setTimeout(r, 1000));
+                                    retryCount++;
+                                }
+                            }
+                            if (stream) streams.push(stream);
+                        }
+                        return streams;
+                    };
+
+                    const pipeStreams = await establishPipes();
+
+                    if (pipeStreams.length < NUM_PIPES) {
+                        logDebug(`Î“ÃœÃ¡âˆ©â••Ã… [OMEGA] Only ${pipeStreams.length}/${NUM_PIPES} pipes ready. Deadlock likely.`);
+                        if (pipeStreams.length === 0) {
+                            setStatus('disconnected');
+                            return;
+                        }
                     }
 
-                    // v3.2.6b: Wait for at least half the pipes to be ready before starting reassembly
-                    // This prevents deadlocks if some pipes are stuck in browser queue
-                    const pipeStreams = (await Promise.all(pipePromises)).filter(s => s !== null);
-
-                    if (pipeStreams.length === 0) {
-                        logDebug("Î“ÃœÃ¡âˆ©â••Ã… [OMEGA] No Pipes connected. Aborting.");
-                        setStatus('disconnected');
-                        return;
+                    // v3.2.6c: ONLY signal ready once pipes are established
+                    if (ws.readyState === WebSocket.OPEN) {
+                        ws.send(JSON.stringify({ type: 'receiver-ready' }));
                     }
+
+                    const keyObj = await importSessionKey(sessionKey);
 
                     // Reassembly Loop
                     (async () => {
