@@ -43,7 +43,7 @@ const CLOUDFLARE_RELAY_URL = 'https://turbodrop-stream-relay.siddhantjangam33.wo
 // v02.2.63 (Tachyon Omega - Zenith Surgical) - 5 Surgical Patches (Rollback Debounce, Migration Guard, Active BDP Gate, MTU Floor Removal, NACK Throttling)
 // v02.2.64 (Tachyon Omega - Gate Unblocker) - GPE 8MB Floor Removal + ICE-based activePipeCount + Unified BDP Formula
 // v02.2.65 (Tachyon Omega - MTU Shield) - File-start MTU grace period + Permanent pipe retirement + Dispatch rate telemetry
-const VERSION = "v3.2.7b (Omega Hardened - No Oversight)";
+const VERSION = "v3.2.8 (Omega Hardened - Stable)";
 
 
 function getEngineConfig(engine: 'M2M' | 'HYBRID' | 'NITRO') {
@@ -1373,7 +1373,7 @@ ${capturedLogsRef.current.join('\n')}
                     // Continuous Dispatcher
                     (async () => {
                         try {
-                            let absoluteOffset = 0;
+                            let totalSent = BigInt(0);
                             const totalBytes = fileList.reduce((a, f) => a + f.size, 0);
                             
                             // v3.2.7: 1.5s Stabilization Delay to ensure browser connections are primed
@@ -1385,19 +1385,11 @@ ${capturedLogsRef.current.join('\n')}
                                 logDebug(`[OMEGA] Dispatching: ${file.name}`);
                                 setCurrentFileIndex(i);
                                 
-                                const partSize = Math.ceil(file.size / NUM_PIPES);
+                                const reader = file.stream().getReader();
+                                let fileOffset = BigInt(0);
+                                
                                 const filePartPromises = [];
-
                                 for (let p = 0; p < NUM_PIPES; p++) {
-                                    const start = p * partSize;
-                                    const end = Math.min(file.size, (p + 1) * partSize);
-                                    if (start >= file.size && p > 0) continue;
-
-                                    const slice = file.slice(start, end);
-                                    // Encryption logic stays same
-                                    const fileStream = encryptFileStream(slice, keyObj, i, p, start, 256 * 1024);
-                                    const reader = fileStream.getReader();
-
                                     filePartPromises.push((async () => {
                                         while (true) {
                                             const { done, value } = await reader.read();
@@ -1406,19 +1398,41 @@ ${capturedLogsRef.current.join('\n')}
                                                 // v3.2.7b: GPE Backpressure Gating (Hard Limit: 16MB per pipe)
                                                 // This ensures the UI speed is honest and prevents browser memory saturation.
                                                 while (((pipeControllersRef.current[p] as any).desiredSize || 0) <= 0) {
-                                                    await new Promise(r => setTimeout(r, 100));
+                                                    await new Promise(r => setTimeout(r, 10));
                                                 }
                                                 
-                                                pipeControllersRef.current[p].enqueue(value);
+                                                // 16-byte OMEGA Frame: [fileIdx:2][pIdx:2][absOffset:8][cipherLen:4]
+                                                const iv = new Uint8Array(12);
+                                                const ivView = new DataView(iv.buffer);
+                                                ivView.setUint16(0, i, true);
+                                                ivView.setUint16(2, p, true);
+                                                ivView.setBigUint64(4, fileOffset, true);
+
+                                                const ciphertext = await window.crypto.subtle.encrypt(
+                                                    { name: "AES-GCM", iv },
+                                                    sessionKeyRef.current!,
+                                                    value
+                                                );
+
+                                                const cipherBytes = new Uint8Array(ciphertext);
+                                                const header = new Uint8Array(16);
+                                                const headerView = new DataView(header.buffer);
+                                                headerView.setUint16(0, i, true);
+                                                headerView.setUint16(2, p, true);
+                                                headerView.setBigUint64(4, fileOffset, true);
+                                                headerView.setUint32(12, cipherBytes.length, true);
+
+                                                const frame = new Uint8Array(header.length + cipherBytes.length);
+                                                frame.set(header);
+                                                frame.set(cipherBytes, header.length);
+
+                                                pipeControllersRef.current[p].enqueue(frame);
+                                                fileOffset += BigInt(value.length);
+                                                totalSent += BigInt(value.length);
                                                 diagnosticMetricsRef.current.packetsSent++;
-                                                
-                                                if (diagnosticMetricsRef.current.packetsSent % 100 === 0) {
-                                                    logDebug(`[OMEGA] Data Plane Pulse: ${diagnosticMetricsRef.current.packetsSent} packets pushed.`);
-                                                }
                                             }
-                                            totalSentBytesRef.current += value.length;
-                                            setTotalSentBytes(totalSentBytesRef.current);
-                                            setProgress(Math.round((totalSentBytesRef.current / totalBytes) * 100));
+                                            setTotalSentBytes(Number(totalSent));
+                                            setProgress(Math.round((Number(totalSent) / totalBytes) * 100));
                                         }
                                     })());
                                 }
@@ -1484,7 +1498,7 @@ ${capturedLogsRef.current.join('\n')}
                     setTotalFiles(filesInfo.length);
                     setStatus('transferring');
                     
-                    const NUM_PIPES = 2;
+                    const NUM_PIPES = data.pipes || 2;
                     // v3.2.7b: Initialization Guard
                     if (pipeControllersRef.current.length > 0) {
                         logDebug("[OMEGA] Pipes already initialized. Skipping redundant setup.");
@@ -1544,27 +1558,51 @@ ${capturedLogsRef.current.join('\n')}
                     (async () => {
                         const muxed = decryptContinuousStream(pipeStreams, keyObj);
                         const reader = muxed.getReader();
-                        const resultFiles = [];
+                        const fileAccumulators = new Map();
+                        filesInfo.forEach((f: any, idx: number) => {
+                            fileAccumulators.set(idx, {
+                                info: f,
+                                received: 0,
+                                nextOffset: BigInt(0),
+                                chunks: new Map(),
+                                dataChunks: [],
+                                completed: false
+                            });
+                        });
                         
-                        for (let i = 0; i < filesInfo.length; i++) {
-                            const info = filesInfo[i];
-                            logDebug(`[OMEGA] Reassembling: ${info.name}`);
-                            setCurrentFileIndex(i);
+                        while (true) {
+                            const { done, value } = await reader.read();
+                            if (done) break;
                             
-                            const chunks = [];
-                            let received = 0;
-                            while (received < info.size) {
-                                const { done, value } = await reader.read();
-                                if (done) break;
-                                chunks.push(value);
-                                received += value.length;
-                                totalReceivedBytesRef.current += value.length;
-                                setProgress(Math.round((received / info.size) * 100));
+                            const { fileIdx, absOffset, data } = value as any;
+                            const acc = fileAccumulators.get(fileIdx);
+                            if (!acc || acc.completed) continue;
+
+                            acc.chunks.set(absOffset, data);
+                            
+                            while (acc.chunks.has(acc.nextOffset)) {
+                                const chunk = acc.chunks.get(acc.nextOffset);
+                                acc.chunks.delete(acc.nextOffset);
+                                
+                                acc.dataChunks.push(chunk);
+                                acc.received += chunk.length;
+                                acc.nextOffset += BigInt(chunk.length);
+                                
+                                setTotalReceivedBytes(prev => prev + chunk.length);
+                                
+                                if (acc.received >= acc.info.size) {
+                                    acc.completed = true;
+                                    logDebug(`[OMEGA] File Complete: ${acc.info.name}`);
+                                    const blob = new Blob(acc.dataChunks);
+                                    setReceivedFiles(prev => [...prev, { blob, name: acc.info.name }]);
+                                }
                             }
-                            resultFiles.push({ blob: new Blob(chunks), name: info.name });
-                            setReceivedFiles([...resultFiles]);
+                            
+                            const allDone = Array.from(fileAccumulators.values()).every((a: any) => a.completed);
+                            if (allDone) break;
                         }
                         setStatus('done');
+                        logDebug(`[OMEGA] Batch Received Successfully.`);
                     })();
                 }
             };
