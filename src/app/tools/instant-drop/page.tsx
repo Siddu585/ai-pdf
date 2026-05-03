@@ -43,7 +43,7 @@ const CLOUDFLARE_RELAY_URL = 'https://turbodrop-stream-relay.siddhantjangam33.wo
 // v02.2.63 (Tachyon Omega - Zenith Surgical) - 5 Surgical Patches (Rollback Debounce, Migration Guard, Active BDP Gate, MTU Floor Removal, NACK Throttling)
 // v02.2.64 (Tachyon Omega - Gate Unblocker) - GPE 8MB Floor Removal + ICE-based activePipeCount + Unified BDP Formula
 // v02.2.65 (Tachyon Omega - MTU Shield) - File-start MTU grace period + Permanent pipe retirement + Dispatch rate telemetry
-const VERSION = "v3.2.9.5 (Omega Hardened - Production)";
+const VERSION = "v3.2.9.6 (Omega Hardened - Production)";
 
 
 function getEngineConfig(engine: 'M2M' | 'HYBRID' | 'NITRO') {
@@ -104,8 +104,8 @@ function InstantDropContent() {
     const initialRoom = searchParams.get("room");
 
     const [mode, setMode] = useState<'select' | 'send' | 'receive'>(initialRoom ? 'receive' : 'select');
-        const [cryptoKeyStr, setCryptoKeyStr] = useState<string | null>(null);
-const [engineMode, setEngineMode] = useState<'M2M' | 'HYBRID' | 'NITRO'>('NITRO');
+    const [cryptoKeyStr, setCryptoKeyStr] = useState<string | null>(null);
+    const [engineMode, setEngineMode] = useState<'M2M' | 'HYBRID' | 'NITRO'>(isMobileDevice() ? 'M2M' : 'NITRO');
     const [roomId, setRoomId] = useState<string>(initialRoom || "");
     const { recordUsage, isPaywallOpen, setIsPaywallOpen, handleAction, deviceId, isPro, email } = useUsage();
     const [files, setFiles] = useState<File[]>([]);
@@ -1350,16 +1350,21 @@ ${capturedLogsRef.current.join('\n')}
                     logDebug("[OMEGA] Peer Detected. Dispatching Handshake...");
                     sendHandshake();
                     // v3.2.7b: Hard-sync pipe configuration
-                    sendControlMsg({ type: 'pipe-config', pipes: 2 });
+                    sendControlMsg({ type: 'pipe-config', pipes: isMobileDevice() ? 12 : 2 });
                 }
                 
                 if (data.type === 'receiver-ready') {
-                    if (statusRef.current === 'transferring') return; // Anti-Bounce
+                    if (statusRef.current === 'transferring') {
+                        logDebug("[OMEGA] Receiver-Ready redundant trigger suppressed.");
+                        return; // Anti-Bounce
+                    }
                     
                     logDebug(`[OMEGA SENDER] Receiver Ready. Ignition...`);
                     setPeerFound(true);
                     if (pulseIntervalRef.current) clearInterval(pulseIntervalRef.current);
+                    
                     setStatus('transferring');
+                    statusRef.current = 'transferring'; // CRITICAL: Manual sync for immediate loop visibility
                     
                     const config = getEngineConfig(engineMode);
                     const NUM_PIPES = config.pipes; 
@@ -1501,6 +1506,7 @@ ${capturedLogsRef.current.join('\n')}
                                                             while (((controller as any).desiredSize || 0) <= 0 && statusRef.current === 'transferring') {
                                                                 await new Promise(r => setTimeout(r, 10));
                                                             }
+                                                            if (statusRef.current !== 'transferring') break;
                                                             controller.enqueue(frame);
                                                             sent = true;
                                                             totalSent += BigInt(value.length);
