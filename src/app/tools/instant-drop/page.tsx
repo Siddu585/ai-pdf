@@ -27,7 +27,7 @@ import { Navbar } from "@/components/layout/Navbar";
 import { Footer } from "@/components/layout/Footer";
 import { useUsage } from "@/hooks/useUsage";
 import { PaywallModal } from "@/components/layout/PaywallModal";
-import { generateSessionKey, importSessionKey, encryptFileStream, decryptContinuousStream } from './crypto-stream';
+import { generateSessionKey, importSessionKey, decryptContinuousStream, type SessionKey, type DecryptedChunk } from './crypto-stream';
 const CLOUDFLARE_RELAY_URL = 'https://turbodrop-stream-relay.siddhantjangam33.workers.dev/relay';
 
 // v02.2.10.6d (NMI Protocol) - Fix Fatal NACK ReferenceError
@@ -43,7 +43,7 @@ const CLOUDFLARE_RELAY_URL = 'https://turbodrop-stream-relay.siddhantjangam33.wo
 // v02.2.63 (Tachyon Omega - Zenith Surgical) - 5 Surgical Patches (Rollback Debounce, Migration Guard, Active BDP Gate, MTU Floor Removal, NACK Throttling)
 // v02.2.64 (Tachyon Omega - Gate Unblocker) - GPE 8MB Floor Removal + ICE-based activePipeCount + Unified BDP Formula
 // v02.2.65 (Tachyon Omega - MTU Shield) - File-start MTU grace period + Permanent pipe retirement + Dispatch rate telemetry
-const VERSION = "v3.2.9 (Omega Hardened - Forensic)";
+const VERSION = "v3.2.9.5 (Omega Hardened - Production)";
 
 
 function getEngineConfig(engine: 'M2M' | 'HYBRID' | 'NITRO') {
@@ -775,6 +775,22 @@ ${capturedLogsRef.current.join('\n')}
                     logDebug("â‰¡Æ’Ã´Ã‘ Remote Diagnostic Dump captured in Console.");
                 }
                 break;
+            case 'nack':
+                if (modeRef.current === 'send') {
+                    const cacheKey = `${msg.fileIdx}-${msg.chunkIdx}`;
+                    const cached = senderChunkCacheRef.current.get(cacheKey);
+                    if (cached) {
+                        logDebug(`[OMEGA] Re-transmitting File-${msg.fileIdx} Chunk-${msg.chunkIdx}`);
+                        // Find an open pipe to re-send
+                        const openPipeIdx = pipePairingStateRef.current.findIndex(s => s === 'connected');
+                        if (openPipeIdx !== -1 && pipeControllersRef.current[openPipeIdx]) {
+                            pipeControllersRef.current[openPipeIdx].enqueue(cached);
+                        }
+                    } else {
+                        logDebug(`[OMEGA] NACK Miss: Chunk ${cacheKey} not in cache.`);
+                    }
+                }
+                break;
         }
     }
 
@@ -1295,7 +1311,7 @@ ${capturedLogsRef.current.join('\n')}
             setStatus('waiting');
             const { keyObj, keyString } = await (generateSessionKey() as any);
             sessionKeyRef.current = keyObj;
-            setCryptoKeyStr(JSON.stringify(Array.from(keyString))); // Handshake needs serializable format
+            setCryptoKeyStr(JSON.stringify(Array.from(keyString))); 
             
             const finalRoomId = (roomRef.current || Math.floor(100000 + Math.random() * 900000).toString()).toUpperCase().trim();
             setRoomId(finalRoomId);
@@ -1345,44 +1361,42 @@ ${capturedLogsRef.current.join('\n')}
                     if (pulseIntervalRef.current) clearInterval(pulseIntervalRef.current);
                     setStatus('transferring');
                     
-                    const NUM_PIPES = 2; // Ultra-Safe Deadlock Prevention for Mobile (2 Pipes + WS + UI)
-                    logDebug(`[OMEGA SENDER] Initializing ${NUM_PIPES} Persistent Pipes: ${finalRoomId}`);
+                    const config = getEngineConfig(engineMode);
+                    const NUM_PIPES = config.pipes; 
+                    logDebug(`[OMEGA SENDER] Initializing ${NUM_PIPES} Persistent Pipes (${engineMode} Mode): ${finalRoomId}`);
                     pipeControllersRef.current = [];
 
-                    for (let p = 0; p < NUM_PIPES; p++) {
-                        const stream = new ReadableStream({
-                            start(controller) {
-                                pipeControllersRef.current[p] = controller;
-                                pipePairingStateRef.current[p] = 'connected';
-                                logDebug(`[OMEGA] Pipe-${p} Controller Primed. Ready for Ignition.`);
-                            }
-                        }, { highWaterMark: 1 });
-
-                        (async (pIdx) => {
-                            let retryCount = 0;
-                            while (retryCount < 5) {
-                                try {
-                                    logDebug(`[OMEGA] Pipe-${pIdx} Launching POST Bridge...`);
-                                    const res = await fetch(`${CLOUDFLARE_RELAY_URL}/${finalRoomId}/${pIdx}`, {
-                                        method: 'POST',
-                                        body: stream,
-                                        //@ts-ignore
-                                        duplex: 'half'
-                                    });
-                                    if (res.ok) {
-                                        logDebug(`[OMEGA] Pipe-${pIdx} BRIDGE ESTABLISHED (200 OK).`);
-                                        break;
-                                    } else {
-                                        logDebug(`[OMEGA] Pipe-${pIdx} Bridge Rejected: ${res.status}. Retrying...`);
-                                    }
-                                } catch (e: any) {
-                                    logDebug(`[OMEGA] Pipe-${pIdx} Bridge Fatal: ${e.message}. Retrying...`);
+                    const launchPipe = async (pIdx: number) => {
+                        while (statusRef.current === 'transferring') {
+                            const stream = new ReadableStream({
+                                start(controller) {
+                                    pipeControllersRef.current[pIdx] = controller;
+                                    pipePairingStateRef.current[pIdx] = 'connected';
+                                    logDebug(`[OMEGA] Pipe-${pIdx} Controller Primed.`);
                                 }
-                                await new Promise(r => setTimeout(r, 1000));
-                                retryCount++;
+                            }, { highWaterMark: 1 });
+
+                            try {
+                                logDebug(`[OMEGA] Pipe-${pIdx} Launching POST Bridge...`);
+                                const res = await fetch(`${CLOUDFLARE_RELAY_URL}/${finalRoomId}/${pIdx}`, {
+                                    method: 'POST',
+                                    body: stream,
+                                    //@ts-ignore
+                                    duplex: 'half'
+                                });
+                                if (!res.ok) throw new Error(`HTTP ${res.status}`);
+                                logDebug(`[OMEGA] Pipe-${pIdx} Bridge Closed Normally.`);
+                                break; // Success or graceful close
+                            } catch (e: any) {
+                                logDebug(`[OMEGA] Pipe-${pIdx} Bridge Failed: ${e.message}. Reconnecting...`);
+                                pipePairingStateRef.current[pIdx] = 'error';
+                                await new Promise(r => setTimeout(r, 2000));
                             }
-                            if (retryCount >= 5) pipePairingStateRef.current[pIdx] = 'error';
-                        })(p);
+                        }
+                    };
+
+                    for (let p = 0; p < NUM_PIPES; p++) {
+                        launchPipe(p);
                     }
 
                     // Stability Grace Period
@@ -1422,25 +1436,30 @@ ${capturedLogsRef.current.join('\n')}
                                 const reader = file.stream().getReader();
                                 let fileOffset = BigInt(0);
                                 
+                                const getNextChunk = async () => {
+                                    // v3.2.9: Atomic Read-and-Offset capture to prevent pipe collisions
+                                    const { done, value } = await reader.read();
+                                    if (done) return null;
+                                    const offset = fileOffset;
+                                    fileOffset += BigInt(value.length);
+                                    return { value, offset };
+                                };
+                                
                                 const filePartPromises = [];
                                 for (let p = 0; p < NUM_PIPES; p++) {
                                     filePartPromises.push((async () => {
                                         while (true) {
-                                            const { done, value } = await reader.read();
-                                            if (done) break;
+                                            const chunkData = await getNextChunk();
+                                            if (!chunkData) break;
+                                            const { value, offset } = chunkData;
+
                                             if (pipeControllersRef.current[p]) {
-                                                // v3.2.7b: GPE Backpressure Gating (Hard Limit: 16MB per pipe)
-                                                // This ensures the UI speed is honest and prevents browser memory saturation.
-                                                while (((pipeControllersRef.current[p] as any).desiredSize || 0) <= 0) {
-                                                    await new Promise(r => setTimeout(r, 10));
-                                                }
-                                                
                                                 // 16-byte OMEGA Frame: [fileIdx:2][pIdx:2][absOffset:8][cipherLen:4]
                                                 const iv = new Uint8Array(12);
                                                 const ivView = new DataView(iv.buffer);
                                                 ivView.setUint16(0, i, true);
                                                 ivView.setUint16(2, p, true);
-                                                ivView.setBigUint64(4, fileOffset, true);
+                                                ivView.setBigUint64(4, offset, true);
 
                                                 if (!sessionKeyRef.current) {
                                                     logDebug("Î“ÃœÃ¡âˆ©â••Ã… [FATAL] Encryption Key Missing! Aborting Dispatch.");
@@ -1457,17 +1476,43 @@ ${capturedLogsRef.current.join('\n')}
                                                 const headerView = new DataView(header.buffer);
                                                 headerView.setUint16(0, i, true);
                                                 headerView.setUint16(2, p, true);
-                                                headerView.setBigUint64(4, fileOffset, true);
+                                                headerView.setBigUint64(4, offset, true);
                                                 headerView.setUint32(12, cipherBytes.length, true);
 
                                                 const frame = new Uint8Array(header.length + cipherBytes.length);
                                                 frame.set(header);
                                                 frame.set(cipherBytes, header.length);
 
-                                                pipeControllersRef.current[p].enqueue(frame);
-                                                fileOffset += BigInt(value.length);
-                                                totalSent += BigInt(value.length);
-                                                diagnosticMetricsRef.current.packetsSent++;
+                                                // v3.2.9: Chunk Caching for NACK re-transmissions
+                                                const chunkIdx = Number(offset / BigInt(32 * 1024)); // Approximation
+                                                senderChunkCacheRef.current.set(`${i}-${chunkIdx}`, frame);
+                                                if (senderChunkCacheRef.current.size > 1024) {
+                                                    const firstKey = senderChunkCacheRef.current.keys().next().value;
+                                                    if (firstKey) senderChunkCacheRef.current.delete(firstKey);
+                                                }
+
+                                                // v3.2.9: Resilient Enqueue - wait for pipe reconnection if bridge drops
+                                                let sent = false;
+                                                while (!sent && statusRef.current === 'transferring') {
+                                                    try {
+                                                        const controller = pipeControllersRef.current[p];
+                                                        if (controller && (controller as any).desiredSize !== null) {
+                                                            // GPE Backpressure Gating
+                                                            while (((controller as any).desiredSize || 0) <= 0 && statusRef.current === 'transferring') {
+                                                                await new Promise(r => setTimeout(r, 10));
+                                                            }
+                                                            controller.enqueue(frame);
+                                                            sent = true;
+                                                            totalSent += BigInt(value.length);
+                                                            diagnosticMetricsRef.current.packetsSent++;
+                                                        } else {
+                                                            throw new Error("Pipe controller not ready");
+                                                        }
+                                                    } catch (e) {
+                                                        // Bridge probably dropping/reconnecting, yield and retry
+                                                        await new Promise(r => setTimeout(r, 100));
+                                                    }
+                                                }
                                             }
                                             setTotalSentBytes(Number(totalSent));
                                             setProgress(Math.round((Number(totalSent) / totalBytes) * 100));
@@ -1552,43 +1597,42 @@ ${capturedLogsRef.current.join('\n')}
                         ws.send(JSON.stringify({ type: 'receiver-ready' }));
                     }
 
-                    const establishPipes = async () => {
-                        logDebug(`[OMEGA] Establishing ${NUM_PIPES} Parallel Pipes...`);
-                        const pipePromises = [];
-                        for(let p=0; p<NUM_PIPES; p++) {
-                            pipePromises.push((async () => {
-                                let retryCount = 0;
-                                while (retryCount < 5) {
+                    const createResilientStream = (roomId: string, pIdx: number) => {
+                        return new ReadableStream({
+                            async start(controller) {
+                                while (statusRef.current === 'transferring') {
                                     try {
-                                        logDebug(`[PIPE ${p}] Fetching Relay Stream...`);
-                                        const res = await fetch(`${CLOUDFLARE_RELAY_URL}/${normalizedRoom}/${p}`);
-                                        if (res.ok) {
-                                            logDebug(`[PIPE ${p}] RELAY CONNECTED (Status 200).`);
-                                            return res.body!;
+                                        logDebug(`[PIPE ${pIdx}] Fetching Relay Stream...`);
+                                        const res = await fetch(`${CLOUDFLARE_RELAY_URL}/${roomId}/${pIdx}`);
+                                        if (!res.ok) {
+                                            if (res.status === 408 || res.status === 404) {
+                                                // Waiting for sender, not a fatal error
+                                                await new Promise(r => setTimeout(r, 2000));
+                                                continue;
+                                            }
+                                            throw new Error(`HTTP ${res.status}`);
                                         }
-                                        logDebug(`[PIPE ${p}] Relay Rejected (Status ${res.status}). Retrying...`);
-                                    } catch (e) {
-                                        logDebug(`[PIPE ${p}] Fetch Error: ${e}. Retrying...`);
+                                        
+                                        const reader = res.body!.getReader();
+                                        while (true) {
+                                            const { done, value } = await reader.read();
+                                            if (done) break;
+                                            controller.enqueue(value);
+                                        }
+                                        logDebug(`[PIPE ${pIdx}] Relay Stream Ended Normally. Reconnecting...`);
+                                    } catch (e: any) {
+                                        logDebug(`[PIPE ${pIdx}] Relay Error: ${e.message}. Reconnecting...`);
                                     }
-                                    await new Promise(r => setTimeout(r, 1000));
-                                    retryCount++;
+                                    await new Promise(r => setTimeout(r, 2000));
                                 }
-                                return null;
-                            })());
-                        }
-                        return (await Promise.all(pipePromises)).filter(s => s !== null);
+                                controller.close();
+                            }
+                        });
                     };
 
-                    const pipeStreams = await establishPipes();
-                    logDebug(`[OMEGA] Sync Complete. ${pipeStreams.length} Pipes Active.`);
+                    const pipeStreams = Array.from({ length: NUM_PIPES }, (_, i) => createResilientStream(normalizedRoom, i));
+                    logDebug(`[OMEGA] Sync Complete. ${NUM_PIPES} Resilient Pipes Primed.`);
 
-                    if (pipeStreams.length < NUM_PIPES) {
-                        logDebug(`Î“ÃœÃ¡âˆ©â••Ã… [OMEGA] Warning: Degraded Pipe Count (${pipeStreams.length}/${NUM_PIPES}).`);
-                        if (pipeStreams.length === 0) {
-                            setStatus('disconnected');
-                            return;
-                        }
-                    }
 
                     const keyObj = await importSessionKey(data.sessionKey);
 
