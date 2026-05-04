@@ -43,15 +43,15 @@ const CLOUDFLARE_RELAY_URL = 'https://turbodrop-stream-relay.siddhantjangam33.wo
 // v02.2.63 (Tachyon Omega - Zenith Surgical) - 5 Surgical Patches (Rollback Debounce, Migration Guard, Active BDP Gate, MTU Floor Removal, NACK Throttling)
 // v02.2.64 (Tachyon Omega - Gate Unblocker) - GPE 8MB Floor Removal + ICE-based activePipeCount + Unified BDP Formula
 // v02.2.65 (Tachyon Omega - MTU Shield) - File-start MTU grace period + Permanent pipe retirement + Dispatch rate telemetry
-const VERSION = "v3.2.9.6 (Omega Hardened - Production)";
+const VERSION = "v3.2.9.7 (Omega Hardened - Production)";
 
 
 function getEngineConfig(engine: 'M2M' | 'HYBRID' | 'NITRO') {
     if (engine === 'M2M') {
         return {
             pipes: 12, // v02.2.84: Restored 12-pipe for 10MB/s target (governed by 60ms batching)
-            pacerThreshold: 96 * 1024 * 1024, 
-            mtuLimit: 48 * 1024, 
+            pacerThreshold: 128 * 1024 * 1024, 
+            mtuLimit: 128 * 1024, 
             nackBackoff: 200 
         };
     }
@@ -75,8 +75,8 @@ const BDP_GPE_GATE = 64 * 1024 * 1024; // Default Nitro gate
 
 const isMobileDevice = () => {
     if (typeof window === 'undefined') return false;
-    // v02.2.24: Hardened Regex for Modern Mobile (Inclusive of Jio/Indian browsers)
-    return /Android|webOS|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini|Mobile|Silk/i.test(navigator.userAgent);
+    // v3.2.9.7: Inclusive Mobi regex for cellular detection
+    return /Android|webOS|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini|Mobile|Mobi|Silk/i.test(navigator.userAgent);
 };
 const getBackendUrls = () => {
     // v02.2.34: Fixed Absolute Production Signaling (Resolves 404/Split-Brain)
@@ -1328,6 +1328,7 @@ ${capturedLogsRef.current.join('\n')}
                     type: 'sender-ready', 
                     roomId: finalRoomId, 
                     sessionKey: keyString,
+                    pipes: getEngineConfig(isMobileDevice() ? 'M2M' : 'NITRO').pipes,
                     files: fileList.map(f => ({ name: f.name, size: f.size })),
                     totalSize: fileList.reduce((acc, f) => acc + f.size, 0)
                 }));
@@ -1350,7 +1351,8 @@ ${capturedLogsRef.current.join('\n')}
                     logDebug("[OMEGA] Peer Detected. Dispatching Handshake...");
                     sendHandshake();
                     // v3.2.7b: Hard-sync pipe configuration
-                    sendControlMsg({ type: 'pipe-config', pipes: isMobileDevice() ? 12 : 2 });
+                    const config = getEngineConfig(engineMode);
+                    sendControlMsg({ type: 'pipe-config', pipes: config.pipes });
                 }
                 
                 if (data.type === 'receiver-ready') {
@@ -1587,14 +1589,13 @@ ${capturedLogsRef.current.join('\n')}
                     setTotalFiles(filesInfo.length);
                     setStatus('transferring');
                     
-                    const NUM_PIPES = data.pipes || 2;
-                    // v3.2.7b: Initialization Guard
+                    const NUM_PIPES = data.pipes || (isMobileDevice() ? 12 : 4);
+                    // v3.2.9.7: Initialization Guard
                     if (pipeControllersRef.current.length > 0) {
                         logDebug("[OMEGA] Pipes already initialized. Skipping redundant setup.");
                         return;
                     }
-                    
-                    logDebug(`[OMEGA RECEIVER] Initializing 2 Persistent Pipes: ${normalizedRoom}`);
+                    logDebug(`[OMEGA RECEIVER] Initializing ${NUM_PIPES} Persistent Pipes: ${normalizedRoom}`);
                     
                     // v3.2.7: NO-OVERSIGHT SYNC - Signal ready FIRST, then open pipes.
                     // This prevents the handshake deadlock where both sides wait for each other.
