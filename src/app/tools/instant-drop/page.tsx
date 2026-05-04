@@ -43,16 +43,16 @@ const CLOUDFLARE_RELAY_URL = 'https://turbodrop-stream-relay.siddhantjangam33.wo
 // v02.2.63 (Tachyon Omega - Zenith Surgical) - 5 Surgical Patches (Rollback Debounce, Migration Guard, Active BDP Gate, MTU Floor Removal, NACK Throttling)
 // v02.2.64 (Tachyon Omega - Gate Unblocker) - GPE 8MB Floor Removal + ICE-based activePipeCount + Unified BDP Formula
 // v02.2.65 (Tachyon Omega - MTU Shield) - File-start MTU grace period + Permanent pipe retirement + Dispatch rate telemetry
-const VERSION = "v3.2.9.8 (Omega Hardened - Production)";
+const VERSION = "v3.2.9.9 (Omega Hardened - Production)";
 
 
 function getEngineConfig(engine: 'M2M' | 'HYBRID' | 'NITRO') {
     if (engine === 'M2M') {
         return {
-            pipes: 6, // v3.2.9.8: Sim-Verified 6-pipe configuration for 10MB/s target (prevents browser connection queuing)
-            pacerThreshold: 128 * 1024 * 1024, 
-            mtuLimit: 128 * 1024, 
-            nackBackoff: 200 
+            pipes: 12, // v3.2.9.9: Restored 12-pipe with Adaptive MTU to overcome mobile jitter
+            pacerThreshold: 256 * 1024 * 1024, 
+            mtuLimit: 256 * 1024, // 256KB Adaptive Ceiling
+            nackBackoff: 100 
         };
     }
     return {
@@ -62,7 +62,7 @@ function getEngineConfig(engine: 'M2M' | 'HYBRID' | 'NITRO') {
         nackBackoff: 1000
     };
 }
-const PIPES = 6; // v3.2.9.8: Synchronized with 6-Pipe Sim-Verified Core
+const PIPES = 12; // v3.2.9.9: Synchronized with 12-Pipe Adaptive Core
 const CHANNELS_PER_PIPE = 8; 
 const CHANNELS = 96; // PIPES * CHANNELS_PER_PIPE 
 const CHUNK_SIZE = 32 * 1024; // 32KB Base MTU
@@ -1407,7 +1407,12 @@ ${capturedLogsRef.current.join('\n')}
                     }
 
                     // Stability Grace Period
-                    await new Promise(r => setTimeout(r, 800));
+                    await new Promise(r => setTimeout(r, 400)); // v3.2.9.9: Reduced to 400ms for faster ignition
+
+                    // v3.2.9.9: Adaptive MTU State
+                    let currentMTU = 32 * 1024;
+                    const MTU_LIMIT = config.mtuLimit;
+                    let consecutiveCleanChunks = 0;
 
                     // Continuous Dispatcher
                     (async () => {
@@ -1433,7 +1438,7 @@ ${capturedLogsRef.current.join('\n')}
                                         pipeControllersRef.current[p].enqueue(hb);
                                     }
                                 }
-                            }, 10000);
+                        }, 10000);
 
                             for (let i = 0; i < fileList.length; i++) {
                                 const file = fileList[i];
@@ -1444,12 +1449,22 @@ ${capturedLogsRef.current.join('\n')}
                                 let fileOffset = BigInt(0);
                                 
                                 const getNextChunk = async () => {
-                                    // v3.2.9: Atomic Read-and-Offset capture to prevent pipe collisions
-                                    const { done, value } = await reader.read();
-                                    if (done) return null;
+                                    // v3.2.9.9: Adaptive Reader (Buffer chunks to hit target MTU)
+                                    let accumulated = new Uint8Array(0);
+                                    while (accumulated.length < currentMTU) {
+                                        const { done, value } = await reader.read();
+                                        if (done) {
+                                            if (accumulated.length > 0) break;
+                                            return null;
+                                        }
+                                        const next = new Uint8Array(accumulated.length + value.length);
+                                        next.set(accumulated);
+                                        next.set(value, accumulated.length);
+                                        accumulated = next;
+                                    }
                                     const offset = fileOffset;
-                                    fileOffset += BigInt(value.length);
-                                    return { value, offset };
+                                    fileOffset += BigInt(accumulated.length);
+                                    return { value: accumulated, offset };
                                 };
                                 
                                 const filePartPromises = [];
@@ -1503,13 +1518,26 @@ ${capturedLogsRef.current.join('\n')}
                                                 while (!sent && statusRef.current === 'transferring') {
                                                     try {
                                                         const controller = pipeControllersRef.current[p];
+                                                        if (statusRef.current !== 'transferring') break;
+                                                            
+                                                        // v3.2.9.9: Tab-Aware Pacing
+                                                        const isHidden = document.visibilityState === 'hidden';
+                                                        const backpressureLimit = isHidden ? -1024 * 1024 : 0; // Allow 1MB buffer if hidden
+
                                                         if (controller && (controller as any).desiredSize !== null) {
-                                                            // GPE Backpressure Gating
-                                                            while (((controller as any).desiredSize || 0) <= 0 && statusRef.current === 'transferring') {
-                                                                await new Promise(r => setTimeout(r, 10));
+                                                            while (((controller as any).desiredSize || 0) <= backpressureLimit && statusRef.current === 'transferring') {
+                                                                await new Promise(r => setTimeout(r, isHidden ? 50 : 5)); // Faster yield when visible
                                                             }
                                                             if (statusRef.current !== 'transferring') break;
                                                             controller.enqueue(frame);
+                                                            
+                                                            // v3.2.9.9: Adaptive MTU Scaling
+                                                            consecutiveCleanChunks++;
+                                                            if (consecutiveCleanChunks > 50 && currentMTU < MTU_LIMIT) {
+                                                                currentMTU = Math.min(MTU_LIMIT, currentMTU * 2);
+                                                                logDebug(`[OMEGA] Scaling MTU Up: ${currentMTU / 1024}KB`);
+                                                                consecutiveCleanChunks = 0;
+                                                            }
                                                             sent = true;
                                                             totalSent += BigInt(value.length);
                                                             diagnosticMetricsRef.current.packetsSent++;

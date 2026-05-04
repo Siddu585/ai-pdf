@@ -108,9 +108,23 @@ export function decryptContinuousStream(pipeStreams: ReadableStream<Uint8Array>[
             const readers = pipeStreams.map(s => s.getReader());
             
             readers.forEach(async (reader, i) => {
+                let leftover: Uint8Array | null = null;
                 const readExact = async (n: number) => {
                     let buf = new Uint8Array(n);
                     let offset = 0;
+                    
+                    if (leftover) {
+                        if (leftover.length >= n) {
+                            buf.set(leftover.subarray(0, n));
+                            leftover = leftover.length > n ? leftover.subarray(n) : null;
+                            return buf;
+                        } else {
+                            buf.set(leftover);
+                            offset = leftover.length;
+                            leftover = null;
+                        }
+                    }
+
                     while (offset < n) {
                         const { done, value } = await reader.read();
                         if (done) return null;
@@ -121,8 +135,7 @@ export function decryptContinuousStream(pipeStreams: ReadableStream<Uint8Array>[
                             offset += value.length;
                         } else {
                             buf.set(value.subarray(0, remaining), offset);
-                            // Note: This logic assumes framing is aligned with value boundaries
-                            // or that the reader handles buffering. In OMEGA, we ensure alignment.
+                            leftover = value.subarray(remaining);
                             offset += remaining;
                         }
                     }
