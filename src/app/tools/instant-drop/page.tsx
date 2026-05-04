@@ -43,13 +43,13 @@ const CLOUDFLARE_RELAY_URL = 'https://turbodrop-stream-relay.siddhantjangam33.wo
 // v02.2.63 (Tachyon Omega - Zenith Surgical) - 5 Surgical Patches (Rollback Debounce, Migration Guard, Active BDP Gate, MTU Floor Removal, NACK Throttling)
 // v02.2.64 (Tachyon Omega - Gate Unblocker) - GPE 8MB Floor Removal + ICE-based activePipeCount + Unified BDP Formula
 // v02.2.65 (Tachyon Omega - MTU Shield) - File-start MTU grace period + Permanent pipe retirement + Dispatch rate telemetry
-const VERSION = "v3.2.9.7 (Omega Hardened - Production)";
+const VERSION = "v3.2.9.8 (Omega Hardened - Production)";
 
 
 function getEngineConfig(engine: 'M2M' | 'HYBRID' | 'NITRO') {
     if (engine === 'M2M') {
         return {
-            pipes: 12, // v02.2.84: Restored 12-pipe for 10MB/s target (governed by 60ms batching)
+            pipes: 6, // v3.2.9.8: Sim-Verified 6-pipe configuration for 10MB/s target (prevents browser connection queuing)
             pacerThreshold: 128 * 1024 * 1024, 
             mtuLimit: 128 * 1024, 
             nackBackoff: 200 
@@ -62,7 +62,7 @@ function getEngineConfig(engine: 'M2M' | 'HYBRID' | 'NITRO') {
         nackBackoff: 1000
     };
 }
-const PIPES = 12; // v02.2.80: Synchronized with 12-Pipe Pistor Core
+const PIPES = 6; // v3.2.9.8: Synchronized with 6-Pipe Sim-Verified Core
 const CHANNELS_PER_PIPE = 8; 
 const CHANNELS = 96; // PIPES * CHANNELS_PER_PIPE 
 const CHUNK_SIZE = 32 * 1024; // 32KB Base MTU

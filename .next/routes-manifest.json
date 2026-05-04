@@ -1,0 +1,179 @@
+{
+  "version": 3,
+  "pages404": true,
+  "caseSensitive": false,
+  "basePath": "",
+  "redirects": [
+    {
+      "source": "/:path+/",
+      "destination": "/:path+",
+      "internal": true,
+      "statusCode": 308,
+      "regex": "^(?:/((?:[^/]+?)(?:/(?:[^/]+?))*))/$"
+    }
+  ],
+  "headers": [],
+  "rewrites": {
+    "beforeFiles": [],
+    "afterFiles": [],
+    "fallback": []
+  },
+  "dynamicRoutes": [],
+  "staticRoutes": [
+    {
+      "page": "/",
+      "regex": "^/(?:/)?$",
+      "routeKeys": {},
+      "namedRegex": "^/(?:/)?$"
+    },
+    {
+      "page": "/_not-found",
+      "regex": "^/_not\\-found(?:/)?$",
+      "routeKeys": {},
+      "namedRegex": "^/_not\\-found(?:/)?$"
+    },
+    {
+      "page": "/about",
+      "regex": "^/about(?:/)?$",
+      "routeKeys": {},
+      "namedRegex": "^/about(?:/)?$"
+    },
+    {
+      "page": "/checkout/cancel",
+      "regex": "^/checkout/cancel(?:/)?$",
+      "routeKeys": {},
+      "namedRegex": "^/checkout/cancel(?:/)?$"
+    },
+    {
+      "page": "/checkout/success",
+      "regex": "^/checkout/success(?:/)?$",
+      "routeKeys": {},
+      "namedRegex": "^/checkout/success(?:/)?$"
+    },
+    {
+      "page": "/contact",
+      "regex": "^/contact(?:/)?$",
+      "routeKeys": {},
+      "namedRegex": "^/contact(?:/)?$"
+    },
+    {
+      "page": "/favicon.ico",
+      "regex": "^/favicon\\.ico(?:/)?$",
+      "routeKeys": {},
+      "namedRegex": "^/favicon\\.ico(?:/)?$"
+    },
+    {
+      "page": "/privacy",
+      "regex": "^/privacy(?:/)?$",
+      "routeKeys": {},
+      "namedRegex": "^/privacy(?:/)?$"
+    },
+    {
+      "page": "/terms",
+      "regex": "^/terms(?:/)?$",
+      "routeKeys": {},
+      "namedRegex": "^/terms(?:/)?$"
+    },
+    {
+      "page": "/tools/ai-chat-pdf",
+      "regex": "^/tools/ai\\-chat\\-pdf(?:/)?$",
+      "routeKeys": {},
+      "namedRegex": "^/tools/ai\\-chat\\-pdf(?:/)?$"
+    },
+    {
+      "page": "/tools/image-to-pdf",
+      "regex": "^/tools/image\\-to\\-pdf(?:/)?$",
+      "routeKeys": {},
+      "namedRegex": "^/tools/image\\-to\\-pdf(?:/)?$"
+    },
+    {
+      "page": "/tools/instant-drop",
+      "regex": "^/tools/instant\\-drop(?:/)?$",
+      "routeKeys": {},
+      "namedRegex": "^/tools/instant\\-drop(?:/)?$"
+    },
+    {
+      "page": "/tools/merge-pdf",
+      "regex": "^/tools/merge\\-pdf(?:/)?$",
+      "routeKeys": {},
+      "namedRegex": "^/tools/merge\\-pdf(?:/)?$"
+    },
+    {
+      "page": "/tools/ocr-pdf",
+      "regex": "^/tools/ocr\\-pdf(?:/)?$",
+      "routeKeys": {},
+      "namedRegex": "^/tools/ocr\\-pdf(?:/)?$"
+    },
+    {
+      "page": "/tools/ocr-scanner",
+      "regex": "^/tools/ocr\\-scanner(?:/)?$",
+      "routeKeys": {},
+      "namedRegex": "^/tools/ocr\\-scanner(?:/)?$"
+    },
+    {
+      "page": "/tools/office-to-pdf",
+      "regex": "^/tools/office\\-to\\-pdf(?:/)?$",
+      "routeKeys": {},
+      "namedRegex": "^/tools/office\\-to\\-pdf(?:/)?$"
+    },
+    {
+      "page": "/tools/organize-pages",
+      "regex": "^/tools/organize\\-pages(?:/)?$",
+      "routeKeys": {},
+      "namedRegex": "^/tools/organize\\-pages(?:/)?$"
+    },
+    {
+      "page": "/tools/pdf-compressor",
+      "regex": "^/tools/pdf\\-compressor(?:/)?$",
+      "routeKeys": {},
+      "namedRegex": "^/tools/pdf\\-compressor(?:/)?$"
+    },
+    {
+      "page": "/tools/pdf-to-word",
+      "regex": "^/tools/pdf\\-to\\-word(?:/)?$",
+      "routeKeys": {},
+      "namedRegex": "^/tools/pdf\\-to\\-word(?:/)?$"
+    },
+    {
+      "page": "/tools/photo-resizer",
+      "regex": "^/tools/photo\\-resizer(?:/)?$",
+      "routeKeys": {},
+      "namedRegex": "^/tools/photo\\-resizer(?:/)?$"
+    },
+    {
+      "page": "/tools/repair-pdf",
+      "regex": "^/tools/repair\\-pdf(?:/)?$",
+      "routeKeys": {},
+      "namedRegex": "^/tools/repair\\-pdf(?:/)?$"
+    },
+    {
+      "page": "/tools/split-pdf",
+      "regex": "^/tools/split\\-pdf(?:/)?$",
+      "routeKeys": {},
+      "namedRegex": "^/tools/split\\-pdf(?:/)?$"
+    },
+    {
+      "page": "/tools/unlock-pdf",
+      "regex": "^/tools/unlock\\-pdf(?:/)?$",
+      "routeKeys": {},
+      "namedRegex": "^/tools/unlock\\-pdf(?:/)?$"
+    }
+  ],
+  "dataRoutes": [],
+  "rsc": {
+    "header": "rsc",
+    "varyHeader": "rsc, next-router-state-tree, next-router-prefetch, next-router-segment-prefetch",
+    "prefetchHeader": "next-router-prefetch",
+    "didPostponeHeader": "x-nextjs-postponed",
+    "contentTypeHeader": "text/x-component",
+    "suffix": ".rsc",
+    "prefetchSuffix": ".prefetch.rsc",
+    "prefetchSegmentHeader": "next-router-segment-prefetch",
+    "prefetchSegmentSuffix": ".segment.rsc",
+    "prefetchSegmentDirSuffix": ".segments"
+  },
+  "rewriteHeaders": {
+    "pathHeader": "x-nextjs-rewritten-path",
+    "queryHeader": "x-nextjs-rewritten-query"
+  }
+}

@@ -1,0 +1,541 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>TurboDrop OMEGA Simulator</title>
+<style>
+:root {
+  --color-background-primary: #ffffff;
+  --color-background-secondary: #f8fafc;
+  --color-background-tertiary: #f1f5f9;
+  --color-border-primary: #e2e8f0;
+  --color-border-secondary: #cbd5e1;
+  --color-border-tertiary: #94a3b8;
+  --color-text-primary: #0f172a;
+  --color-text-secondary: #475569;
+  --color-text-tertiary: #64748b;
+  --border-radius-md: 8px;
+  --font-mono: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --color-background-primary: #0f172a;
+    --color-background-secondary: #1e293b;
+    --color-background-tertiary: #334155;
+    --color-border-primary: #334155;
+    --color-border-secondary: #475569;
+    --color-border-tertiary: #64748b;
+    --color-text-primary: #f8fafc;
+    --color-text-secondary: #94a3b8;
+    --color-text-tertiary: #cbd5e1;
+  }
+}
+
+*{box-sizing:border-box;margin:0;padding:0}
+body { background: var(--color-background-primary); color: var(--color-text-primary); }
+.root{font-family:var(--font-mono,'Courier New',monospace);display:flex;flex-direction:column;gap:8px;padding:8px; max-width: 800px; margin: 0 auto;}
+.top-bar{background:var(--color-background-secondary);border:1px solid var(--color-border-tertiary);border-radius:var(--border-radius-md);padding:10px 14px;display:flex;flex-wrap:wrap;gap:12px 18px;align-items:flex-end}
+.cg{display:flex;flex-direction:column;gap:3px}
+.cl{font-size:9px;color:var(--color-text-secondary);text-transform:uppercase;letter-spacing:.07em;display:flex;justify-content:space-between}
+.cv{font-weight:500;color:var(--color-text-primary)}
+input[type=range]{width:88px;accent-color:#1D9E75}
+.cbrow{display:flex;gap:3px}
+.cb{font-size:10px;padding:3px 8px;border:1px solid var(--color-border-secondary);border-radius:4px;cursor:pointer;background:transparent;color:var(--color-text-primary);font-family:inherit}
+.cb.sel{background:#085041;border-color:#1D9E75;color:#9FE1CB}
+.bb{font-size:10px;padding:3px 8px;border:1px solid var(--color-border-tertiary);border-radius:4px;cursor:pointer;background:transparent;color:var(--color-text-tertiary);font-family:inherit;transition:all .15s}
+.bb.on{background:rgba(29,158,117,.13);border-color:#1D9E75;color:#1D9E75}
+.rbtn{padding:7px 16px;border-radius:6px;border:none;cursor:pointer;font-size:11px;font-weight:500;background:#1D9E75;color:#fff;font-family:inherit;letter-spacing:.04em;white-space:nowrap;align-self:flex-end}
+.rbtn:disabled{opacity:.45;cursor:not-allowed}
+#cv{display:block;width:100%;border-radius:var(--border-radius-md);border:1px solid var(--color-border-tertiary)}
+.fp-wrap{background:var(--color-background-secondary);border:1px solid var(--color-border-tertiary);border-radius:var(--border-radius-md);padding:8px 12px;display:flex;flex-direction:column;gap:4px}
+.fp-row{display:flex;align-items:center;gap:8px}
+.fp-name{width:138px;font-size:10px;color:var(--color-text-secondary);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.fp-bg{flex:1;height:8px;background:var(--color-background-tertiary);border-radius:4px;overflow:hidden}
+.fp-fill{height:100%;background:#1D9E75;border-radius:4px;width:0%;transition:width .1s linear}
+.fp-pct{width:34px;font-size:10px;text-align:right;font-weight:500;color:var(--color-text-primary)}
+.fp-st{width:70px;font-size:9px}
+.bot{display:grid;grid-template-columns:1fr 1fr 1fr;gap:8px}
+.panel{background:var(--color-background-secondary);border:1px solid var(--color-border-tertiary);border-radius:var(--border-radius-md);padding:8px 12px}
+.pt{font-size:9px;color:var(--color-text-secondary);text-transform:uppercase;letter-spacing:.07em;margin-bottom:6px}
+.mg{display:grid;grid-template-columns:1fr 1fr;gap:4px}
+.mc{padding:5px 8px;background:var(--color-background-primary);border-radius:6px;border:1px solid var(--color-border-tertiary)}
+.ml{font-size:9px;color:var(--color-text-secondary);margin-bottom:1px}
+.mv{font-size:13px;font-weight:500}
+.mv.g{color:#1D9E75}.mv.a{color:#EF9F27}.mv.r{color:#E24B4A}
+.log-s{height:130px;overflow-y:auto;font-size:9px;line-height:1.9;color:var(--color-text-secondary)}
+.lg{display:flex;align-items:center;gap:7px;font-size:10px;color:var(--color-text-secondary);margin-bottom:4px}
+.ld{width:10px;height:10px;border-radius:50%;flex-shrink:0}
+</style>
+
+<div class="root">
+<div class="top-bar">
+  <div class="cg">
+    <div class="cl">Carrier</div>
+    <div class="cbrow" id="cbs">
+      <button class="cb sel" data-p="jio">Jio 4G</button>
+      <button class="cb" data-p="airtel">Airtel</button>
+      <button class="cb" data-p="wifi">WiFi</button>
+      <button class="cb" data-p="edge">EDGE</button>
+    </div>
+  </div>
+  <div class="cg">
+    <div class="cl">Bandwidth <span class="cv" id="v-bw">10 Mbps</span></div>
+    <input type="range" id="s-bw" min=".5" max="50" step=".5" value="10">
+  </div>
+  <div class="cg">
+    <div class="cl">Latency <span class="cv" id="v-lat">85 ms</span></div>
+    <input type="range" id="s-lat" min="5" max="500" step="5" value="85">
+  </div>
+  <div class="cg">
+    <div class="cl">Jitter <span class="cv" id="v-jit">35 ms</span></div>
+    <input type="range" id="s-jit" min="0" max="150" step="5" value="35">
+  </div>
+  <div class="cg">
+    <div class="cl">Pkt loss <span class="cv" id="v-loss">1.5%</span></div>
+    <input type="range" id="s-loss" min="0" max="10" step=".5" value="1.5">
+  </div>
+  <div class="cg">
+    <div class="cl">Sender pipes <span class="cv" id="v-sp">2</span></div>
+    <input type="range" id="s-sp" min="1" max="8" step="1" value="2">
+  </div>
+  <div class="cg">
+    <div class="cl">Receiver pipes <span class="cv" id="v-rp">2</span></div>
+    <input type="range" id="s-rp" min="1" max="8" step="1" value="2">
+  </div>
+  <div class="cg">
+    <div class="cl">Bug fixes active</div>
+    <div class="cbrow" id="bbs">
+      <button class="bb" data-b="1" title="Fix: composite fileIdx+offset key">B1 key</button>
+      <button class="bb" data-b="2" title="Fix: parallel per-file reassembly">B2 seq</button>
+      <button class="bb" data-b="3" title="Fix: receiver reads numPipes from sender">B3 pipes</button>
+      <button class="bb" data-b="4" title="Fix: BigInt 64-bit offset">B4 u32</button>
+      <button class="bb" data-b="5" title="Fix: adaptive backoff instead of 100ms sleep">B5 bkp</button>
+    </div>
+  </div>
+  <button class="rbtn" id="rbtn">▶ Run</button>
+</div>
+
+<canvas id="cv" height="410"></canvas>
+
+<div class="fp-wrap" id="fpw"></div>
+
+<div class="bot">
+  <div class="panel">
+    <div class="pt">Live metrics</div>
+    <div class="mg">
+      <div class="mc"><div class="ml">Throughput</div><div class="mv g" id="m-tp">—</div></div>
+      <div class="mc"><div class="ml">OWTT</div><div class="mv" id="m-owtt">—</div></div>
+      <div class="mc"><div class="ml">Lost pkts</div><div class="mv" id="m-lost">0</div></div>
+      <div class="mc"><div class="ml">Collisions</div><div class="mv r" id="m-col">0</div></div>
+      <div class="mc"><div class="ml">Stalls</div><div class="mv a" id="m-stall">0</div></div>
+      <div class="mc"><div class="ml">Files done</div><div class="mv" id="m-fd">0/7</div></div>
+    </div>
+  </div>
+  <div class="panel">
+    <div class="pt">Session log</div>
+    <div class="log-s" id="logel"></div>
+  </div>
+  <div class="panel">
+    <div class="pt">Packet legend</div>
+    <div class="lg"><div class="ld" style="background:#1D9E75"></div>Normal transit</div>
+    <div class="lg"><div class="ld" style="background:#E24B4A"></div>Dropped (loss)</div>
+    <div class="lg"><div class="ld" style="background:#EF9F27"></div>Out-of-order / delayed</div>
+    <div class="lg"><div class="ld" style="background:#E24B4A;outline:2px solid #FA8072;outline-offset:1px"></div>Collision — Bug 1</div>
+    <div class="lg"><div class="ld" style="background:#888780"></div>Stalled — Bug 2</div>
+    <div class="lg"><div class="ld" style="background:#7F77DD"></div>Unlistened pipe — Bug 3</div>
+  </div>
+</div>
+</div>
+
+<script>
+const FILES=[
+  {name:"merged-doc.pdf",size:1.2},
+  {name:"PXL_072323618.dng",size:24.8},
+  {name:"PXL_072326953.dng",size:23.1},
+  {name:"PXL_082205274_2.dng",size:25.4},
+  {name:"PXL_072307515.dng",size:22.7},
+  {name:"_DSC0060.JPG",size:8.3},
+  {name:"_DSC0085.JPG",size:7.9},
+];
+
+const PRESETS={
+  jio:   {bw:10, lat:85, jit:35, loss:1.5, sp:2, rp:2},
+  airtel:{bw:18, lat:55, jit:20, loss:0.8, sp:2, rp:2},
+  wifi:  {bw:40, lat:12, jit:5,  loss:0.2, sp:4, rp:4},
+  edge:  {bw:.8, lat:300,jit:120,loss:5.0, sp:2, rp:2},
+};
+
+const CW=680,CH=410;
+const SY1=10,SY2=52;    
+const PS1=57,PS2=170;   
+const RLY1=173,RLY2=213;
+const PR1=217,PR2=340;  
+const RV1=343,RV2=385;  
+const BUF_Y=396;        
+
+const CHUNKS=10; 
+
+let cfg={...PRESETS.jio};
+let bugs={1:false,2:false,3:false,4:false,5:false};
+let running=false,rafId=null,simData=null;
+let evtI=0,simVT=0,realStart=0,simSpeed=10;
+let pkts=[],metrics={lost:0,col:0,stalls:0,done:new Set(),prog:{}};
+
+const canvas=document.getElementById('cv');
+const ctx=canvas.getContext('2d');
+const dark=window.matchMedia('(prefers-color-scheme: dark)').matches;
+
+function initCanvas(){
+  const dpr=devicePixelRatio||1;
+  canvas.width=CW*dpr; canvas.height=CH*dpr;
+  ctx.setTransform(dpr,0,0,dpr,0,0);
+}
+
+const SLIDERS=[
+  {id:'s-bw', vi:'v-bw', key:'bw',  u:' Mbps',d:1},
+  {id:'s-lat',vi:'v-lat',key:'lat', u:' ms',  d:0},
+  {id:'s-jit',vi:'v-jit',key:'jit', u:' ms',  d:0},
+  {id:'s-loss',vi:'v-loss',key:'loss',u:'%',  d:1},
+  {id:'s-sp', vi:'v-sp', key:'sp',  u:'',     d:0},
+  {id:'s-rp', vi:'v-rp', key:'rp',  u:'',     d:0},
+];
+
+SLIDERS.forEach(s=>{
+  document.getElementById(s.id).addEventListener('input',function(){
+    cfg[s.key]=parseFloat(this.value);
+    document.getElementById(s.vi).textContent=(s.d?cfg[s.key].toFixed(s.d):cfg[s.key])+s.u;
+  });
+});
+
+document.getElementById('cbs').addEventListener('click',e=>{
+  const p=e.target.dataset.p; if(!p) return;
+  document.querySelectorAll('.cb').forEach(b=>b.classList.remove('sel'));
+  e.target.classList.add('sel');
+  const pr=PRESETS[p]; cfg={...pr};
+  SLIDERS.forEach(s=>{
+    const el=document.getElementById(s.id); el.value=cfg[s.key];
+    document.getElementById(s.vi).textContent=(s.d?cfg[s.key].toFixed(s.d):cfg[s.key])+s.u;
+  });
+});
+
+document.getElementById('bbs').addEventListener('click',e=>{
+  const b=parseInt(e.target.dataset.b); if(!b) return;
+  bugs[b]=!bugs[b]; e.target.classList.toggle('on',bugs[b]);
+});
+
+document.getElementById('rbtn').addEventListener('click',runSim);
+
+function initFP(){
+  document.getElementById('fpw').innerHTML=FILES.map((f,i)=>`
+    <div class="fp-row">
+      <div class="fp-name" title="${f.name}">${f.name}</div>
+      <div class="fp-bg"><div class="fp-fill" id="fpb${i}"></div></div>
+      <div class="fp-pct" id="fpp${i}">0%</div>
+      <div class="fp-st" id="fps${i}"></div>
+    </div>`).join('');
+}
+
+function setFP(i,pct,st){
+  const b=document.getElementById('fpb'+i);
+  const p=document.getElementById('fpp'+i);
+  const s=document.getElementById('fps'+i);
+  if(!b)return;
+  b.style.width=pct+'%';
+  b.style.background=st==='err'?'#E24B4A':st==='warn'?'#EF9F27':'#1D9E75';
+  p.textContent=Math.round(pct)+'%';
+  if(s){
+    s.textContent=st==='err'?'⚠ corrupt':st==='warn'?'⏸ stalled':pct>=100?'✓ done':'';
+    s.style.color=st==='err'?'#E24B4A':st==='warn'?'#EF9F27':'#1D9E75';
+  }
+}
+
+function resetFP(){FILES.forEach((_,i)=>setFP(i,0,''));}
+
+function addLog(msg,col){
+  const el=document.getElementById('logel');
+  const d=document.createElement('div');
+  const ts=new Date().toISOString().substr(11,12)+'Z';
+  d.style.color=col||'';
+  d.textContent=`[${ts}] ${msg}`;
+  el.appendChild(d); el.scrollTop=el.scrollHeight;
+}
+function clearLog(){document.getElementById('logel').innerHTML='';}
+
+function setM(id,v,c){
+  const e=document.getElementById(id); if(!e)return;
+  e.textContent=v; e.className='mv '+(c||'');
+}
+
+function buildSim(){
+  const sp=Math.max(1,Math.round(cfg.sp));
+  const rp=Math.max(1,Math.round(cfg.rp));
+  const lr=cfg.loss/100;
+  const events=[];
+  let vt=0; 
+
+  FILES.forEach((file,fi)=>{
+    const bytesChunk=(file.size*1e6)/(sp*CHUNKS);
+    const txMs=(bytesChunk*8)/(cfg.bw*1e6)*1000;
+
+    for(let p=0;p<sp;p++){
+      for(let c=0;c<CHUNKS;c++){
+        const svt=vt+c*txMs;
+        const jit=(Math.random()*2-1)*cfg.jit;
+        const avt=svt+cfg.lat+jit;
+        const dropped=Math.random()<lr;
+        const raw=fi*10000+p*CHUNKS+c;
+        const absOff=(!bugs[4]&&fi>0)?(p*CHUNKS+c):raw;
+        events.push({svt,avt,p,fi,c,absOff,raw,dropped,recv:p<rp});
+      }
+    }
+    vt+=CHUNKS*txMs+200;
+  });
+
+  const seen=new Map(); const colSet=new Set();
+  events.forEach((e,i)=>{
+    if(!e.dropped&&e.recv){
+      const key=bugs[1]?`${e.fi}:${e.absOff}`:`${e.absOff}`;
+      if(seen.has(key)){colSet.add(i);colSet.add(seen.get(key));}
+      else seen.set(key,i);
+    }
+  });
+
+  const stallFiles=new Set();
+  if(!bugs[2]){
+    const maxArr={};
+    events.forEach(e=>{if(!e.dropped&&e.recv) maxArr[e.fi]=Math.max(maxArr[e.fi]||0,e.avt);});
+    const minArr={};
+    events.forEach(e=>{if(!e.dropped&&e.recv) minArr[e.fi]=Math.min(minArr[e.fi]||Infinity,e.avt);});
+    for(let fi=1;fi<FILES.length;fi++){
+      if((minArr[fi]||0)<(maxArr[fi-1]||0)+300) stallFiles.add(fi);
+    }
+  }
+
+  const totDur=Math.max(...events.map(e=>e.avt))+500;
+  return {events,colSet,stallFiles,sp,rp,totDur};
+}
+
+const C={
+  sf: dark?'#04342C':'#E1F5EE', ss:dark?'#1D9E75':'#0F6E56', st:dark?'#9FE1CB':'#085041',
+  rf: dark?'#26215C':'#EEEDFE', rs:dark?'#7F77DD':'#534AB7', rt:dark?'#CECBF6':'#26215C',
+  pl: dark?'#444441':'#B4B2A9', pm:dark?'#3C3489':'#AFA9EC',
+  ts: dark?'#5F5E5A':'#888780', be:dark?'#2C2C2A':'#D3D1C7',
+};
+
+function rr(x,y,w,h,r){
+  ctx.beginPath();
+  ctx.moveTo(x+r,y);ctx.lineTo(x+w-r,y);ctx.arcTo(x+w,y,x+w,y+r,r);
+  ctx.lineTo(x+w,y+h-r);ctx.arcTo(x+w,y+h,x+w-r,y+h,r);
+  ctx.lineTo(x+r,y+h);ctx.arcTo(x,y+h,x,y+h-r,r);
+  ctx.lineTo(x,y+r);ctx.arcTo(x,y,x+r,y,r);ctx.closePath();
+}
+
+function px(p,total){
+  const L=55,R=CW-55;
+  return L+(p+.5)*(R-L)/Math.max(total,1);
+}
+
+function drawBase(){
+  ctx.clearRect(0,0,CW,CH);
+  const sp=simData?simData.sp:Math.round(cfg.sp);
+  const rp=simData?simData.rp:Math.round(cfg.rp);
+  const mp=Math.max(sp,rp);
+
+  [
+    [SY1,SY2,C.sf,C.ss,C.st,`SENDER  ·  ${sp} pipe${sp>1?'s':''}  ·  7 files (${FILES.reduce((a,f)=>a+f.size,0).toFixed(0)} MB)`],
+    [RLY1,RLY2,C.rf,C.rs,C.rt,'CLOUDFLARE EDGE RELAY  ·  zero-buffer bridge  ·  no disk touch'],
+    [RV1,RV2,C.sf,C.ss,C.st,`RECEIVER  ·  ${rp} pipe${rp>1?'s':''}  ·  reassembly buffer`],
+  ].forEach(([y1,y2,fill,stroke,text,label])=>{
+    ctx.fillStyle=fill; rr(18,y1,CW-36,y2-y1,8); ctx.fill();
+    ctx.strokeStyle=stroke; ctx.lineWidth=1; ctx.stroke();
+    ctx.fillStyle=text; ctx.font='500 11px var(--font-mono,monospace)';
+    ctx.textAlign='center';
+    ctx.fillText(label,CW/2,y1+(y2-y1)/2+4);
+  });
+
+  for(let p=0;p<sp;p++){
+    const x=px(p,mp);
+    ctx.strokeStyle=C.pl; ctx.lineWidth=1; ctx.setLineDash([4,5]);
+    ctx.beginPath(); ctx.moveTo(x,SY2); ctx.lineTo(x,RLY1); ctx.stroke();
+    ctx.setLineDash([]);
+    ctx.fillStyle=C.ts; ctx.font='9px var(--font-mono,monospace)'; ctx.textAlign='center';
+    ctx.fillText('P'+p,x,SY2+13);
+  }
+
+  for(let p=0;p<mp;p++){
+    const x=px(p,mp);
+    const recv=p<rp;
+    ctx.strokeStyle=recv?C.pl:C.pm; ctx.lineWidth=recv?1:.8;
+    ctx.setLineDash(recv?[4,5]:[2,7]);
+    ctx.beginPath(); ctx.moveTo(x,RLY2); ctx.lineTo(x,RV1); ctx.stroke();
+    ctx.setLineDash([]);
+    if(!recv){
+      ctx.fillStyle='#E24B4A'; ctx.font='12px monospace'; ctx.textAlign='center';
+      ctx.fillText('✕',x,(RLY2+RV1)/2);
+      ctx.fillStyle=C.ts; ctx.font='8px var(--font-mono,monospace)';
+      ctx.fillText('not listening',x,(RLY2+RV1)/2+14);
+    }
+  }
+
+  drawBuffer(sp,rp);
+}
+
+function drawBuffer(sp,rp){
+  const L=55,R=CW-55,tw=R-L;
+  const fw=(tw-3*(FILES.length-1))/FILES.length;
+  ctx.fillStyle=C.ts; ctx.font='9px var(--font-mono,monospace)'; ctx.textAlign='left';
+  ctx.fillText('reassembly buffer',L,BUF_Y-3);
+
+  FILES.forEach((_,fi)=>{
+    const x=L+fi*(fw+3);
+    const pct=metrics.prog[fi]||0;
+    const isCol=simData&&simData.colSet.size>0&&fi>0&&!bugs[1];
+    const isSt=simData&&simData.stallFiles.has(fi)&&!bugs[2];
+    ctx.fillStyle=C.be; rr(x,BUF_Y,fw,12,3); ctx.fill();
+    if(pct>0){
+      ctx.fillStyle=isCol?'#E24B4A':isSt?'#EF9F27':'#1D9E75';
+      rr(x,BUF_Y,(pct/100)*fw,12,3); ctx.fill();
+    }
+    ctx.fillStyle=C.ts; ctx.font='8px var(--font-mono,monospace)'; ctx.textAlign='center';
+    ctx.fillText(fi+1,x+fw/2,BUF_Y+23);
+  });
+}
+
+function drawPkts(){
+  pkts.forEach(pk=>{
+    let a=1;
+    if(pk.fading) a=Math.max(0,1-pk.ft);
+    if(a<=0) return;
+    ctx.globalAlpha=a;
+    ctx.fillStyle=pk.col;
+    ctx.beginPath(); ctx.arc(pk.x,pk.y,pk.col==='#7F77DD'?3.5:4,0,Math.PI*2); ctx.fill();
+    if(a>0.5){
+      ctx.fillStyle='rgba(255,255,255,.3)';
+      ctx.beginPath(); ctx.arc(pk.x,pk.y,1.5,0,Math.PI*2); ctx.fill();
+    }
+    ctx.globalAlpha=1;
+  });
+}
+
+const PSPD=3.2; 
+
+function loop(ts){
+  if(!running) return;
+  const wall=(ts-realStart)/1000;
+  simVT=wall*simSpeed*1000;
+
+  while(evtI<simData.events.length){
+    const e=simData.events[evtI];
+    if(e.svt>simVT) break;
+    evtI++;
+    const mp=Math.max(simData.sp,simData.rp);
+    const x=px(e.p,mp);
+    const isCol=simData.colSet.has(evtI-1)&&!bugs[1];
+    const isSt=simData.stallFiles.has(e.fi)&&!bugs[2];
+    const isMiss=!e.recv&&!bugs[3];
+    const isOOO=Math.abs((Math.random()*2-1)*cfg.jit)>cfg.lat*0.3;
+
+    let col,st;
+    if(e.dropped){col='#E24B4A';st='lost';metrics.lost++;}
+    else if(isMiss){col='#7F77DD';st='miss';}
+    else if(isCol){col='#E24B4A';st='col';metrics.col++;}
+    else if(isSt){col='#888780';st='stall';}
+    else if(isOOO){col='#EF9F27';st='ooo';}
+    else{col='#1D9E75';st='ok';}
+
+    pkts.push({x,y:SY2,p:e.p,fi:e.fi,c:e.c,avt:e.avt,recv:e.recv,col,st,phase:'s',fading:false,ft:0,done:false});
+  }
+
+  pkts=pkts.filter(pk=>{
+    if(pk.done) return false;
+    if(pk.fading){pk.ft+=0.05; return pk.ft<1;}
+
+    const spd=pk.st==='stall'?PSPD*.06:pk.st==='miss'?PSPD*.7:PSPD;
+
+    if(pk.phase==='s'){
+      pk.y+=spd;
+      if(pk.y>=RLY1){pk.y=RLY1; pk.phase='r';}
+    } else if(pk.phase==='r'){
+      pk.y+=spd*.35;
+      if(pk.y>=RLY2){
+        pk.y=RLY2;
+        if(!pk.recv&&!bugs[3]){pk.fading=true;}
+        else pk.phase='rv';
+      }
+    } else {
+      pk.y+=spd;
+      if(pk.y>=RV1){
+        const inc=100/(simData.sp*CHUNKS);
+        metrics.prog[pk.fi]=Math.min(100,(metrics.prog[pk.fi]||0)+inc);
+        const p=metrics.prog[pk.fi];
+        const isErr=(simData.colSet.size>0&&pk.fi>0&&!bugs[1]);
+        const isWarn=(simData.stallFiles.has(pk.fi)&&!bugs[2]);
+        setFP(pk.fi,p,isErr?'err':isWarn?'warn':'');
+        if(p>=99.5&&!metrics.done.has(pk.fi)){
+          metrics.done.add(pk.fi);
+          const bad=isErr||isWarn;
+          addLog(`File ${pk.fi+1}: ${FILES[pk.fi].name} — ${bad?'⚠ CORRUPT/STALLED':'✓ OK'}`,
+            bad?'#E24B4A':(dark?'#1D9E75':'#0F6E56'));
+          setFP(pk.fi,100,isErr?'err':isWarn?'warn':'');
+        }
+        pk.done=true; return false;
+      }
+    }
+    return true;
+  });
+
+  const effBw=(cfg.bw*(1-cfg.loss/100)*(bugs[3]?1:Math.min(1,cfg.rp/cfg.sp))).toFixed(1);
+  setM('m-tp',effBw+' Mbps',parseFloat(effBw)>8?'g':parseFloat(effBw)>3?'a':'r');
+  setM('m-owtt',cfg.lat+' ms');
+  setM('m-lost',metrics.lost,metrics.lost>8?'r':metrics.lost>0?'a':'g');
+  const c=!bugs[1]?metrics.col:0;
+  setM('m-col',c,c>0?'r':'g');
+  const s=!bugs[2]?simData.stallFiles.size:0;
+  setM('m-stall',s,s>0?'a':'g');
+  setM('m-fd',metrics.done.size+'/'+FILES.length,metrics.done.size===FILES.length?'g':'');
+
+  drawBase();
+  drawPkts();
+
+  if(evtI>=simData.events.length&&pkts.length===0){
+    running=false;
+    const errs=(!bugs[1]?metrics.col:0)+(!bugs[2]?simData.stallFiles.size*5:0)+(!bugs[3]&&cfg.sp>cfg.rp?3:0);
+    addLog(`── Done. ${metrics.done.size}/${FILES.length} files. `+(errs?`⚠ ${errs} error(s) detected.`:'✓ Clean transfer.'),
+      errs?'#EF9F27':(dark?'#1D9E75':'#0F6E56'));
+    const btn=document.getElementById('rbtn');
+    btn.textContent='▶ Run again'; btn.disabled=false;
+    return;
+  }
+  rafId=requestAnimationFrame(loop);
+}
+
+function runSim(){
+  if(running) return;
+  if(rafId) cancelAnimationFrame(rafId);
+  pkts=[]; metrics={lost:0,col:0,stalls:0,done:new Set(),prog:{}};
+  evtI=0; simVT=0; clearLog(); resetFP();
+  ['m-tp','m-owtt','m-lost','m-col','m-stall','m-fd'].forEach(id=>setM(id,'—',''));
+
+  simData=buildSim();
+  simSpeed=Math.max(2,Math.min(60,simData.totDur/14000));
+  running=true; realStart=performance.now();
+
+  const blist=Object.entries(bugs).filter(([,v])=>v).map(([k])=>'B'+k).join(' ');
+  addLog(`Carrier: ${cfg.bw}Mbps | lat=${cfg.lat}ms | jit=${cfg.jit}ms | loss=${cfg.loss}%`);
+  addLog(`Pipes: sender=${Math.round(cfg.sp)}  receiver=${Math.round(cfg.rp)}  speed=${simSpeed.toFixed(1)}x`);
+  addLog(blist?`Fixes: ${blist}`:'No fixes active — bugs will manifest','#EF9F27');
+  addLog('─────────────────────────────────────');
+  if(!bugs[1]&&Math.round(cfg.sp)>=1) addLog('Bug 1 active: offset collision across files','#E24B4A');
+  if(!bugs[2]) addLog('Bug 2 active: sequential reassembly loop','#E24B4A');
+  if(!bugs[3]&&Math.round(cfg.sp)>Math.round(cfg.rp)) addLog('Bug 3 active: '+Math.round(cfg.sp-cfg.rp)+' pipe(s) unlistened','#E24B4A');
+
+  const btn=document.getElementById('rbtn');
+  btn.textContent='⏸ Running…'; btn.disabled=true;
+  rafId=requestAnimationFrame(loop);
+}
+
+initCanvas(); initFP(); drawBase();
+</script>
+</body>
+</html>
