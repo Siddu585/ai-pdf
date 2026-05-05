@@ -106,7 +106,8 @@ export function decryptContinuousStream(pipeStreams: ReadableStream<Uint8Array>[
     return new ReadableStream({
         async start(controller) {
             const readers = pipeStreams.map(s => s.getReader());
-            
+            let activePipes = readers.length;
+
             readers.forEach(async (reader, i) => {
                 let leftover: Uint8Array | null = null;
                 const readExact = async (n: number) => {
@@ -126,17 +127,21 @@ export function decryptContinuousStream(pipeStreams: ReadableStream<Uint8Array>[
                     }
 
                     while (offset < n) {
-                        const { done, value } = await reader.read();
-                        if (done) return null;
-                        
-                        const remaining = n - offset;
-                        if (value.length <= remaining) {
-                            buf.set(value, offset);
-                            offset += value.length;
-                        } else {
-                            buf.set(value.subarray(0, remaining), offset);
-                            leftover = value.subarray(remaining);
-                            offset += remaining;
+                        try {
+                            const { done, value } = await reader.read();
+                            if (done) return null;
+                            
+                            const remaining = n - offset;
+                            if (value.length <= remaining) {
+                                buf.set(value, offset);
+                                offset += value.length;
+                            } else {
+                                buf.set(value.subarray(0, remaining), offset);
+                                leftover = value.subarray(remaining);
+                                offset += remaining;
+                            }
+                        } catch (e) {
+                            return null; // Pipe error
                         }
                     }
                     return buf;
@@ -156,10 +161,7 @@ export function decryptContinuousStream(pipeStreams: ReadableStream<Uint8Array>[
                         const ciphertext = cipherLen > 0 ? await readExact(cipherLen) : new Uint8Array(0);
                         if (cipherLen > 0 && !ciphertext) break;
 
-                        if (fileIdx === 0xFFFF) {
-                            // Keep-alive pulse
-                            continue;
-                        }
+                        if (fileIdx === 0xFFFF) continue; // Keep-alive
 
                         const iv = new Uint8Array(12);
                         const ivView = new DataView(iv.buffer);
@@ -168,17 +170,19 @@ export function decryptContinuousStream(pipeStreams: ReadableStream<Uint8Array>[
                         ivView.setBigUint64(4, absOffset, true);
 
                         const decrypted = await window.crypto.subtle.decrypt({ name: "AES-GCM", iv }, keyObj, ciphertext!);
-                        const decryptedData = new Uint8Array(decrypted);
-
                         controller.enqueue({
                             fileIdx,
                             absOffset,
-                            data: decryptedData
+                            data: new Uint8Array(decrypted)
                         });
                     }
                 } catch (e) {
                     console.error(`[CRYPTO-ERROR] Pipe ${i} failure:`, e);
-                    // In a production engine, we would signal recovery here
+                } finally {
+                    activePipes--;
+                    if (activePipes <= 0) {
+                        try { controller.close(); } catch (e) {}
+                    }
                 }
             });
         }

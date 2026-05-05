@@ -43,16 +43,16 @@ const CLOUDFLARE_RELAY_URL = 'https://turbodrop-stream-relay.siddhantjangam33.wo
 // v02.2.63 (Tachyon Omega - Zenith Surgical) - 5 Surgical Patches (Rollback Debounce, Migration Guard, Active BDP Gate, MTU Floor Removal, NACK Throttling)
 // v02.2.64 (Tachyon Omega - Gate Unblocker) - GPE 8MB Floor Removal + ICE-based activePipeCount + Unified BDP Formula
 // v02.2.65 (Tachyon Omega - MTU Shield) - File-start MTU grace period + Permanent pipe retirement + Dispatch rate telemetry
-const VERSION = "v3.2.9.9 (Omega Hardened - Production)";
+const VERSION = "v3.2.10.0 (Omega Hardened - Production)";
 
 
 function getEngineConfig(engine: 'M2M' | 'HYBRID' | 'NITRO') {
     if (engine === 'M2M') {
         return {
-            pipes: 12, // v3.2.9.9: Restored 12-pipe with Adaptive MTU to overcome mobile jitter
-            pacerThreshold: 256 * 1024 * 1024, 
-            mtuLimit: 256 * 1024, // 256KB Adaptive Ceiling
-            nackBackoff: 100 
+            pipes: 16, // v3.2.10.0: Increased to 16 pipes for 20MB/s target
+            pacerThreshold: 512 * 1024 * 1024, 
+            mtuLimit: 512 * 1024, // 512KB Adaptive Ceiling for high-speed saturation
+            nackBackoff: 50 
         };
     }
     return {
@@ -62,7 +62,7 @@ function getEngineConfig(engine: 'M2M' | 'HYBRID' | 'NITRO') {
         nackBackoff: 1000
     };
 }
-const PIPES = 12; // v3.2.9.9: Synchronized with 12-Pipe Adaptive Core
+const PIPES = 16; // v3.2.10.0: Synchronized with 16-Pipe 20MB/s Core
 const CHANNELS_PER_PIPE = 8; 
 const CHANNELS = 96; // PIPES * CHANNELS_PER_PIPE 
 const CHUNK_SIZE = 32 * 1024; // 32KB Base MTU
@@ -1856,6 +1856,7 @@ ${capturedLogsRef.current.join('\n')}
 
     const downloadDiagnostics = () => {
         const d = diagnosticMetricsRef.current;
+        const pipeStats = d.pistonStats.map((s, i) => `P${i}:${s.health}(${s.speed.toFixed(1)}MB/s)`).join(' ');
         const deepInsight = `
 --- DEEP DIAGNOSTIC INSIGHT ---
 Version: ${VERSION}
@@ -1866,6 +1867,7 @@ One-Way-Trip-Time (OWTT): ${d.owtt.toFixed(2)}ms
 JS-Event-Loop Lag: ${d.eventLoopLag}ms
 MTU Ceiling (Probe): ${d.mtuCeiling}
 Buffer-Bloat Grade: ${d.bufferBloatGrade}
+Pipe Matrix: ${pipeStats}
 -------------------------------
 `;
         const content = deepInsight + capturedLogsRef.current.join('\n');

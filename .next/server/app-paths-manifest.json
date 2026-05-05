@@ -1,25 +1,5 @@
 {
   "/_not-found/page": "app/_not-found/page.js",
   "/favicon.ico/route": "app/favicon.ico/route.js",
-  "/checkout/cancel/page": "app/checkout/cancel/page.js",
-  "/checkout/success/page": "app/checkout/success/page.js",
-  "/privacy/page": "app/privacy/page.js",
-  "/page": "app/page.js",
-  "/contact/page": "app/contact/page.js",
-  "/about/page": "app/about/page.js",
-  "/terms/page": "app/terms/page.js",
-  "/tools/merge-pdf/page": "app/tools/merge-pdf/page.js",
-  "/tools/organize-pages/page": "app/tools/organize-pages/page.js",
-  "/tools/repair-pdf/page": "app/tools/repair-pdf/page.js",
-  "/tools/pdf-compressor/page": "app/tools/pdf-compressor/page.js",
-  "/tools/unlock-pdf/page": "app/tools/unlock-pdf/page.js",
-  "/tools/photo-resizer/page": "app/tools/photo-resizer/page.js",
-  "/tools/split-pdf/page": "app/tools/split-pdf/page.js",
-  "/tools/instant-drop/page": "app/tools/instant-drop/page.js",
-  "/tools/ai-chat-pdf/page": "app/tools/ai-chat-pdf/page.js",
-  "/tools/office-to-pdf/page": "app/tools/office-to-pdf/page.js",
-  "/tools/ocr-scanner/page": "app/tools/ocr-scanner/page.js",
-  "/tools/pdf-to-word/page": "app/tools/pdf-to-word/page.js",
-  "/tools/ocr-pdf/page": "app/tools/ocr-pdf/page.js",
-  "/tools/image-to-pdf/page": "app/tools/image-to-pdf/page.js"
+  "/page": "app/page.js"
 }
