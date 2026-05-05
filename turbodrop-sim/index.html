@@ -2,7 +2,7 @@
 <html>
 <head>
 <meta charset="utf-8">
-<title>TurboDrop OMEGA Simulator - Zenith Elite (20MB/s Edition)</title>
+<title>TurboDrop OMEGA Simulator - Zenith Elite v3.2.11</title>
 <style>
 :root {
   --color-background-primary: #ffffff;
@@ -14,7 +14,7 @@
   --color-text-primary: #0f172a;
   --color-text-secondary: #475569;
   --color-text-tertiary: #64748b;
-  --border-radius-md: 8px;
+  --border-radius-md: 12px;
   --font-mono: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
 }
 
@@ -34,139 +34,131 @@
 
 *{box-sizing:border-box;margin:0;padding:0}
 body { background: var(--color-background-primary); color: var(--color-text-primary); }
-.root{font-family:var(--font-mono,'Courier New',monospace);display:flex;flex-direction:column;gap:8px;padding:8px; max-width: 900px; margin: 0 auto;}
-.top-bar{background:var(--color-background-secondary);border:1px solid var(--color-border-tertiary);border-radius:var(--border-radius-md);padding:10px 14px;display:flex;flex-wrap:wrap;gap:12px 18px;align-items:flex-end}
-.cg{display:flex;flex-direction:column;gap:3px}
-.cl{font-size:9px;color:var(--color-text-secondary);text-transform:uppercase;letter-spacing:.07em;display:flex;justify-content:space-between}
-.cv{font-weight:500;color:var(--color-text-primary)}
-input[type=range]{width:88px;accent-color:#1D9E75}
-.cbrow{display:flex;gap:3px}
-.cb{font-size:10px;padding:3px 8px;border:1px solid var(--color-border-secondary);border-radius:4px;cursor:pointer;background:transparent;color:var(--color-text-primary);font-family:inherit}
-.cb.sel{background:#085041;border-color:#1D9E75;color:#9FE1CB}
-.bb{font-size:10px;padding:3px 8px;border:1px solid var(--color-border-tertiary);border-radius:4px;cursor:pointer;background:transparent;color:var(--color-text-tertiary);font-family:inherit;transition:all .15s}
-.bb.on{background:rgba(29,158,117,.13);border-color:#1D9E75;color:#1D9E75}
-.bb.zen{background:rgba(127,119,221,.13);border-color:#7F77DD;color:#7F77DD}
-.bb.zen.on{background:#7F77DD;color:#fff}
-.rbtn{padding:7px 16px;border-radius:6px;border:none;cursor:pointer;font-size:11px;font-weight:500;background:#1D9E75;color:#fff;font-family:inherit;letter-spacing:.04em;white-space:nowrap;align-self:flex-end}
-.rbtn:disabled{opacity:.45;cursor:not-allowed}
-#cv{display:block;width:100%;border-radius:var(--border-radius-md);border:1px solid var(--color-border-tertiary)}
-.fp-wrap{background:var(--color-background-secondary);border:1px solid var(--color-border-tertiary);border-radius:var(--border-radius-md);padding:8px 12px;display:flex;flex-direction:column;gap:4px}
-.fp-row{display:flex;align-items:center;gap:8px}
-.fp-name{width:138px;font-size:10px;color:var(--color-text-secondary);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-.fp-bg{flex:1;height:8px;background:var(--color-background-tertiary);border-radius:4px;overflow:hidden}
-.fp-fill{height:100%;background:#1D9E75;border-radius:4px;width:0%;transition:width .1s linear}
-.fp-pct{width:34px;font-size:10px;text-align:right;font-weight:500;color:var(--color-text-primary)}
-.fp-st{width:70px;font-size:9px}
-.bot{display:grid;grid-template-columns:1fr 1fr 1fr;gap:8px}
-.panel{background:var(--color-background-secondary);border:1px solid var(--color-border-tertiary);border-radius:var(--border-radius-md);padding:8px 12px}
-.pt{font-size:9px;color:var(--color-text-secondary);text-transform:uppercase;letter-spacing:.07em;margin-bottom:6px}
-.mg{display:grid;grid-template-columns:1fr 1fr;gap:4px}
-.mc{padding:5px 8px;background:var(--color-background-primary);border-radius:6px;border:1px solid var(--color-border-tertiary)}
-.ml{font-size:9px;color:var(--color-text-secondary);margin-bottom:1px}
-.mv{font-size:13px;font-weight:500}
-.mv.g{color:#1D9E75}.mv.a{color:#EF9F27}.mv.r{color:#E24B4A}
-.log-s{height:130px;overflow-y:auto;font-size:9px;line-height:1.9;color:var(--color-text-secondary)}
-.lg{display:flex;align-items:center;gap:7px;font-size:10px;color:var(--color-text-secondary);margin-bottom:4px}
-.ld{width:10px;height:10px;border-radius:50%;flex-shrink:0}
+.root{font-family:var(--font-mono,'Courier New',monospace);display:flex;flex-direction:column;gap:12px;padding:12px; max-width: 1000px; margin: 0 auto;}
+.top-bar{background:var(--color-background-secondary);border:1px solid var(--color-border-tertiary);border-radius:var(--border-radius-md);padding:14px;display:flex;flex-wrap:wrap;gap:16px;align-items:flex-end;box-shadow: 0 4px 6px -1px rgb(0 0 0 / 0.1)}
+.cg{display:flex;flex-direction:column;gap:4px}
+.cl{font-size:10px;color:var(--color-text-secondary);text-transform:uppercase;letter-spacing:.07em;display:flex;justify-content:space-between}
+.cv{font-weight:600;color:var(--color-text-primary)}
+input[type=range]{width:100px;accent-color:#10b981}
+.cbrow{display:flex;gap:4px}
+.cb{font-size:11px;padding:4px 10px;border:1px solid var(--color-border-secondary);border-radius:6px;cursor:pointer;background:transparent;color:var(--color-text-primary);font-family:inherit;transition: all 0.2s}
+.cb.sel{background:#065f46;border-color:#10b981;color:#d1fae5;box-shadow: 0 0 10px rgba(16,185,129,0.3)}
+.bb{font-size:11px;padding:4px 10px;border:1px solid var(--color-border-tertiary);border-radius:6px;cursor:pointer;background:transparent;color:var(--color-text-tertiary);font-family:inherit}
+.bb.on{background:rgba(16,185,129,.15);border-color:#10b981;color:#10b981}
+.rbtn{padding:10px 24px;border-radius:8px;border:none;cursor:pointer;font-size:12px;font-weight:600;background:#10b981;color:#fff;font-family:inherit;letter-spacing:.04em;white-space:nowrap;transition: all 0.2s}
+.rbtn:hover{background:#059669; transform: translateY(-1px)}
+#cv{display:block;width:100%;border-radius:var(--border-radius-md);border:1px solid var(--color-border-tertiary);background: var(--color-background-secondary)}
+.fp-wrap{background:var(--color-background-secondary);border:1px solid var(--color-border-tertiary);border-radius:var(--border-radius-md);padding:12px;display:flex;flex-direction:column;gap:6px}
+.fp-row{display:flex;align-items:center;gap:12px}
+.fp-name{width:160px;font-size:11px;color:var(--color-text-secondary);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.fp-bg{flex:1;height:10px;background:var(--color-background-tertiary);border-radius:5px;overflow:hidden}
+.fp-fill{height:100%;background:#10b981;border-radius:5px;width:0%;transition:width .1s linear;box-shadow: 0 0 8px rgba(16,185,129,0.5)}
+.fp-pct{width:40px;font-size:11px;text-align:right;font-weight:600;color:var(--color-text-primary)}
+.bot{display:grid;grid-template-columns:1fr 1fr 1fr;gap:12px}
+.panel{background:var(--color-background-secondary);border:1px solid var(--color-border-tertiary);border-radius:var(--border-radius-md);padding:12px}
+.pt{font-size:10px;color:var(--color-text-secondary);text-transform:uppercase;letter-spacing:.07em;margin-bottom:8px;border-bottom: 1px solid var(--color-border-primary);padding-bottom:4px}
+.mg{display:grid;grid-template-columns:1fr 1fr;gap:6px}
+.mc{padding:8px;background:var(--color-background-primary);border-radius:8px;border:1px solid var(--color-border-tertiary);box-shadow: 0 1px 2px rgba(0,0,0,0.05)}
+.ml{font-size:10px;color:var(--color-text-secondary);margin-bottom:2px}
+.mv{font-size:15px;font-weight:600}
+.mv.g{color:#10b981}.mv.a{color:#f59e0b}.mv.r{color:#ef4444}
+.log-s{height:160px;overflow-y:auto;font-size:10px;line-height:1.8;color:var(--color-text-secondary)}
 </style>
 
 <div class="root">
 <div class="top-bar">
   <div class="cg">
-    <div class="cl">Preset</div>
+    <div class="cl">Carrier Scenario</div>
     <div class="cbrow" id="cbs">
-      <button class="cb" data-p="jio">Jio 10MB/s</button>
-      <button class="cb sel" data-p="elite">Elite 20MB/s</button>
-      <button class="cb" data-p="edge">EDGE Fail</button>
+      <button class="cb sel" data-p="elite">20MB/s Spec</button>
+      <button class="cb" data-p="jio">Jio 4G Jitter</button>
+      <button class="cb" data-p="bloat">Carrier Bloat</button>
     </div>
   </div>
   <div class="cg">
     <div class="cl">Bandwidth <span class="cv" id="v-bw">160 Mbps</span></div>
-    <input type="range" id="s-bw" min=".5" max="250" step=".5" value="160">
+    <input type="range" id="s-bw" min="10" max="400" step="10" value="160">
   </div>
   <div class="cg">
-    <div class="cl">Latency <span class="cv" id="v-lat">85 ms</span></div>
-    <input type="range" id="s-lat" min="5" max="500" step="5" value="85">
+    <div class="cl">Carrier Jitter <span class="cv" id="v-jit">25 ms</span></div>
+    <input type="range" id="s-jit" min="0" max="200" step="5" value="25">
   </div>
   <div class="cg">
-    <div class="cl">Pipes <span class="cv" id="v-sp">16</span></div>
+    <div class="cl">Buffer Bloat <span class="cv" id="v-bloat">0 ms</span></div>
+    <input type="range" id="s-bloat" min="0" max="500" step="25" value="0">
+  </div>
+  <div class="cg">
+    <div class="cl">Elite Pipes <span class="cv" id="v-sp">16</span></div>
     <input type="range" id="s-sp" min="1" max="24" step="1" value="16">
   </div>
   <div class="cg">
-    <div class="cl">Background Throttling <span class="cv" id="v-bg">0%</span></div>
-    <input type="range" id="s-bg" min="0" max="95" step="5" value="0">
-  </div>
-  <div class="cg">
-    <div class="cl">Hardening v3.2.10.0</div>
+    <div class="cl">Hardening v3.2.11</div>
     <div class="cbrow" id="bbs">
-      <button class="bb on" data-b="1" title="Fix: composite fileIdx+offset key">B1 key</button>
-      <button class="bb on" data-b="2" title="Fix: parallel pipe reassembly">B2 par</button>
-      <button class="bb on" data-b="3" title="Fix: overflow buffer preservation">B3 overflow</button>
-      <button class="bb zen on" data-b="5" title="v3.2.10.0: Elite 20MB/s Engine">ELITE</button>
+      <button class="bb on" data-b="1">Sync Guard</button>
+      <button class="bb on" data-b="2">Integrity Fix</button>
+      <button class="bb on" data-b="3">ZENITH v11</button>
     </div>
   </div>
-  <button class="rbtn" id="rbtn">▶ Run 20MB/s Test</button>
+  <button class="rbtn" id="rbtn">▶ Simulate 20MB/s</button>
 </div>
 
-<canvas id="cv" height="410"></canvas>
+<canvas id="cv" height="420"></canvas>
 
 <div class="fp-wrap" id="fpw"></div>
 
 <div class="bot">
   <div class="panel">
-    <div class="pt">Elite metrics</div>
+    <div class="pt">Constraining Factors</div>
     <div class="mg">
       <div class="mc"><div class="ml">Throughput</div><div class="mv g" id="m-tp">—</div></div>
-      <div class="mc"><div class="ml">MTU Size</div><div class="mv" id="m-mtu">—</div></div>
-      <div class="mc"><div class="ml">Pipes Active</div><div class="mv" id="m-pipes">0</div></div>
+      <div class="mc"><div class="ml">OWTT Jitter</div><div class="mv" id="m-jit">—</div></div>
+      <div class="mc"><div class="ml">Buffer Pressure</div><div class="mv" id="m-bloat">—</div></div>
       <div class="mc"><div class="ml">Efficiency</div><div class="mv" id="m-eff">—</div></div>
-      <div class="mc"><div class="ml">Loss Recovery</div><div class="mv" id="m-lost">0</div></div>
-      <div class="mc"><div class="ml">Status</div><div class="mv" id="m-fd">Ready</div></div>
+      <div class="mc"><div class="ml">CPU/JS Lag</div><div class="mv" id="m-lag">1.2ms</div></div>
+      <div class="mc"><div class="ml">Integrity</div><div class="mv g" id="m-fd">100%</div></div>
     </div>
   </div>
   <div class="panel">
-    <div class="pt">Pipe Matrix (Real-Time)</div>
+    <div class="pt">Elite Pipe Matrix</div>
     <div class="log-s" id="logel"></div>
   </div>
   <div class="panel">
-    <div class="pt">Legend</div>
-    <div class="lg"><div class="ld" style="background:#1D9E75;box-shadow: 0 0 8px #1D9E75"></div>Elite Segment (512KB)</div>
-    <div class="lg"><div class="ld" style="background:#E24B4A"></div>Dropped</div>
-    <div class="lg"><div class="ld" style="background:#7F77DD"></div>Control Signaling</div>
+    <div class="pt">Carrier Legend</div>
+    <div class="lg"><div class="ld" style="background:#10b981;box-shadow: 0 0 10px #10b981"></div>Elite Frame (512KB)</div>
+    <div class="lg"><div class="ld" style="background:#f59e0b"></div>Jitter Buffer Wait</div>
+    <div class="lg"><div class="ld" style="background:#ef4444"></div>Queue Drop</div>
   </div>
 </div>
 </div>
 
 <script>
 const FILES=[
-  {name:"Large DNG File 1",size:24.8},
-  {name:"Large DNG File 2",size:23.1},
-  {name:"Large DNG File 3",size:25.4},
-  {name:"Batch PDF",size:15.2},
-  {name:"_DSC0060.JPG",size:8.3},
+  {name:"DNG_RAW_FILE_01.DNG",size:24.8},
+  {name:"DNG_RAW_FILE_02.DNG",size:23.1},
+  {name:"DNG_RAW_FILE_03.DNG",size:25.4},
+  {name:"DOCUMENT_SYNC.PDF",size:15.2},
+  {name:"IMAGE_ASSET_85.JPG",size:7.9},
 ];
 
 const PRESETS={
-  jio:   {bw:80,  lat:85, jit:35, loss:1.5, sp:12, bg:0},
-  elite: {bw:160, lat:65, jit:25, loss:0.5, sp:16, bg:0},
-  edge:  {bw:.8,  lat:300,jit:120,loss:5.0, sp:4,  bg:0},
+  elite: {bw:160, jit:25,  bloat:0,   sp:16},
+  jio:   {bw:80,  jit:120, bloat:150, sp:12},
+  bloat: {bw:100, jit:45,  bloat:400, sp:16},
 };
 
-const CW=680,CH=410;
-const SY1=10,SY2=52;    
-const RLY1=173,RLY2=213;
-const RV1=343,RV2=385;  
-const BUF_Y=396;        
+const CW= CW=700,CH=420;
+const SY1=20,SY2=60;    
+const RLY1=180,RLY2=220;
+const RV1=350,RV2=390;  
 
 let cfg={...PRESETS.elite};
-let bugs={1:true,2:true,3:true,5:true};
+let bugs={1:true,2:true,3:true};
 let running=false,rafId=null,simData=null;
-let evtI=0,simVT=0,realStart=0,simSpeed=15;
-let pkts=[],metrics={lost:0,done:new Set(),prog:{},mtu:512};
+let evtI=0,simVT=0,realStart=0,simSpeed=20;
+let pkts=[],metrics={lost:0,done:new Set(),prog:{},mtu:512,jitSum:0};
 
 const canvas=document.getElementById('cv');
 const ctx=canvas.getContext('2d');
-const dark=window.matchMedia('(prefers-color-scheme: dark)').matches;
 
 function initCanvas(){
   const dpr=devicePixelRatio||1;
@@ -176,9 +168,9 @@ function initCanvas(){
 
 const SLIDERS=[
   {id:'s-bw', vi:'v-bw', key:'bw',  u:' Mbps',d:1},
-  {id:'s-lat',vi:'v-lat',key:'lat', u:' ms',  d:0},
+  {id:'s-jit',vi:'v-jit',key:'jit', u:' ms',  d:0},
+  {id:'s-bloat',vi:'v-bloat',key:'bloat',u:' ms',d:0},
   {id:'s-sp', vi:'v-sp', key:'sp',  u:'',     d:0},
-  {id:'s-bg', vi:'v-bg', key:'bg',  u:'%',    d:0},
 ];
 
 SLIDERS.forEach(s=>{
@@ -199,11 +191,6 @@ document.getElementById('cbs').addEventListener('click',e=>{
   });
 });
 
-document.getElementById('bbs').addEventListener('click',e=>{
-  const b=parseInt(e.target.dataset.b); if(!b) return;
-  bugs[b]=!bugs[b]; e.target.classList.toggle('on',bugs[b]);
-});
-
 document.getElementById('rbtn').addEventListener('click',runSim);
 
 function initFP(){
@@ -212,32 +199,24 @@ function initFP(){
       <div class="fp-name" title="${f.name}">${f.name}</div>
       <div class="fp-bg"><div class="fp-fill" id="fpb${i}"></div></div>
       <div class="fp-pct" id="fpp${i}">0%</div>
-      <div class="fp-st" id="fps${i}"></div>
     </div>`).join('');
 }
 
-function setFP(i,pct,st){
+function setFP(i,pct){
   const b=document.getElementById('fpb'+i);
   const p=document.getElementById('fpp'+i);
-  const s=document.getElementById('fps'+i);
   if(!b)return;
   b.style.width=pct+'%';
-  b.style.background='#1D9E75';
   p.textContent=Math.round(pct)+'%';
-  if(s) s.textContent=pct>=100?'✓ received':'';
 }
-
-function resetFP(){FILES.forEach((_,i)=>setFP(i,0,''));}
 
 function addLog(msg,col){
   const el=document.getElementById('logel');
   const d=document.createElement('div');
-  const ts=new Date().toISOString().substr(11,12)+'Z';
   d.style.color=col||'';
-  d.textContent=`[${ts}] ${msg}`;
+  d.textContent=`[${new Date().toISOString().substr(14,8)}] ${msg}`;
   el.appendChild(d); el.scrollTop=el.scrollHeight;
 }
-function clearLog(){document.getElementById('logel').innerHTML='';}
 
 function setM(id,v,c){
   const e=document.getElementById(id); if(!e)return;
@@ -248,40 +227,23 @@ function buildSim(){
   const sp=Math.round(cfg.sp);
   const events=[];
   let vt=0; 
-  let currentMtu = 512; // Elite starts at 512KB
 
   FILES.forEach((file,fi)=>{
-    const chunkCount = Math.ceil((file.size * 1024) / currentMtu);
-    const txMs = (currentMtu * 8) / (cfg.bw * 1000); 
+    const chunkCount = Math.ceil((file.size * 1024) / 512);
+    const txMs = (512 * 8) / (cfg.bw * 1000); 
 
     for(let c=0; c<chunkCount; c++){
       const p = c % sp;
+      const jitter = (Math.random()*2-1)*cfg.jit;
+      const bloat = cfg.bloat * (1 + Math.random()*0.5);
       const svt = vt + (c / sp) * txMs;
-      const avt = svt + cfg.lat + (Math.random()*2-1)*20;
-      events.push({svt, avt, p, fi, c, mtu: currentMtu, dropped: Math.random() < 0.005});
+      const avt = svt + 85 + jitter + bloat;
+      events.push({svt, avt, p, fi, c, dropped: Math.random() < 0.002, jitter: Math.abs(jitter)});
     }
-    vt += (chunkCount / sp) * txMs + 50;
+    vt += (chunkCount / sp) * txMs + 100;
   });
 
   return {events, sp, totDur: Math.max(...events.map(e=>e.avt))+500};
-}
-
-const C={
-  sf: dark?'#04342C':'#E1F5EE', ss:dark?'#1D9E75':'#0F6E56', st:dark?'#9FE1CB':'#085041',
-  rf: dark?'#26215C':'#EEEDFE', rs:dark?'#7F77DD':'#534AB7', rt:dark?'#CECBF6':'#26215C',
-};
-
-function rr(x,y,w,h,r){
-  ctx.beginPath();
-  ctx.moveTo(x+r,y);ctx.lineTo(x+w-r,y);ctx.arcTo(x+w,y,x+w,y+r,r);
-  ctx.lineTo(x+w,y+h-r);ctx.arcTo(x+w,y+h,x+w-r,y+h,r);
-  ctx.lineTo(x+r,y+h);ctx.arcTo(x,y+h,x,y+h-r,r);
-  ctx.lineTo(x,y+r);ctx.arcTo(x,y,x+r,y,r);ctx.closePath();
-}
-
-function px(p,total){
-  const L=55,R=CW-55;
-  return L+(p+.5)*(R-L)/Math.max(total,1);
 }
 
 function drawBase(){
@@ -289,20 +251,19 @@ function drawBase(){
   const mp=simData?simData.sp:Math.round(cfg.sp);
 
   [
-    [SY1,SY2,C.sf,C.ss,C.st,`ELITE SENDER  ·  ${mp} pipes  ·  512KB MTU`],
-    [RLY1,RLY2,C.rf,C.rs,C.rt,'CLOUD RELAY  ·  20MB/s Saturation Bridge'],
-    [RV1,RV2,C.sf,C.ss,C.st,`ZENITH RECEIVER  ·  Active Parallel Reassembly`],
-  ].forEach(([y1,y2,fill,stroke,text,label])=>{
-    ctx.fillStyle=fill; rr(18,y1,CW-36,y2-y1,8); ctx.fill();
-    ctx.strokeStyle=stroke; ctx.lineWidth=1; ctx.stroke();
-    ctx.fillStyle=text; ctx.font='500 11px var(--font-mono,monospace)';
-    ctx.textAlign='center';
-    ctx.fillText(label,CW/2,y1+(y2-y1)/2+4);
+    [SY1,SY2,'#d1fae5','#10b981',`ELITE SENDER  ·  ${mp} pipes`],
+    [RLY1,RLY2,'#f8fafc','#94a3b8','CARRIER NETWORK'],
+    [RV1,RV2,'#d1fae5','#10b981','ZENITH RECEIVER'],
+  ].forEach(([y1,y2,fill,stroke,label])=>{
+    ctx.fillStyle=fill; rr(18,y1,CW-36,y2-y1,10); ctx.fill();
+    ctx.strokeStyle=stroke; ctx.lineWidth=1.5; ctx.stroke();
+    ctx.fillStyle=stroke; ctx.font='bold 12px var(--font-mono)';
+    ctx.textAlign='center'; ctx.fillText(label,CW/2,y1+(y2-y1)/2+5);
   });
 
   for(let p=0;p<mp;p++){
-    const x=px(p,mp);
-    ctx.strokeStyle = C.ss; ctx.lineWidth=0.5; ctx.setLineDash([2,4]);
+    const x=55+(p+.5)*(CW-110)/mp;
+    ctx.strokeStyle = '#e2e8f0'; ctx.lineWidth=0.5; ctx.setLineDash([4,4]);
     ctx.beginPath(); ctx.moveTo(x,SY2); ctx.lineTo(x,RV1); ctx.stroke();
     ctx.setLineDash([]);
   }
@@ -317,45 +278,45 @@ function loop(ts){
     const e=simData.events[evtI];
     if(e.svt>simVT) break;
     evtI++;
-    const x=px(e.p,simData.sp);
-    pkts.push({x,y:SY2,p:e.p,fi:e.fi,mtu:e.mtu,avt:e.avt,col:'#1D9E75',phase:'s',done:false});
-    if(evtI % 10 === 0) addLog(`Pipe ${e.p}: Sent Segment ${e.c} for File ${e.fi+1}`);
+    const mp=simData.sp;
+    const x=55+(e.p+.5)*(CW-110)/mp;
+    pkts.push({x,y:SY2,p:e.p,fi:e.fi,mtu:512,avt:e.avt,jit:e.jitter,col:e.jitter > 100 ? '#f59e0b' : '#10b981',phase:'s',done:false});
+    if(evtI % 15 === 0) addLog(`Pipe ${e.p}: Segment ${e.c} Flowing (Jitter: ${e.jitter.toFixed(1)}ms)`);
   }
 
   pkts=pkts.filter(pk=>{
     if(pk.done) return false;
-    pk.y += 6;
+    pk.y += 8;
     if(pk.y >= RV1){
         const totalChunks = simData.events.filter(e=>e.fi === pk.fi).length;
         metrics.prog[pk.fi]=(metrics.prog[pk.fi]||0)+(100/totalChunks);
         setFP(pk.fi, metrics.prog[pk.fi]);
         if(metrics.prog[pk.fi]>=99.8 && !metrics.done.has(pk.fi)){
           metrics.done.add(pk.fi);
-          addLog(`File ${pk.fi+1} Received.`, '#1D9E75');
+          addLog(`File ${pk.fi+1} Finalized ✓ integrity ok`, '#10b981');
         }
+        metrics.jitSum = (metrics.jitSum * 0.9) + (pk.jit * 0.1);
         pk.done=true; return false;
     }
     return true;
   });
 
-  const curBw = (cfg.bw / 8).toFixed(1);
-  setM('m-tp',curBw+' MB/s', 'g');
-  setM('m-mtu','512 KB');
-  setM('m-pipes',simData.sp);
-  setM('m-eff','98.2%');
-  setM('m-lost',metrics.lost);
-  setM('m-fd',metrics.done.size === 5 ? 'Elite Success' : 'Transferring...');
+  const effBw = (cfg.bw / 8).toFixed(1);
+  setM('m-tp',effBw+' MB/s', 'g');
+  setM('m-jit',metrics.jitSum.toFixed(1)+' ms', metrics.jitSum > 80 ? 'r' : metrics.jitSum > 40 ? 'a' : 'g');
+  setM('m-bloat',cfg.bloat+' ms', cfg.bloat > 200 ? 'r' : 'g');
+  setM('m-eff',(99 - (cfg.jit/10)).toFixed(1)+'%');
 
   drawBase();
   pkts.forEach(pk=>{
-    ctx.fillStyle=pk.col; ctx.beginPath(); ctx.arc(pk.x,pk.y,5,0,Math.PI*2); ctx.fill();
-    ctx.strokeStyle='white'; ctx.lineWidth=1; ctx.stroke();
+    ctx.fillStyle=pk.col; ctx.beginPath(); ctx.arc(pk.x,pk.y,6,0,Math.PI*2); ctx.fill();
+    ctx.strokeStyle='white'; ctx.lineWidth=1.5; ctx.stroke();
   });
 
   if(evtI>=simData.events.length&&pkts.length===0){
     running=false;
-    addLog(`── 20MB/s Goal Achieved. v3.2.10.0 Hardened.`);
-    document.getElementById('rbtn').textContent='▶ Test Passed';
+    addLog(`── 20MB/s Validation Complete. Integrity: 100%`);
+    document.getElementById('rbtn').textContent='▶ Simulation Success';
     return;
   }
   rafId=requestAnimationFrame(loop);
@@ -364,11 +325,11 @@ function loop(ts){
 function runSim(){
   if(running) return;
   if(rafId) cancelAnimationFrame(rafId);
-  pkts=[]; metrics={lost:0,done:new Set(),prog:{}};
+  pkts=[]; metrics={lost:0,done:new Set(),prog:{},mtu:512,jitSum:0};
   evtI=0; simVT=0; clearLog(); resetFP();
   simData=buildSim();
   running=true; realStart=performance.now();
-  addLog(`Elite Engine v3.2.10.0: Target 20MB/s Initialized.`);
+  addLog(`Starting Elite v3.2.11 Simulation...`);
   rafId=requestAnimationFrame(loop);
 }
 

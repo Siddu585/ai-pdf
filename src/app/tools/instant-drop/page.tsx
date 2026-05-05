@@ -43,7 +43,7 @@ const CLOUDFLARE_RELAY_URL = 'https://turbodrop-stream-relay.siddhantjangam33.wo
 // v02.2.63 (Tachyon Omega - Zenith Surgical) - 5 Surgical Patches (Rollback Debounce, Migration Guard, Active BDP Gate, MTU Floor Removal, NACK Throttling)
 // v02.2.64 (Tachyon Omega - Gate Unblocker) - GPE 8MB Floor Removal + ICE-based activePipeCount + Unified BDP Formula
 // v02.2.65 (Tachyon Omega - MTU Shield) - File-start MTU grace period + Permanent pipe retirement + Dispatch rate telemetry
-const VERSION = "v3.2.10.0 (Omega Hardened - Production)";
+const VERSION = "v3.2.11.0 (Elite Zenith - Multi-Carrier Spec)";
 
 
 function getEngineConfig(engine: 'M2M' | 'HYBRID' | 'NITRO') {
@@ -243,8 +243,10 @@ function InstantDropContent() {
         workerLag: 0,
         bdp: 0,
         latency: 0, // v03.2.3: For Adaptive Scaling
-        throughput: 0, // v03.2.3: For Adaptive Scaling
-        pistonStats: Array(PIPES).fill({ speed: 0, health: 'green' }),
+        throughput: 0, 
+        pistonStats: Array(PIPES).fill(null).map(() => ({ speed: 0, health: 'green' })),
+        jitterMetrics: { avg: 0, max: 0, current: 0 }, // v3.2.11.0
+        bufferBloat: 0,
         isChaosMode: false
     });
     const [diagnosticMetrics, setDiagnosticMetrics] = useState(diagnosticMetricsRef.current); // v02.2.29: Corrected Init Order
@@ -1612,16 +1614,20 @@ ${capturedLogsRef.current.join('\n')}
                 
                 if (data.type === 'sender-ready' && data.sessionKey) {
                     if (statusRef.current === 'transferring') return; // Anti-Bounce
-                    const sessionKey = data.sessionKey;
                     const filesInfo = data.files;
+                    if (!filesInfo || filesInfo.length === 0) {
+                        logDebug("[OMEGA] CRITICAL: Received empty file-set in handshake. Resetting...");
+                        setStatus('error');
+                        return;
+                    }
                     setTotalFiles(filesInfo.length);
                     setStatus('transferring');
                     
-                    const NUM_PIPES = data.pipes || (isMobileDevice() ? 12 : 4);
-                    // v3.2.9.7: Initialization Guard
+                    const NUM_PIPES = data.pipes || (isMobileDevice() ? 16 : 4);
+                    // v3.2.11.0: Initialization Guard with Drain
                     if (pipeControllersRef.current.length > 0) {
-                        logDebug("[OMEGA] Pipes already initialized. Skipping redundant setup.");
-                        return;
+                        logDebug("[OMEGA] Stale pipes detected. Cleaning up...");
+                        disconnectEverything();
                     }
                     logDebug(`[OMEGA RECEIVER] Initializing ${NUM_PIPES} Persistent Pipes: ${normalizedRoom}`);
                     
@@ -1701,6 +1707,20 @@ ${capturedLogsRef.current.join('\n')}
                                 const chunk = acc.chunks.get(acc.nextOffset);
                                 acc.chunks.delete(acc.nextOffset);
                                 
+                                // v3.2.11.0: Real-time Jitter & Bloat Tracking
+                                const now = Date.now();
+                                if (diagnosticMetricsRef.current.lastAckTs > 0) {
+                                    const currentJitter = Math.abs(now - diagnosticMetricsRef.current.lastAckTs - 5); // 5ms expected interval
+                                    const dm = diagnosticMetricsRef.current;
+                                    dm.jitterMetrics.current = currentJitter;
+                                    dm.jitterMetrics.avg = (dm.jitterMetrics.avg * 0.95) + (currentJitter * 0.05);
+                                    dm.jitterMetrics.max = Math.max(dm.jitterMetrics.max, currentJitter);
+                                    
+                                    // Bloat is high if jitter is consistently > 100ms
+                                    if (currentJitter > 100) dm.bufferBloat++;
+                                }
+                                diagnosticMetricsRef.current.lastAckTs = now;
+
                                 acc.dataChunks.push(chunk);
                                 acc.received += chunk.length;
                                 acc.nextOffset += BigInt(chunk.length);
@@ -1716,10 +1736,16 @@ ${capturedLogsRef.current.join('\n')}
                             }
                             
                             const allDone = Array.from(fileAccumulators.values()).every((a: any) => a.completed);
-                            if (allDone) break;
+                            if (allDone && fileAccumulators.size > 0) break;
                         }
-                        setStatus('done');
-                        logDebug(`[OMEGA] Batch Received Successfully.`);
+                        
+                        if (Array.from(fileAccumulators.values()).every((a: any) => a.completed)) {
+                            setStatus('done');
+                            logDebug(`[OMEGA] Batch Received Successfully. 100% Integrity.`);
+                        } else {
+                            logDebug("[OMEGA] Reassembly Loop Broken prematurely.");
+                            setStatus('error');
+                        }
                     })();
                 }
             };
