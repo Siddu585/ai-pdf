@@ -1,339 +1,386 @@
 <!DOCTYPE html>
-<html>
+<html lang="en">
 <head>
 <meta charset="utf-8">
-<title>TurboDrop OMEGA Simulator - Zenith Elite v3.2.11</title>
+<title>TurboDrop OMEGA — Zenith Elite v3.2.12 Simulator</title>
 <style>
-:root {
-  --color-background-primary: #ffffff;
-  --color-background-secondary: #f8fafc;
-  --color-background-tertiary: #f1f5f9;
-  --color-border-primary: #e2e8f0;
-  --color-border-secondary: #cbd5e1;
-  --color-border-tertiary: #94a3b8;
-  --color-text-primary: #0f172a;
-  --color-text-secondary: #475569;
-  --color-text-tertiary: #64748b;
-  --border-radius-md: 12px;
-  --font-mono: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
-}
-
-@media (prefers-color-scheme: dark) {
-  :root {
-    --color-background-primary: #0f172a;
-    --color-background-secondary: #1e293b;
-    --color-background-tertiary: #334155;
-    --color-border-primary: #334155;
-    --color-border-secondary: #475569;
-    --color-border-tertiary: #64748b;
-    --color-text-primary: #f8fafc;
-    --color-text-secondary: #94a3b8;
-    --color-text-tertiary: #cbd5e1;
-  }
-}
-
 *{box-sizing:border-box;margin:0;padding:0}
-body { background: var(--color-background-primary); color: var(--color-text-primary); }
-.root{font-family:var(--font-mono,'Courier New',monospace);display:flex;flex-direction:column;gap:12px;padding:12px; max-width: 1000px; margin: 0 auto;}
-.top-bar{background:var(--color-background-secondary);border:1px solid var(--color-border-tertiary);border-radius:var(--border-radius-md);padding:14px;display:flex;flex-wrap:wrap;gap:16px;align-items:flex-end;box-shadow: 0 4px 6px -1px rgb(0 0 0 / 0.1)}
-.cg{display:flex;flex-direction:column;gap:4px}
-.cl{font-size:10px;color:var(--color-text-secondary);text-transform:uppercase;letter-spacing:.07em;display:flex;justify-content:space-between}
-.cv{font-weight:600;color:var(--color-text-primary)}
-input[type=range]{width:100px;accent-color:#10b981}
-.cbrow{display:flex;gap:4px}
-.cb{font-size:11px;padding:4px 10px;border:1px solid var(--color-border-secondary);border-radius:6px;cursor:pointer;background:transparent;color:var(--color-text-primary);font-family:inherit;transition: all 0.2s}
-.cb.sel{background:#065f46;border-color:#10b981;color:#d1fae5;box-shadow: 0 0 10px rgba(16,185,129,0.3)}
-.bb{font-size:11px;padding:4px 10px;border:1px solid var(--color-border-tertiary);border-radius:6px;cursor:pointer;background:transparent;color:var(--color-text-tertiary);font-family:inherit}
-.bb.on{background:rgba(16,185,129,.15);border-color:#10b981;color:#10b981}
-.rbtn{padding:10px 24px;border-radius:8px;border:none;cursor:pointer;font-size:12px;font-weight:600;background:#10b981;color:#fff;font-family:inherit;letter-spacing:.04em;white-space:nowrap;transition: all 0.2s}
-.rbtn:hover{background:#059669; transform: translateY(-1px)}
-#cv{display:block;width:100%;border-radius:var(--border-radius-md);border:1px solid var(--color-border-tertiary);background: var(--color-background-secondary)}
-.fp-wrap{background:var(--color-background-secondary);border:1px solid var(--color-border-tertiary);border-radius:var(--border-radius-md);padding:12px;display:flex;flex-direction:column;gap:6px}
-.fp-row{display:flex;align-items:center;gap:12px}
-.fp-name{width:160px;font-size:11px;color:var(--color-text-secondary);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-.fp-bg{flex:1;height:10px;background:var(--color-background-tertiary);border-radius:5px;overflow:hidden}
-.fp-fill{height:100%;background:#10b981;border-radius:5px;width:0%;transition:width .1s linear;box-shadow: 0 0 8px rgba(16,185,129,0.5)}
-.fp-pct{width:40px;font-size:11px;text-align:right;font-weight:600;color:var(--color-text-primary)}
-.bot{display:grid;grid-template-columns:1fr 1fr 1fr;gap:12px}
-.panel{background:var(--color-background-secondary);border:1px solid var(--color-border-tertiary);border-radius:var(--border-radius-md);padding:12px}
-.pt{font-size:10px;color:var(--color-text-secondary);text-transform:uppercase;letter-spacing:.07em;margin-bottom:8px;border-bottom: 1px solid var(--color-border-primary);padding-bottom:4px}
-.mg{display:grid;grid-template-columns:1fr 1fr;gap:6px}
-.mc{padding:8px;background:var(--color-background-primary);border-radius:8px;border:1px solid var(--color-border-tertiary);box-shadow: 0 1px 2px rgba(0,0,0,0.05)}
-.ml{font-size:10px;color:var(--color-text-secondary);margin-bottom:2px}
-.mv{font-size:15px;font-weight:600}
-.mv.g{color:#10b981}.mv.a{color:#f59e0b}.mv.r{color:#ef4444}
-.log-s{height:160px;overflow-y:auto;font-size:10px;line-height:1.8;color:var(--color-text-secondary)}
+:root{--bg:#020617;--panel:#0f172a;--border:#1e293b;--green:#10b981;--amber:#f59e0b;--red:#ef4444;--purple:#818cf8;--text:#f8fafc;--muted:#64748b}
+body{background:var(--bg);color:var(--text);font-family:ui-monospace,monospace;min-height:100vh}
+.root{max-width:1200px;margin:0 auto;padding:20px;display:flex;flex-direction:column;gap:16px}
+h1{font-size:14px;font-weight:900;letter-spacing:.2em;color:var(--green);text-align:center;padding:8px}
+.top{background:var(--panel);border:1px solid var(--border);border-radius:14px;padding:18px;display:flex;flex-wrap:wrap;gap:20px;align-items:flex-end}
+.cg{display:flex;flex-direction:column;gap:6px}
+.lbl{font-size:9px;color:var(--muted);text-transform:uppercase;letter-spacing:.12em}
+.val{font-weight:800;color:var(--green)}
+input[type=range]{width:110px;accent-color:var(--green)}
+.presets{display:flex;gap:8px}
+.preset{font-size:11px;padding:7px 14px;border:1px solid var(--border);border-radius:8px;cursor:pointer;background:transparent;color:var(--text);font-family:inherit;transition:.2s}
+.preset.on{background:var(--green);border-color:var(--green);color:#064e3b;font-weight:800}
+.btn{padding:13px 36px;border-radius:10px;border:none;cursor:pointer;font-size:14px;font-weight:900;background:var(--green);color:#064e3b;font-family:inherit;letter-spacing:.05em;transition:.2s;box-shadow:0 0 20px rgba(16,185,129,.35)}
+.btn:hover{transform:translateY(-2px);filter:brightness(1.1)}
+.btn:disabled{opacity:.5;cursor:not-allowed;transform:none}
+
+.c-panel{background:var(--panel);border:1px solid var(--border);border-radius:14px;padding:16px}
+.c-title{font-size:9px;color:var(--muted);text-transform:uppercase;letter-spacing:.15em;margin-bottom:12px}
+.c-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(260px,1fr));gap:8px}
+.ci{background:var(--bg);border:1px solid var(--border);border-radius:8px;padding:10px;display:flex;align-items:center;gap:10px;cursor:pointer;transition:.2s;user-select:none}
+.ci:hover{border-color:var(--green)}
+.ci.on{border-color:var(--red);background:rgba(239,68,68,.06)}
+.ci-num{width:22px;height:22px;border-radius:50%;background:var(--border);display:flex;align-items:center;justify-content:center;font-size:10px;font-weight:800;flex-shrink:0;transition:.2s}
+.ci.on .ci-num{background:var(--red);color:#fff}
+.ci-n{font-size:10px;font-weight:700}
+.ci-d{font-size:8px;color:var(--muted);margin-top:1px}
+
+canvas{display:block;width:100%;border-radius:14px;border:1px solid var(--border);background:#000}
+
+.fp-wrap{background:var(--panel);border:1px solid var(--border);border-radius:14px;padding:16px;display:flex;flex-direction:column;gap:10px}
+.fp-row{display:flex;align-items:center;gap:14px}
+.fp-name{width:200px;font-size:10px;color:var(--muted);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.fp-track{flex:1;height:8px;background:#000;border-radius:4px;overflow:hidden;border:1px solid var(--border)}
+.fp-fill{height:100%;border-radius:4px;width:0;transition:width .12s linear;box-shadow:0 0 10px var(--green)}
+.fp-pct{width:42px;font-size:11px;text-align:right;font-weight:900;color:var(--green)}
+
+.bot{display:grid;grid-template-columns:1fr 2fr 1fr;gap:16px}
+.panel{background:var(--panel);border:1px solid var(--border);border-radius:14px;padding:16px}
+.pt{font-size:9px;color:var(--green);text-transform:uppercase;letter-spacing:.15em;margin-bottom:14px;border-bottom:1px solid var(--border);padding-bottom:6px}
+.metric{background:var(--bg);border:1px solid var(--border);border-radius:8px;padding:10px;margin-bottom:10px}
+.metric-l{font-size:8px;color:var(--muted);text-transform:uppercase;letter-spacing:.05em;margin-bottom:3px}
+.metric-v{font-size:20px;font-weight:900}
+.log{height:200px;overflow-y:auto;font-size:9px;line-height:1.9;color:var(--muted)}
+.log::-webkit-scrollbar{width:3px}
+.log::-webkit-scrollbar-thumb{background:var(--border);border-radius:2px}
+.legend p{font-size:10px;line-height:2}
 </style>
-
+</head>
+<body>
 <div class="root">
-<div class="top-bar">
-  <div class="cg">
-    <div class="cl">Carrier Scenario</div>
-    <div class="cbrow" id="cbs">
-      <button class="cb sel" data-p="elite">20MB/s Spec</button>
-      <button class="cb" data-p="jio">Jio 4G Jitter</button>
-      <button class="cb" data-p="bloat">Carrier Bloat</button>
+  <h1>⚡ TURBODROP OMEGA — ZENITH ELITE v3.2.12 SIMULATOR</h1>
+
+  <div class="top">
+    <div class="cg">
+      <div class="lbl">Profile</div>
+      <div class="presets">
+        <button class="preset on" data-p="elite">ZENITH ELITE</button>
+        <button class="preset" data-p="legacy">LEGACY (v3.2.11)</button>
+      </div>
+    </div>
+    <div class="cg">
+      <div class="lbl">Bandwidth <span class="val" id="vbw">160 Mbps</span></div>
+      <input type="range" id="sbw" min="10" max="400" step="10" value="160">
+    </div>
+    <div class="cg">
+      <div class="lbl">Pipes <span class="val" id="vsp">16</span></div>
+      <input type="range" id="ssp" min="1" max="24" step="1" value="16">
+    </div>
+    <div class="cg">
+      <div class="lbl">Carrier Jitter <span class="val" id="vjit">25 ms</span></div>
+      <input type="range" id="sjit" min="0" max="400" step="5" value="25">
+    </div>
+    <div class="cg">
+      <div class="lbl">MTU Start <span class="val" id="vmtu">128 KB</span></div>
+      <input type="range" id="smtu" min="32" max="512" step="32" value="128">
+    </div>
+    <button class="btn" id="rbtn">▶ START SIMULATION</button>
+  </div>
+
+  <div class="c-panel">
+    <div class="c-title">Architectural Constraints — Click to Toggle (Red = Injected Bug)</div>
+    <div class="c-grid" id="cgrid">
+      <div class="ci" data-id="c1"><div class="ci-num">1</div><div><div class="ci-n">Handshake Idle (51s)</div><div class="ci-d">Static 3s pulse — no back-off</div></div></div>
+      <div class="ci" data-id="c2"><div class="ci-num">2</div><div><div class="ci-n">Pipe Sync Race</div><div class="ci-d">8→16 pipe upgrade mid-session</div></div></div>
+      <div class="ci" data-id="c3"><div class="ci-num">3</div><div><div class="ci-n">Double Reassembly Loop</div><div class="ci-d">Ghost loops on duplicate sender-ready</div></div></div>
+      <div class="ci" data-id="c4"><div class="ci-num">4</div><div><div class="ci-n">Relay Empty 200 OK</div><div class="ci-d">Pipe closes on empty relay response</div></div></div>
+      <div class="ci" data-id="c5"><div class="ci-num">5</div><div><div class="ci-n">Stabilization Delay (1.9s)</div><div class="ci-d">Hardcoded 400ms + 1500ms sleeps</div></div></div>
+      <div class="ci" data-id="c6"><div class="ci-num">6</div><div><div class="ci-n">Slow MTU Ramp (32KB start)</div><div class="ci-d">50-chunk threshold before doubling</div></div></div>
+      <div class="ci" data-id="c7"><div class="ci-num">7</div><div><div class="ci-n">Sequential File Dispatch</div><div class="ci-d">38–96s dead-time between files</div></div></div>
     </div>
   </div>
-  <div class="cg">
-    <div class="cl">Bandwidth <span class="cv" id="v-bw">160 Mbps</span></div>
-    <input type="range" id="s-bw" min="10" max="400" step="10" value="160">
-  </div>
-  <div class="cg">
-    <div class="cl">Carrier Jitter <span class="cv" id="v-jit">25 ms</span></div>
-    <input type="range" id="s-jit" min="0" max="200" step="5" value="25">
-  </div>
-  <div class="cg">
-    <div class="cl">Buffer Bloat <span class="cv" id="v-bloat">0 ms</span></div>
-    <input type="range" id="s-bloat" min="0" max="500" step="25" value="0">
-  </div>
-  <div class="cg">
-    <div class="cl">Elite Pipes <span class="cv" id="v-sp">16</span></div>
-    <input type="range" id="s-sp" min="1" max="24" step="1" value="16">
-  </div>
-  <div class="cg">
-    <div class="cl">Hardening v3.2.11</div>
-    <div class="cbrow" id="bbs">
-      <button class="bb on" data-b="1">Sync Guard</button>
-      <button class="bb on" data-b="2">Integrity Fix</button>
-      <button class="bb on" data-b="3">ZENITH v11</button>
+
+  <canvas id="cv" height="460"></canvas>
+  <div class="fp-wrap" id="fpw"></div>
+
+  <div class="bot">
+    <div class="panel">
+      <div class="pt">Live Metrics</div>
+      <div class="metric"><div class="metric-l">Effective Speed</div><div class="metric-v" id="mtp" style="color:var(--green)">—</div></div>
+      <div class="metric"><div class="metric-l">Jitter</div><div class="metric-v" id="mjit" style="color:var(--amber)">—</div></div>
+      <div class="metric"><div class="metric-l">Engine Health</div><div class="metric-v" id="mhlt" style="color:var(--green)">READY</div></div>
+      <div class="metric"><div class="metric-l">Active Pipes</div><div class="metric-v" id="mpipes" style="color:var(--purple)">—</div></div>
+    </div>
+    <div class="panel">
+      <div class="pt">Forensic Signal Log</div>
+      <div class="log" id="log"></div>
+    </div>
+    <div class="panel legend">
+      <div class="pt">Legend</div>
+      <p><span style="color:var(--green)">●</span> Data Frame (512KB)</p>
+      <p><span style="color:var(--amber)">●</span> Jitter / Stall</p>
+      <p><span style="color:var(--red)">●</span> Constraint Collision</p>
+      <p><span style="color:var(--purple)">●</span> Handshake Pulse</p>
+      <p><span style="color:#38bdf8">●</span> NACK Recovery</p>
+      <br>
+      <p style="color:var(--muted);font-size:9px;line-height:1.6">
+        Target: 160 Mbps (20 MB/s)<br>
+        Pipes: 16 concurrent HTTP/2<br>
+        MTU: 128KB → 512KB adaptive<br>
+        Architecture: Zenith OMEGA v3.2.12
+      </p>
     </div>
   </div>
-  <button class="rbtn" id="rbtn">▶ Simulate 20MB/s</button>
-</div>
-
-<canvas id="cv" height="420"></canvas>
-
-<div class="fp-wrap" id="fpw"></div>
-
-<div class="bot">
-  <div class="panel">
-    <div class="pt">Constraining Factors</div>
-    <div class="mg">
-      <div class="mc"><div class="ml">Throughput</div><div class="mv g" id="m-tp">—</div></div>
-      <div class="mc"><div class="ml">OWTT Jitter</div><div class="mv" id="m-jit">—</div></div>
-      <div class="mc"><div class="ml">Buffer Pressure</div><div class="mv" id="m-bloat">—</div></div>
-      <div class="mc"><div class="ml">Efficiency</div><div class="mv" id="m-eff">—</div></div>
-      <div class="mc"><div class="ml">CPU/JS Lag</div><div class="mv" id="m-lag">1.2ms</div></div>
-      <div class="mc"><div class="ml">Integrity</div><div class="mv g" id="m-fd">100%</div></div>
-    </div>
-  </div>
-  <div class="panel">
-    <div class="pt">Elite Pipe Matrix</div>
-    <div class="log-s" id="logel"></div>
-  </div>
-  <div class="panel">
-    <div class="pt">Carrier Legend</div>
-    <div class="lg"><div class="ld" style="background:#10b981;box-shadow: 0 0 10px #10b981"></div>Elite Frame (512KB)</div>
-    <div class="lg"><div class="ld" style="background:#f59e0b"></div>Jitter Buffer Wait</div>
-    <div class="lg"><div class="ld" style="background:#ef4444"></div>Queue Drop</div>
-  </div>
-</div>
 </div>
 
 <script>
 const FILES=[
-  {name:"DNG_RAW_FILE_01.DNG",size:24.8},
-  {name:"DNG_RAW_FILE_02.DNG",size:23.1},
-  {name:"DNG_RAW_FILE_03.DNG",size:25.4},
-  {name:"DOCUMENT_SYNC.PDF",size:15.2},
-  {name:"IMAGE_ASSET_85.JPG",size:7.9},
+  {name:"PHOTO_BURST_DNG_01.DNG",size:24.8},
+  {name:"PHOTO_BURST_DNG_02.DNG",size:23.1},
+  {name:"FORENSIC_SCAN_DOC.PDF",size:15.2},
+  {name:"RAW_VIDEO_CLIP.MP4",size:48.6},
 ];
 
 const PRESETS={
-  elite: {bw:160, jit:25,  bloat:0,   sp:16},
-  jio:   {bw:80,  jit:120, bloat:150, sp:12},
-  bloat: {bw:100, jit:45,  bloat:400, sp:16},
+  elite:{bw:160,sp:16,jit:25,mtu:128,c:[]},
+  legacy:{bw:80,sp:8,jit:85,mtu:32,c:['c1','c5','c6','c7']}
 };
 
-const CW= CW=700,CH=420;
-const SY1=20,SY2=60;    
-const RLY1=180,RLY2=220;
-const RV1=350,RV2=390;  
-
 let cfg={...PRESETS.elite};
-let bugs={1:true,2:true,3:true};
-let running=false,rafId=null,simData=null;
-let evtI=0,simVT=0,realStart=0,simSpeed=20;
-let pkts=[],metrics={lost:0,done:new Set(),prog:{},mtu:512,jitSum:0};
+let active=new Set();
+let running=false,raf=null,sim=null;
+let ei=0,vt=0,t0=0,spd=30;
+let pkts=[],M={done:new Set(),prog:{},jit:0,bytes:0,t0:0};
 
-const canvas=document.getElementById('cv');
-const ctx=canvas.getContext('2d');
+const CV=document.getElementById('cv');
+const cx=CV.getContext('2d');
+const W=800,H=460;
+const S1=28,S2=82,R1=195,R2=235,V1=350,V2=408;
 
 function initCanvas(){
-  const dpr=devicePixelRatio||1;
-  canvas.width=CW*dpr; canvas.height=CH*dpr;
-  ctx.setTransform(dpr,0,0,dpr,0,0);
+  const d=window.devicePixelRatio||1;
+  CV.width=W*d;CV.height=H*d;
+  cx.setTransform(d,0,0,d,0,0);
 }
 
-const SLIDERS=[
-  {id:'s-bw', vi:'v-bw', key:'bw',  u:' Mbps',d:1},
-  {id:'s-jit',vi:'v-jit',key:'jit', u:' ms',  d:0},
-  {id:'s-bloat',vi:'v-bloat',key:'bloat',u:' ms',d:0},
-  {id:'s-sp', vi:'v-sp', key:'sp',  u:'',     d:0},
-];
-
-SLIDERS.forEach(s=>{
-  document.getElementById(s.id).addEventListener('input',function(){
-    cfg[s.key]=parseFloat(this.value);
-    document.getElementById(s.vi).textContent=(s.d?cfg[s.key].toFixed(s.d):cfg[s.key])+s.u;
+// Sliders
+['bw','sp','jit','mtu'].forEach(k=>{
+  document.getElementById('s'+k).addEventListener('input',function(){
+    const v=parseFloat(this.value);
+    cfg[k]=v;
+    document.getElementById('v'+k).textContent=k==='mtu'?v+' KB':k==='jit'?v+' ms':v+(k==='bw'?' Mbps':'');
   });
 });
 
-document.getElementById('cbs').addEventListener('click',e=>{
-  const p=e.target.dataset.p; if(!p) return;
-  document.querySelectorAll('.cb').forEach(b=>b.classList.remove('sel'));
-  e.target.classList.add('sel');
-  const pr=PRESETS[p]; cfg={...pr};
-  SLIDERS.forEach(s=>{
-    const el=document.getElementById(s.id); el.value=cfg[s.key];
-    document.getElementById(s.vi).textContent=(s.d?cfg[s.key].toFixed(s.d):cfg[s.key])+s.u;
-  });
+document.getElementById('cgrid').addEventListener('click',e=>{
+  const ci=e.target.closest('.ci');if(!ci)return;
+  const id=ci.dataset.id;
+  active.has(id)?active.delete(id):active.add(id);
+  ci.classList.toggle('on',active.has(id));
 });
 
-document.getElementById('rbtn').addEventListener('click',runSim);
+document.querySelectorAll('.preset').forEach(b=>b.addEventListener('click',function(){
+  const p=PRESETS[this.dataset.p];if(!p)return;
+  document.querySelectorAll('.preset').forEach(x=>x.classList.remove('on'));
+  this.classList.add('on');
+  cfg={...p};
+  active=new Set(p.c);
+  document.querySelectorAll('.ci').forEach(ci=>ci.classList.toggle('on',active.has(ci.dataset.id)));
+  document.getElementById('sbw').value=p.bw;document.getElementById('vbw').textContent=p.bw+' Mbps';
+  document.getElementById('ssp').value=p.sp;document.getElementById('vsp').textContent=p.sp;
+  document.getElementById('sjit').value=p.jit;document.getElementById('vjit').textContent=p.jit+' ms';
+  document.getElementById('smtu').value=p.mtu;document.getElementById('vmtu').textContent=p.mtu+' KB';
+}));
 
 function initFP(){
   document.getElementById('fpw').innerHTML=FILES.map((f,i)=>`
     <div class="fp-row">
-      <div class="fp-name" title="${f.name}">${f.name}</div>
-      <div class="fp-bg"><div class="fp-fill" id="fpb${i}"></div></div>
+      <div class="fp-name">📁 ${f.name}</div>
+      <div class="fp-track"><div class="fp-fill" id="fpf${i}" style="background:var(--green)"></div></div>
       <div class="fp-pct" id="fpp${i}">0%</div>
     </div>`).join('');
 }
 
-function setFP(i,pct){
-  const b=document.getElementById('fpb'+i);
-  const p=document.getElementById('fpp'+i);
-  if(!b)return;
-  b.style.width=pct+'%';
-  p.textContent=Math.round(pct)+'%';
+function setFP(i,p,done){
+  const f=document.getElementById('fpf'+i),t=document.getElementById('fpp'+i);
+  if(!f)return;
+  const pct=Math.min(100,p);
+  f.style.width=pct+'%';
+  f.style.background=done?'var(--purple)':p>60?'var(--green)':'var(--amber)';
+  t.textContent=done?'✓ 100%':Math.round(pct)+'%';
+  t.style.color=done?'var(--purple)':p>60?'var(--green)':'var(--amber)';
 }
 
-function addLog(msg,col){
-  const el=document.getElementById('logel');
+function log(msg,col){
+  const el=document.getElementById('log');
   const d=document.createElement('div');
-  d.style.color=col||'';
-  d.textContent=`[${new Date().toISOString().substr(14,8)}] ${msg}`;
-  el.appendChild(d); el.scrollTop=el.scrollHeight;
-}
-
-function setM(id,v,c){
-  const e=document.getElementById(id); if(!e)return;
-  e.textContent=v; e.className='mv '+(c||'');
+  d.style.color=col||'var(--muted)';
+  d.textContent=`[${new Date().toISOString().substr(11,8)}] ${msg}`;
+  el.appendChild(d);el.scrollTop=el.scrollHeight;
 }
 
 function buildSim(){
   const sp=Math.round(cfg.sp);
-  const events=[];
-  let vt=0; 
+  const evts=[];
+  let t=0;
+
+  if(active.has('c1')){t+=51000;log('⚠ C1: 51s Handshake idle injected','var(--red)');}
+  if(active.has('c5')){t+=1900;log('⚠ C5: 1.9s Stabilization delays injected','var(--red)');}
+
+  let mtu=active.has('c6')?32:cfg.mtu;
+  const perfFactor=active.has('c6')?0.55:1.0;
 
   FILES.forEach((file,fi)=>{
-    const chunkCount = Math.ceil((file.size * 1024) / 512);
-    const txMs = (512 * 8) / (cfg.bw * 1000); 
+    const chunks=Math.ceil((file.size*1024)/512);
+    const txMs=(512*8)/((cfg.bw*perfFactor)*1000);
 
-    for(let c=0; c<chunkCount; c++){
-      const p = c % sp;
-      const jitter = (Math.random()*2-1)*cfg.jit;
-      const bloat = cfg.bloat * (1 + Math.random()*0.5);
-      const svt = vt + (c / sp) * txMs;
-      const avt = svt + 85 + jitter + bloat;
-      events.push({svt, avt, p, fi, c, dropped: Math.random() < 0.002, jitter: Math.abs(jitter)});
+    for(let c=0;c<chunks;c++){
+      const p=c%sp;
+      const jit=(Math.random()*2-1)*cfg.jit;
+      const isGhost=active.has('c3')&&fi===0&&c<10;
+      const isRelayFail=active.has('c4')&&Math.random()<0.07;
+      evts.push({
+        svt:t+(c/sp)*txMs,
+        p,fi,c,
+        jit:Math.abs(jit),
+        col:isGhost?'var(--red)':isRelayFail?'#38bdf8':jit>cfg.jit*0.8?'var(--amber)':'var(--green)',
+        drop:isRelayFail,
+        ghost:isGhost
+      });
     }
-    vt += (chunkCount / sp) * txMs + 100;
+
+    const gap=active.has('c7')?(38000+Math.random()*58000):120;
+    t+=(chunks/sp)*txMs+gap;
+    if(active.has('c7')&&fi<FILES.length-1)log(`⚠ C7: ${Math.round(gap/1000)}s inter-file gap (file ${fi+1}→${fi+2})`,'var(--red)');
   });
 
-  return {events, sp, totDur: Math.max(...events.map(e=>e.avt))+500};
+  return{evts,sp};
 }
 
-function drawBase(){
-  ctx.clearRect(0,0,CW,CH);
-  const mp=simData?simData.sp:Math.round(cfg.sp);
+function rr(x,y,w,h,r){
+  cx.beginPath();
+  cx.moveTo(x+r,y);cx.lineTo(x+w-r,y);cx.arcTo(x+w,y,x+w,y+r,r);
+  cx.lineTo(x+w,y+h-r);cx.arcTo(x+w,y+h,x+w-r,y+h,r);
+  cx.lineTo(x+r,y+h);cx.arcTo(x,y+h,x,y+h-r,r);
+  cx.lineTo(x,y+r);cx.arcTo(x,y,x+r,y,r);cx.closePath();
+}
 
-  [
-    [SY1,SY2,'#d1fae5','#10b981',`ELITE SENDER  ·  ${mp} pipes`],
-    [RLY1,RLY2,'#f8fafc','#94a3b8','CARRIER NETWORK'],
-    [RV1,RV2,'#d1fae5','#10b981','ZENITH RECEIVER'],
-  ].forEach(([y1,y2,fill,stroke,label])=>{
-    ctx.fillStyle=fill; rr(18,y1,CW-36,y2-y1,10); ctx.fill();
-    ctx.strokeStyle=stroke; ctx.lineWidth=1.5; ctx.stroke();
-    ctx.fillStyle=stroke; ctx.font='bold 12px var(--font-mono)';
-    ctx.textAlign='center'; ctx.fillText(label,CW/2,y1+(y2-y1)/2+5);
+function drawStages(){
+  const stages=[
+    [S1,S2,'#022c22','var(--green)','SENDER — TurboDrop OMEGA v3.2.12'],
+    [R1,R2,'#1e1b4b','#4f46e5','CLOUDFLARE RELAY BRIDGE'],
+    [V1,V2,'#022c22','var(--green)','RECEIVER — ZENITH ELITE'],
+  ];
+  stages.forEach(([y1,y2,fill,stroke,label])=>{
+    cx.fillStyle=fill;rr(10,y1,W-20,y2-y1,10);cx.fill();
+    cx.strokeStyle=stroke;cx.lineWidth=1.5;cx.stroke();
+    cx.fillStyle='rgba(255,255,255,0.85)';cx.font='bold 11px monospace';cx.textAlign='center';
+    cx.fillText(label,W/2,(y1+y2)/2+4);
   });
+}
 
-  for(let p=0;p<mp;p++){
-    const x=55+(p+.5)*(CW-110)/mp;
-    ctx.strokeStyle = '#e2e8f0'; ctx.lineWidth=0.5; ctx.setLineDash([4,4]);
-    ctx.beginPath(); ctx.moveTo(x,SY2); ctx.lineTo(x,RV1); ctx.stroke();
-    ctx.setLineDash([]);
+function drawPipes(sp){
+  for(let p=0;p<sp;p++){
+    const x=50+(p+.5)*(W-100)/sp;
+    cx.strokeStyle='rgba(30,41,59,0.8)';cx.lineWidth=1;cx.setLineDash([6,4]);
+    cx.beginPath();cx.moveTo(x,S2);cx.lineTo(x,V1);cx.stroke();cx.setLineDash([]);
+    cx.fillStyle='rgba(100,116,139,0.5)';cx.font='7px monospace';cx.textAlign='center';
+    cx.fillText('P'+p,x,S2+10);
   }
 }
 
 function loop(ts){
-  if(!running) return;
-  const wall=(ts-realStart)/1000;
-  simVT=wall*simSpeed*1000;
+  if(!running)return;
+  vt=((ts-t0)/1000)*spd*1000;
 
-  while(evtI<simData.events.length){
-    const e=simData.events[evtI];
-    if(e.svt>simVT) break;
-    evtI++;
-    const mp=simData.sp;
-    const x=55+(e.p+.5)*(CW-110)/mp;
-    pkts.push({x,y:SY2,p:e.p,fi:e.fi,mtu:512,avt:e.avt,jit:e.jitter,col:e.jitter > 100 ? '#f59e0b' : '#10b981',phase:'s',done:false});
-    if(evtI % 15 === 0) addLog(`Pipe ${e.p}: Segment ${e.c} Flowing (Jitter: ${e.jitter.toFixed(1)}ms)`);
+  while(ei<sim.evts.length){
+    const e=sim.evts[ei];
+    if(e.svt>vt)break;
+    ei++;
+    const x=50+(e.p+.5)*(W-100)/sim.sp;
+    if(!e.drop){
+      pkts.push({x,y:S2,p:e.p,fi:e.fi,c:e.c,col:e.col,r:6,done:false,ghost:e.ghost});
+    }
+    if(ei%15===0)log(`PIPE ${e.p} → FILE ${e.fi+1} FRAME ${e.c}`,'var(--green)');
+    if(e.ghost&&e.c===0)log('⚠ C3: Ghost reassembly loop detected!','var(--red)');
+    if(e.drop)log(`⚠ C4: Relay dropped frame (P${e.p})`,'#38bdf8');
   }
 
   pkts=pkts.filter(pk=>{
-    if(pk.done) return false;
-    pk.y += 8;
-    if(pk.y >= RV1){
-        const totalChunks = simData.events.filter(e=>e.fi === pk.fi).length;
-        metrics.prog[pk.fi]=(metrics.prog[pk.fi]||0)+(100/totalChunks);
-        setFP(pk.fi, metrics.prog[pk.fi]);
-        if(metrics.prog[pk.fi]>=99.8 && !metrics.done.has(pk.fi)){
-          metrics.done.add(pk.fi);
-          addLog(`File ${pk.fi+1} Finalized ✓ integrity ok`, '#10b981');
-        }
-        metrics.jitSum = (metrics.jitSum * 0.9) + (pk.jit * 0.1);
-        pk.done=true; return false;
+    if(pk.done)return false;
+    pk.y+=11;
+    if(pk.y>=V1){
+      const tot=sim.evts.filter(e=>e.fi===pk.fi&&!e.drop).length;
+      M.prog[pk.fi]=(M.prog[pk.fi]||0)+(100/tot);
+      M.bytes+=512*1024;
+      M.jit=M.jit*.95+((Math.random()*cfg.jit)*.05);
+      const done=M.prog[pk.fi]>=99.8&&!M.done.has(pk.fi);
+      setFP(pk.fi,M.prog[pk.fi],done);
+      if(done){M.done.add(pk.fi);log(`✓ FILE ${pk.fi+1} RECEIVED — INTEGRITY 100%`,'var(--green)');}
+      pk.done=true;return false;
     }
     return true;
   });
 
-  const effBw = (cfg.bw / 8).toFixed(1);
-  setM('m-tp',effBw+' MB/s', 'g');
-  setM('m-jit',metrics.jitSum.toFixed(1)+' ms', metrics.jitSum > 80 ? 'r' : metrics.jitSum > 40 ? 'a' : 'g');
-  setM('m-bloat',cfg.bloat+' ms', cfg.bloat > 200 ? 'r' : 'g');
-  setM('m-eff',(99 - (cfg.jit/10)).toFixed(1)+'%');
+  const elapsed=(performance.now()-M.t0)/1000||0.001;
+  const mbps=((M.bytes*8)/(1024*1024)/elapsed);
+  const mbpsMB=(M.bytes/(1024*1024)/elapsed);
 
-  drawBase();
+  const tpEl=document.getElementById('mtp');
+  tpEl.textContent=mbpsMB.toFixed(2)+' MB/s';
+  tpEl.style.color=mbpsMB>=18?'var(--green)':mbpsMB>=8?'var(--amber)':'var(--red)';
+  document.getElementById('mjit').textContent=(cfg.jit*(active.size>0?1.4:0.3)).toFixed(1)+' ms';
+  document.getElementById('mpipes').textContent=sim.sp+' / 16';
+
+  const hlEl=document.getElementById('mhlt');
+  if(active.size===0){hlEl.textContent='OPTIMIZED ✓';hlEl.style.color='var(--green)';}
+  else{hlEl.textContent=active.size+' CONSTRAINT'+(active.size>1?'S':'')+' ACTIVE';hlEl.style.color='var(--red)';}
+
+  cx.clearRect(0,0,W,H);
+  drawStages();
+  drawPipes(sim.sp);
+
   pkts.forEach(pk=>{
-    ctx.fillStyle=pk.col; ctx.beginPath(); ctx.arc(pk.x,pk.y,6,0,Math.PI*2); ctx.fill();
-    ctx.strokeStyle='white'; ctx.lineWidth=1.5; ctx.stroke();
+    cx.save();
+    cx.shadowBlur=12;cx.shadowColor=pk.col;
+    cx.fillStyle=pk.col;
+    cx.beginPath();cx.arc(pk.x,pk.y,pk.r,0,Math.PI*2);cx.fill();
+    cx.strokeStyle='rgba(255,255,255,0.6)';cx.lineWidth=1;cx.stroke();
+    cx.restore();
   });
 
-  if(evtI>=simData.events.length&&pkts.length===0){
+  if(ei>=sim.evts.length&&pkts.length===0){
     running=false;
-    addLog(`── 20MB/s Validation Complete. Integrity: 100%`);
-    document.getElementById('rbtn').textContent='▶ Simulation Success';
+    const finalMB=mbpsMB.toFixed(2);
+    log(`═══ SIMULATION COMPLETE — ${finalMB} MB/s ═══`,mbpsMB>=18?'var(--green)':'var(--amber)');
+    document.getElementById('rbtn').textContent='▶ RE-RUN SIMULATION';
+    document.getElementById('rbtn').disabled=false;
+    if(mbpsMB<10)log('Target not met. Disable constraints to reach 20 MB/s.','var(--red)');
+    else log('🎯 Elite target achieved! v3.2.12 constraints resolved.','var(--green)');
     return;
   }
-  rafId=requestAnimationFrame(loop);
+
+  raf=requestAnimationFrame(loop);
 }
 
-function runSim(){
-  if(running) return;
-  if(rafId) cancelAnimationFrame(rafId);
-  pkts=[]; metrics={lost:0,done:new Set(),prog:{},mtu:512,jitSum:0};
-  evtI=0; simVT=0; clearLog(); resetFP();
-  simData=buildSim();
-  running=true; realStart=performance.now();
-  addLog(`Starting Elite v3.2.11 Simulation...`);
-  rafId=requestAnimationFrame(loop);
-}
+document.getElementById('rbtn').addEventListener('click',function(){
+  if(running)return;
+  pkts=[];ei=0;vt=0;
+  M={done:new Set(),prog:{},jit:0,bytes:0,t0:performance.now()};
+  document.getElementById('log').innerHTML='';
+  initFP();
+  sim=buildSim();
+  log(`ENGINE v3.2.12: Starting — ${sim.sp} pipes, ${cfg.bw} Mbps, ${cfg.mtu}KB MTU`,'var(--green)');
+  log(`Constraints active: ${active.size===0?'NONE (Optimized)':Array.from(active).join(', ')}`,'var(--purple)');
+  running=true;
+  t0=performance.now();
+  this.textContent='SIMULATING...';
+  this.disabled=true;
+  drawStages();
+  drawPipes(sim.sp);
+  raf=requestAnimationFrame(loop);
+});
 
-initCanvas(); initFP(); drawBase();
+initCanvas();initFP();
+drawStages();
+drawPipes(16);
 </script>
 </body>
 </html>

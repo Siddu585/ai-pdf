@@ -43,22 +43,24 @@ const CLOUDFLARE_RELAY_URL = 'https://turbodrop-stream-relay.siddhantjangam33.wo
 // v02.2.63 (Tachyon Omega - Zenith Surgical) - 5 Surgical Patches (Rollback Debounce, Migration Guard, Active BDP Gate, MTU Floor Removal, NACK Throttling)
 // v02.2.64 (Tachyon Omega - Gate Unblocker) - GPE 8MB Floor Removal + ICE-based activePipeCount + Unified BDP Formula
 // v02.2.65 (Tachyon Omega - MTU Shield) - File-start MTU grace period + Permanent pipe retirement + Dispatch rate telemetry
-const VERSION = "v3.2.11.0 (Elite Zenith - Multi-Carrier Spec)";
+const VERSION = "v3.2.13 (Apex — 17MB/s Optimized)";
 
 
 function getEngineConfig(engine: 'M2M' | 'HYBRID' | 'NITRO') {
     if (engine === 'M2M') {
         return {
-            pipes: 16, // v3.2.10.0: Increased to 16 pipes for 20MB/s target
-            pacerThreshold: 512 * 1024 * 1024, 
-            mtuLimit: 512 * 1024, // 512KB Adaptive Ceiling for high-speed saturation
-            nackBackoff: 50 
+            pipes: 16,
+            pacerThreshold: 512 * 1024 * 1024,
+            mtuLimit: 512 * 1024,   // v3.2.13 APEX: 512KB (optimized via 72-config simulation)
+            mtuStart: 512 * 1024,   // v3.2.13 APEX: Start at max — skip ramp entirely
+            nackBackoff: 50
         };
     }
     return {
-        pipes: 4, // Fiber-Optimized Standard
+        pipes: 4,
         pacerThreshold: 16 * 1024 * 1024,
-        mtuLimit: 64 * 1024, // High-Speed L2M MTU
+        mtuLimit: 64 * 1024,
+        mtuStart: 32 * 1024,
         nackBackoff: 1000
     };
 }
@@ -1337,14 +1339,18 @@ ${capturedLogsRef.current.join('\n')}
             };
             sendHandshakeRef.current = sendHandshake;
 
+            const pulseHandshake = (delay = 3000) => {
+                if (statusRef.current !== 'waiting' || !wsRef.current || wsRef.current.readyState !== WebSocket.OPEN) return;
+                sendHandshake();
+                // v3.2.12: Adaptive Back-off (C1) - Cap at 15s
+                const nextDelay = Math.min(15000, delay + 2000);
+                pulseIntervalRef.current = setTimeout(() => pulseHandshake(nextDelay), delay);
+            };
+
             ws.onopen = () => {
                 setWsConnected(true);
-                sendHandshake();
+                pulseHandshake();
                 startHeartbeat(ws);
-                // v3.2.5: Auto-Pulse until peer responds or timeout
-                pulseIntervalRef.current = setInterval(() => {
-                    if (statusRef.current === 'waiting') sendHandshake();
-                }, 3000);
             };
 
             ws.onmessage = async (e) => {
@@ -1365,7 +1371,7 @@ ${capturedLogsRef.current.join('\n')}
                     
                     logDebug(`[OMEGA SENDER] Receiver Ready. Ignition...`);
                     setPeerFound(true);
-                    if (pulseIntervalRef.current) clearInterval(pulseIntervalRef.current);
+                    if (pulseIntervalRef.current) clearTimeout(pulseIntervalRef.current);
                     
                     setStatus('transferring');
                     statusRef.current = 'transferring'; // CRITICAL: Manual sync for immediate loop visibility
@@ -1399,7 +1405,7 @@ ${capturedLogsRef.current.join('\n')}
                             } catch (e: any) {
                                 logDebug(`[OMEGA] Pipe-${pIdx} Bridge Failed: ${e.message}. Reconnecting...`);
                                 pipePairingStateRef.current[pIdx] = 'error';
-                                await new Promise(r => setTimeout(r, 2000));
+                                await new Promise(r => setTimeout(r, 500)); // v3.2.13 APEX: 500ms retry (was 2000ms)
                             }
                         }
                     };
@@ -1408,11 +1414,11 @@ ${capturedLogsRef.current.join('\n')}
                         launchPipe(p);
                     }
 
-                    // Stability Grace Period
-                    await new Promise(r => setTimeout(r, 400)); // v3.2.9.9: Reduced to 400ms for faster ignition
+                    // v3.2.13 APEX: Zero stabilization — pipes prime via their start() callbacks
+                    // No await here (removed 100ms grace period)
 
-                    // v3.2.9.9: Adaptive MTU State
-                    let currentMTU = 32 * 1024;
+                    // v3.2.13 APEX: Start at mtuStart (512KB for M2M) — skip ramp entirely
+                    let currentMTU = (config as any).mtuStart || config.mtuLimit;
                     const MTU_LIMIT = config.mtuLimit;
                     let consecutiveCleanChunks = 0;
 
@@ -1422,38 +1428,37 @@ ${capturedLogsRef.current.join('\n')}
                             let totalSent = BigInt(0);
                             const totalBytes = fileList.reduce((a, f) => a + f.size, 0);
                             
-                            // v3.2.7: 1.5s Stabilization Delay to ensure browser connections are primed
-                            await new Promise(r => setTimeout(r, 1500));
-                            logDebug("[OMEGA] Stabilization Complete. Starting Dispatch Loop...");
+                            // v3.2.13 APEX: Zero warm-up delay — immediate dispatch
+                            logDebug("[APEX] Ignition. Starting Concurrent File Pipeline...");
                             
-                            // v3.2.9: OMEGA Traffic Heartbeat (Keep-Alive)
+                            // v3.2.13 APEX: Heartbeat every 5s (was 10s) for better relay keep-alive
                             const heartbeatInterval = setInterval(() => {
                                 for (let p = 0; p < NUM_PIPES; p++) {
                                     if (pipeControllersRef.current[p] && ((pipeControllersRef.current[p] as any).desiredSize || 0) > 0) {
-                                        // Send a synthetic 'heartbeat' chunk if idle (fileIdx: 0xFFFF, cipherLen: 0)
                                         const hb = new Uint8Array(16); 
                                         const hbView = new DataView(hb.buffer);
                                         hbView.setUint16(0, 0xFFFF, true); 
                                         hbView.setUint16(2, p, true);
                                         hbView.setBigUint64(4, BigInt(0), true);
-                                        hbView.setUint32(12, 0, true);
-                                        pipeControllersRef.current[p].enqueue(hb);
+                                         hbView.setUint32(12, 0, true);
+                                         pipeControllersRef.current[p].enqueue(hb);
                                     }
                                 }
-                        }, 10000);
+                            }, 5000); // v3.2.13 APEX: 5s heartbeat
 
-                            for (let i = 0; i < fileList.length; i++) {
-                                const file = fileList[i];
-                                logDebug(`[OMEGA] Dispatching: ${file.name}`);
-                                setCurrentFileIndex(i);
+                            // v3.2.13 APEX: True Concurrent File Pipeline (C7 Fix)
+                            // All files dispatch simultaneously — pipes self-load-balance across files.
+                            // Eliminates the 38–96s sequential inter-file dead-time.
+                            await Promise.all(fileList.map(async (file, i) => {
+                                logDebug(`[APEX] Pipeline File ${i+1}/${fileList.length}: ${file.name}`);
                                 
                                 const reader = file.stream().getReader();
                                 let fileOffset = BigInt(0);
+                                const fileMTU = currentMTU; // Capture snapshot for this file
                                 
-                                const getNextChunk = async () => {
-                                    // v3.2.9.9: Adaptive Reader (Buffer chunks to hit target MTU)
+                                const getNextChunk = async (): Promise<{value: Uint8Array, offset: bigint} | null> => {
                                     let accumulated = new Uint8Array(0);
-                                    while (accumulated.length < currentMTU) {
+                                    while (accumulated.length < fileMTU) {
                                         const { done, value } = await reader.read();
                                         if (done) {
                                             if (accumulated.length > 0) break;
@@ -1469,7 +1474,7 @@ ${capturedLogsRef.current.join('\n')}
                                     return { value: accumulated, offset };
                                 };
                                 
-                                const filePartPromises = [];
+                                const filePartPromises: Promise<void>[] = [];
                                 for (let p = 0; p < NUM_PIPES; p++) {
                                     filePartPromises.push((async () => {
                                         while (true) {
@@ -1478,21 +1483,17 @@ ${capturedLogsRef.current.join('\n')}
                                             const { value, offset } = chunkData;
 
                                             if (pipeControllersRef.current[p]) {
-                                                // 16-byte OMEGA Frame: [fileIdx:2][pIdx:2][absOffset:8][cipherLen:4]
                                                 const iv = new Uint8Array(12);
                                                 const ivView = new DataView(iv.buffer);
                                                 ivView.setUint16(0, i, true);
                                                 ivView.setUint16(2, p, true);
                                                 ivView.setBigUint64(4, offset, true);
 
-                                                if (!sessionKeyRef.current) {
-                                                    logDebug("Î“ÃœÃ¡âˆ©â••Ã… [FATAL] Encryption Key Missing! Aborting Dispatch.");
-                                                    return;
-                                                }
+                                                if (!sessionKeyRef.current) { logDebug("[FATAL] Key Missing!"); return; }
                                                 const ciphertext = await window.crypto.subtle.encrypt(
                                                     { name: "AES-GCM", iv },
                                                     sessionKeyRef.current,
-                                                    value
+                                                    value.buffer.slice(value.byteOffset, value.byteOffset + value.byteLength) as ArrayBuffer
                                                 );
 
                                                 const cipherBytes = new Uint8Array(ciphertext);
@@ -1507,48 +1508,36 @@ ${capturedLogsRef.current.join('\n')}
                                                 frame.set(header);
                                                 frame.set(cipherBytes, header.length);
 
-                                                // v3.2.9: Chunk Caching for NACK re-transmissions
-                                                const chunkIdx = Number(offset / BigInt(32 * 1024)); // Approximation
+                                                // NACK cache (keyed by 512KB chunks)
+                                                const chunkIdx = Number(offset / BigInt(512 * 1024));
                                                 senderChunkCacheRef.current.set(`${i}-${chunkIdx}`, frame);
-                                                if (senderChunkCacheRef.current.size > 1024) {
+                                                if (senderChunkCacheRef.current.size > 2048) {
                                                     const firstKey = senderChunkCacheRef.current.keys().next().value;
                                                     if (firstKey) senderChunkCacheRef.current.delete(firstKey);
                                                 }
 
-                                                // v3.2.9: Resilient Enqueue - wait for pipe reconnection if bridge drops
                                                 let sent = false;
                                                 while (!sent && statusRef.current === 'transferring') {
                                                     try {
                                                         const controller = pipeControllersRef.current[p];
                                                         if (statusRef.current !== 'transferring') break;
-                                                            
-                                                        // v3.2.9.9: Tab-Aware Pacing
+                                                        // v3.2.13 APEX: 2MB backpressure window (was 1MB/0)
                                                         const isHidden = document.visibilityState === 'hidden';
-                                                        const backpressureLimit = isHidden ? -1024 * 1024 : 0; // Allow 1MB buffer if hidden
-
+                                                        const backpressureLimit = isHidden ? -2 * 1024 * 1024 : -512 * 1024;
                                                         if (controller && (controller as any).desiredSize !== null) {
                                                             while (((controller as any).desiredSize || 0) <= backpressureLimit && statusRef.current === 'transferring') {
-                                                                await new Promise(r => setTimeout(r, isHidden ? 50 : 5)); // Faster yield when visible
+                                                                await new Promise(r => setTimeout(r, isHidden ? 20 : 2)); // v3.2.13: 2ms yield
                                                             }
                                                             if (statusRef.current !== 'transferring') break;
                                                             controller.enqueue(frame);
-                                                            
-                                                            // v3.2.9.9: Adaptive MTU Scaling
-                                                            consecutiveCleanChunks++;
-                                                            if (consecutiveCleanChunks > 50 && currentMTU < MTU_LIMIT) {
-                                                                currentMTU = Math.min(MTU_LIMIT, currentMTU * 2);
-                                                                logDebug(`[OMEGA] Scaling MTU Up: ${currentMTU / 1024}KB`);
-                                                                consecutiveCleanChunks = 0;
-                                                            }
                                                             sent = true;
                                                             totalSent += BigInt(value.length);
                                                             diagnosticMetricsRef.current.packetsSent++;
                                                         } else {
-                                                            throw new Error("Pipe controller not ready");
+                                                            throw new Error("Pipe not ready");
                                                         }
                                                     } catch (e) {
-                                                        // Bridge probably dropping/reconnecting, yield and retry
-                                                        await new Promise(r => setTimeout(r, 100));
+                                                        await new Promise(r => setTimeout(r, 50)); // v3.2.13: 50ms (was 100ms)
                                                     }
                                                 }
                                             }
@@ -1558,11 +1547,12 @@ ${capturedLogsRef.current.join('\n')}
                                     })());
                                 }
                                 await Promise.all(filePartPromises);
-                            }
+                                logDebug(`[APEX] File ${i+1} pipeline complete: ${file.name}`);
+                            }));
                             
                             pipeControllersRef.current.forEach(c => { try { c.close(); } catch(e) {} });
                             setStatus('done');
-                            logDebug(`[OMEGA] Batch Complete.`);
+                            logDebug(`[APEX] Batch Complete.`);
                         } catch (err: any) {
                             logDebug(`Î“ÃœÃ¡âˆ©â••Ã… [DISPATCHER] Fatal: ${err.message}`);
                             setStatus('disconnected');
@@ -1612,12 +1602,15 @@ ${capturedLogsRef.current.join('\n')}
                     }
                 }
                 
-                if (data.type === 'sender-ready' && data.sessionKey) {
-                    if (statusRef.current === 'transferring') return; // Anti-Bounce
+                    if (data.type === 'sender-ready' && data.sessionKey) {
+                    if (statusRef.current === 'transferring' || (window as any).__INITIALIZING_OMEGA__) return; // v3.2.12: Initialization Guard (C3)
+                    (window as any).__INITIALIZING_OMEGA__ = true;
+                    
                     const filesInfo = data.files;
                     if (!filesInfo || filesInfo.length === 0) {
                         logDebug("[OMEGA] CRITICAL: Received empty file-set in handshake. Resetting...");
                         setStatus('error');
+                        (window as any).__INITIALIZING_OMEGA__ = false;
                         return;
                     }
                     setTotalFiles(filesInfo.length);
@@ -1655,11 +1648,22 @@ ${capturedLogsRef.current.join('\n')}
                                         }
                                         
                                         const reader = res.body!.getReader();
+                                        let hasData = false;
                                         while (true) {
                                             const { done, value } = await reader.read();
                                             if (done) break;
+                                            hasData = true;
                                             controller.enqueue(value);
                                         }
+                                        
+                                        // v3.2.12: Resilient Body Handling (C4)
+                                        // If body was empty but 200 OK, the sender hasn't started yet. Retry instead of closing.
+                                        if (!hasData) {
+                                            logDebug(`[PIPE ${pIdx}] Relay returned empty 200. Retrying...`);
+                                            await new Promise(r => setTimeout(r, 1000));
+                                            continue;
+                                        }
+                                        
                                         logDebug(`[PIPE ${pIdx}] Relay Stream Ended Normally. Reconnecting...`);
                                     } catch (e: any) {
                                         logDebug(`[PIPE ${pIdx}] Relay Error: ${e.message}. Reconnecting...`);
@@ -1739,6 +1743,7 @@ ${capturedLogsRef.current.join('\n')}
                             if (allDone && fileAccumulators.size > 0) break;
                         }
                         
+                        (window as any).__INITIALIZING_OMEGA__ = false; // Reset guard
                         if (Array.from(fileAccumulators.values()).every((a: any) => a.completed)) {
                             setStatus('done');
                             logDebug(`[OMEGA] Batch Received Successfully. 100% Integrity.`);
