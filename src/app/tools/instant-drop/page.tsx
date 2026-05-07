@@ -1624,20 +1624,7 @@ ${capturedLogsRef.current.join('\n')}
                     }
                     logDebug(`[OMEGA RECEIVER] Initializing ${NUM_PIPES} Persistent Pipes: ${normalizedRoom}`);
                     
-                    // v3.2.7: NO-OVERSIGHT SYNC - Signal ready FIRST, then open pipes.
-                    // This prevents the handshake deadlock where both sides wait for each other.
-                    if (ws.readyState === WebSocket.OPEN) {
-                        logDebug(`[OMEGA] Signaling Receiver-Ready over WebSocket...`);
-                        ws.send(JSON.stringify({ type: 'receiver-ready' }));
-                    }
-
                     // v3.2.13 APEX: CRITICAL — Manually sync statusRef BEFORE creating pipe streams.
-                    // setStatus('transferring') above schedules a React state update (async).
-                    // statusRef.current is only updated via useEffect([status]) — which fires AFTER
-                    // this synchronous block completes. Without this line, statusRef.current is still
-                    // 'connecting' when createResilientStream's while-loop checks it, causing ALL
-                    // pipe streams to close immediately → reassembly loop breaks in 21ms.
-                    // This is the exact same pattern already used on the sender side at line ~1377.
                     statusRef.current = 'transferring';
                     
                     const createResilientStream = (roomId: string, pIdx: number) => {
@@ -1648,12 +1635,11 @@ ${capturedLogsRef.current.join('\n')}
                                         const res = await fetch(`${CLOUDFLARE_RELAY_URL}/${roomId}/${pIdx}`);
                                         if (!res.ok) {
                                             if (res.status === 408 || res.status === 404) {
-                                                await new Promise(r => setTimeout(r, 500)); // v3.2.13: 500ms (was 2000ms)
+                                                await new Promise(r => setTimeout(r, 500));
                                                 continue;
                                             }
                                             throw new Error(`HTTP ${res.status}`);
                                         }
-                                        
                                         const reader = res.body!.getReader();
                                         let hasData = false;
                                         while (true) {
@@ -1662,18 +1648,16 @@ ${capturedLogsRef.current.join('\n')}
                                             hasData = true;
                                             controller.enqueue(value);
                                         }
-                                        
-                                        // v3.2.13 APEX: C4 — Empty 200 OK means sender not ready yet. Retry fast.
                                         if (!hasData) {
-                                            await new Promise(r => setTimeout(r, 300)); // Fast retry: 300ms
+                                            // Empty 200 = sender not posting yet, retry fast
+                                            await new Promise(r => setTimeout(r, 300));
                                             continue;
                                         }
-                                        
-                                        // Normal stream end — reconnect for next pipe segment
+                                        // Normal stream end — sender pipe closed, reconnect
                                     } catch (e: any) {
-                                        logDebug(`[PIPE ${pIdx}] Relay Error: ${e.message}. Reconnecting...`);
+                                        logDebug(`[PIPE ${pIdx}] Error: ${e.message}. Retrying...`);
+                                        await new Promise(r => setTimeout(r, 500));
                                     }
-                                    await new Promise(r => setTimeout(r, 500)); // v3.2.13: 500ms (was 2000ms)
                                 }
                                 controller.close();
                             }
@@ -1681,15 +1665,29 @@ ${capturedLogsRef.current.join('\n')}
                     };
 
                     const pipeStreams = Array.from({ length: NUM_PIPES }, (_, i) => createResilientStream(normalizedRoom, i));
-                    logDebug(`[OMEGA] Sync Complete. ${NUM_PIPES} Resilient Pipes Primed.`);
-
-
                     const keyObj = await importSessionKey(data.sessionKey);
+
+                    // v3.2.13 APEX: CRITICAL ORDERING FIX
+                    // The ReadableStream start() callbacks (which fire the GET requests) only execute
+                    // when a reader is attached. We must attach readers BEFORE signaling the sender,
+                    // otherwise the sender starts POSTing before the receiver's GET connections exist.
+                    // Step 1: Attach reader (fires all 16 GET requests immediately as microtasks)
+                    const muxed = decryptContinuousStream(pipeStreams, keyObj);
+                    const muxReader = muxed.getReader();
+
+                    // Step 2: Wait 200ms for GET connections to reach the relay
+                    await new Promise(r => setTimeout(r, 200));
+
+                    // Step 3: NOW signal ready — sender starts POSTing into already-open GET streams
+                    if (ws.readyState === WebSocket.OPEN) {
+                        logDebug(`[OMEGA] GET connections established. Signaling Receiver-Ready...`);
+                        ws.send(JSON.stringify({ type: 'receiver-ready' }));
+                    }
+                    logDebug(`[OMEGA] Sync Complete. ${NUM_PIPES} Resilient Pipes Primed.`);
 
                     // Reassembly Loop
                     (async () => {
-                        const muxed = decryptContinuousStream(pipeStreams, keyObj);
-                        const reader = muxed.getReader();
+                        const reader = muxReader; // Already attached above
                         const fileAccumulators = new Map();
                         filesInfo.forEach((f: any, idx: number) => {
                             fileAccumulators.set(idx, {
