@@ -1631,17 +1631,24 @@ ${capturedLogsRef.current.join('\n')}
                         ws.send(JSON.stringify({ type: 'receiver-ready' }));
                     }
 
+                    // v3.2.13 APEX: CRITICAL — Manually sync statusRef BEFORE creating pipe streams.
+                    // setStatus('transferring') above schedules a React state update (async).
+                    // statusRef.current is only updated via useEffect([status]) — which fires AFTER
+                    // this synchronous block completes. Without this line, statusRef.current is still
+                    // 'connecting' when createResilientStream's while-loop checks it, causing ALL
+                    // pipe streams to close immediately → reassembly loop breaks in 21ms.
+                    // This is the exact same pattern already used on the sender side at line ~1377.
+                    statusRef.current = 'transferring';
+                    
                     const createResilientStream = (roomId: string, pIdx: number) => {
                         return new ReadableStream({
                             async start(controller) {
                                 while (statusRef.current === 'transferring') {
                                     try {
-                                        logDebug(`[PIPE ${pIdx}] Fetching Relay Stream...`);
                                         const res = await fetch(`${CLOUDFLARE_RELAY_URL}/${roomId}/${pIdx}`);
                                         if (!res.ok) {
                                             if (res.status === 408 || res.status === 404) {
-                                                // Waiting for sender, not a fatal error
-                                                await new Promise(r => setTimeout(r, 2000));
+                                                await new Promise(r => setTimeout(r, 500)); // v3.2.13: 500ms (was 2000ms)
                                                 continue;
                                             }
                                             throw new Error(`HTTP ${res.status}`);
@@ -1656,19 +1663,17 @@ ${capturedLogsRef.current.join('\n')}
                                             controller.enqueue(value);
                                         }
                                         
-                                        // v3.2.12: Resilient Body Handling (C4)
-                                        // If body was empty but 200 OK, the sender hasn't started yet. Retry instead of closing.
+                                        // v3.2.13 APEX: C4 — Empty 200 OK means sender not ready yet. Retry fast.
                                         if (!hasData) {
-                                            logDebug(`[PIPE ${pIdx}] Relay returned empty 200. Retrying...`);
-                                            await new Promise(r => setTimeout(r, 1000));
+                                            await new Promise(r => setTimeout(r, 300)); // Fast retry: 300ms
                                             continue;
                                         }
                                         
-                                        logDebug(`[PIPE ${pIdx}] Relay Stream Ended Normally. Reconnecting...`);
+                                        // Normal stream end — reconnect for next pipe segment
                                     } catch (e: any) {
                                         logDebug(`[PIPE ${pIdx}] Relay Error: ${e.message}. Reconnecting...`);
                                     }
-                                    await new Promise(r => setTimeout(r, 2000));
+                                    await new Promise(r => setTimeout(r, 500)); // v3.2.13: 500ms (was 2000ms)
                                 }
                                 controller.close();
                             }
